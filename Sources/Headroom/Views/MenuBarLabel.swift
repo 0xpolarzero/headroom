@@ -70,7 +70,7 @@ struct ClaudeMenuBarLabel: View {
             ForEach(rows) { row in
                 HStack(spacing: 3) {
                     tag(row.name, filled: row.isRecommended)
-                    numbers(row.snapshot)
+                    numbers(row.snapshot).fixedSize()
                 }
             }
         }
