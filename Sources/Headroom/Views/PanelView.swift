@@ -27,13 +27,16 @@ struct PanelView: View {
                 .frame(maxWidth: .infinity)
                 .padding(24)
         } else {
-            VStack(spacing: 0) {
-                ForEach(Array(model.enabledProviders.enumerated()), id: \.element) { index, id in
-                    if index > 0 { Divider().padding(.horizontal, 14) }
-                    ProviderSection(id: id, state: model.state(id), now: now)
+            // Never taller than the space under the menu bar, or macOS shifts the popover.
+            CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 80) {
+                VStack(spacing: 0) {
+                    ForEach(Array(model.enabledProviders.enumerated()), id: \.element) { index, id in
+                        if index > 0 { Divider().padding(.horizontal, 14) }
+                        ProviderSection(id: id, state: model.state(id), now: now)
+                    }
                 }
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
         }
     }
 
@@ -89,15 +92,18 @@ struct ProviderSection: View {
                 }
                 if !snapshot.keys.isEmpty {
                     DisclosureGroup(isExpanded: $showKeys) {
-                        VStack(spacing: 8) {
-                            ForEach(snapshot.keys, id: \.self) { KeyRow(key: $0) }
+                        CappedScroll(maxHeight: 220) {
+                            VStack(spacing: 8) {
+                                ForEach(snapshot.keys, id: \.self) { KeyRow(key: $0) }
+                            }
+                            .padding(.top, 6)
+                            .padding(.trailing, 8)   // room for the scroller
                         }
-                        .padding(.top, 6)
                     } label: {
                         Text(snapshot.keys.count == 1 ? "API key" : "API keys (\(snapshot.keys.count))")
                             .font(.subheadline)
                             .contentShape(Rectangle())
-                            .onTapGesture { withAnimation { showKeys.toggle() } }
+                            .onTapGesture { showKeys.toggle() }
                     }
                 }
             } else if let error = state.error {
@@ -217,4 +223,28 @@ struct Meter: View {
     private var color: Color {
         remaining <= 10 ? .red : remaining <= 20 ? .yellow : .blue
     }
+}
+
+/// A scroll view as tall as its content, up to `maxHeight`; beyond that it scrolls.
+struct CappedScroll<Content: View>: View {
+    let maxHeight: CGFloat
+    @ViewBuilder let content: Content
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView(.vertical) {
+            content
+                .background(GeometryReader { geo in
+                    Color.clear.preference(key: HeightKey.self, value: geo.size.height)
+                })
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(height: min(contentHeight, maxHeight))
+        .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
+    }
+}
+
+private struct HeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
