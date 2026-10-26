@@ -29,13 +29,12 @@ struct PanelView: View {
         } else {
             // Never taller than the space under the menu bar, or macOS shifts the popover.
             CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 80) {
-                VStack(spacing: 0) {
-                    ForEach(Array(model.enabledProviders.enumerated()), id: \.element) { index, id in
-                        if index > 0 { Divider().padding(.horizontal, 14) }
+                VStack(spacing: 8) {
+                    ForEach(model.enabledProviders) { id in
                         ProviderSection(id: id, state: model.state(id), now: now)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(10)
             }
         }
     }
@@ -112,8 +111,11 @@ struct ProviderSection: View {
                 Text("Loading…").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .background(id.brandBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(id.brandColors[0].opacity(0.25), lineWidth: 0.5))
     }
 
     private var header: some View {
@@ -122,7 +124,7 @@ struct ProviderSection: View {
                 .renderingMode(.template)
                 .resizable()
                 .frame(width: 16, height: 16)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LinearGradient(colors: id.brandColors, startPoint: .topLeading, endPoint: .bottomTrailing))
             Text(id.displayName).font(.headline)
             if let plan = state.snapshot?.plan {
                 Text(plan)
@@ -167,7 +169,7 @@ struct WindowRow: View {
             if let reset = window.resetsAt {
                 Text(Format.resets(reset, now: now))
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -189,10 +191,10 @@ struct KeyRow: View {
             if let limit = key.limit, limit > 0 {
                 let left = key.limitRemaining ?? max(limit - key.total, 0)
                 Meter(remaining: left / limit * 100)
-                Text("\(Format.dollars(left)) of \(Format.dollars(limit)) left").font(.caption).foregroundStyle(.tertiary)
+                Text("\(Format.dollars(left)) of \(Format.dollars(limit)) left").font(.caption).foregroundStyle(.secondary)
             }
             if let periods = periods {
-                Text(periods).font(.caption).foregroundStyle(.tertiary)
+                Text(periods).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -247,4 +249,29 @@ struct CappedScroll<Content: View>: View {
 private struct HeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+extension ProviderID {
+    /// Each provider's usual brand colors; two for a gradient.
+    var brandColors: [Color] {
+        switch self {
+        case .claude: [Color(hex: 0xD97757), Color(hex: 0xC15F3C)]          // Anthropic terracotta
+        case .codex: [Color(hex: 0x10A37F), Color(hex: 0x0D8A6B)]           // OpenAI green
+        case .antigravity: [Color(hex: 0x4285F4), Color(hex: 0x9B72CB)]     // Gemini blue to purple
+        case .zai: [Color(hex: 0x2563EB), Color(hex: 0x1E40AF)]             // Z.ai blue
+        case .openrouter: [Color(hex: 0x6467F2), Color(hex: 0x4F46E5)]      // OpenRouter indigo
+        }
+    }
+
+    /// A soft wash of the brand colors that keeps text readable in light and dark mode.
+    var brandBackground: LinearGradient {
+        LinearGradient(colors: [brandColors[0].opacity(0.20), brandColors[1].opacity(0.07)],
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+extension Color {
+    init(hex: UInt32) {
+        self.init(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
+    }
 }

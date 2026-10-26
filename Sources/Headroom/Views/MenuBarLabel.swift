@@ -43,7 +43,9 @@ struct MenuBarLabel: View {
     /// Status item buttons take an image, and stacking needs two lines, so draw labels as a template.
     @MainActor static func template(_ view: some View) -> NSImage {
         let renderer = ImageRenderer(content: view)
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        // Draw for the sharpest screen, not `NSScreen.main`: with a 1x external display active,
+        // a 1x image would look pixelated on the Retina menu bar.
+        renderer.scale = max(2, NSScreen.screens.map(\.backingScaleFactor).max() ?? 2)
         let image = renderer.nsImage ?? NSImage()
         image.isTemplate = true
         return image
