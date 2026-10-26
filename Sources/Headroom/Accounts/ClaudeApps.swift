@@ -104,11 +104,13 @@ enum ClaudeApps {
         let script = HeadroomPaths.support.appendingPathComponent("sign-in-\(account.id).command")
         HeadroomPaths.ensure(HeadroomPaths.support)
         let export = account.cliConfigDir.map { "export CLAUDE_CONFIG_DIR=\(shellQuote($0))\n" } ?? ""
+        // An interactive login shell, so the user's own launcher is found: some setups block plain
+        // `claude` and start it through a confirming `clod` alias instead.
         try """
-        #!/bin/zsh -l
+        #!/bin/zsh -il
         \(export)echo "Claude Code for \(name): sign in with the same account as its Claude window."
         echo "If it doesn't ask, type /login. Headroom reads this sign-in to show the account's usage."
-        exec claude
+        if whence clod >/dev/null; then clod; else claude; fi
         """.write(to: script, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
         NSWorkspace.shared.open(script)
