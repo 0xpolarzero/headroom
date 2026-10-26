@@ -77,7 +77,21 @@ struct ProviderSection: View {
     let id: ProviderID
     let state: ProviderState
     let now: Date
-    @State private var showKeys = false
+    /// Whether the extra limits and keys are shown, remembered per provider.
+    @AppStorage private var showMore: Bool
+
+    init(id: ProviderID, state: ProviderState, now: Date) {
+        self.id = id
+        self.state = state
+        self.now = now
+        _showMore = AppStorage(wrappedValue: false, "showMore.\(id.rawValue)")
+    }
+
+    /// Session and Weekly show by default; a provider with neither (OpenRouter) shows everything.
+    static func split(_ windows: [UsageWindow]) -> (main: [UsageWindow], more: [UsageWindow]) {
+        let main = windows.filter { $0.label == "Session" || $0.label == "Weekly" }
+        return main.isEmpty ? (windows, []) : (main, windows.filter { !main.contains($0) })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -86,24 +100,27 @@ struct ProviderSection: View {
                 if snapshot.windows.isEmpty {
                     Text("No limits reported.").font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(snapshot.windows, id: \.label) { window in
+                let windows = Self.split(snapshot.windows)
+                ForEach(windows.main, id: \.label) { window in
                     WindowRow(window: window, now: now)
                 }
-                if !snapshot.keys.isEmpty {
-                    DisclosureGroup(isExpanded: $showKeys) {
+                if showMore {
+                    ForEach(windows.more, id: \.label) { WindowRow(window: $0, now: now) }
+                    if !snapshot.keys.isEmpty {
+                        Text(snapshot.keys.count == 1 ? "API key" : "API keys (\(snapshot.keys.count))")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
                         CappedScroll(maxHeight: 220) {
                             VStack(spacing: 8) {
                                 ForEach(snapshot.keys, id: \.self) { KeyRow(key: $0) }
                             }
-                            .padding(.top, 6)
                             .padding(.trailing, 8)   // room for the scroller
                         }
-                    } label: {
-                        Text(snapshot.keys.count == 1 ? "API key" : "API keys (\(snapshot.keys.count))")
-                            .font(.subheadline)
-                            .contentShape(Rectangle())
-                            .onTapGesture { showKeys.toggle() }
                     }
+                }
+                if !windows.more.isEmpty || !snapshot.keys.isEmpty {
+                    Caret(isExpanded: showMore) { showMore.toggle() }
+                        .padding(.bottom, -6)
                 }
             } else if let error = state.error {
                 Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -176,6 +193,26 @@ struct WindowRow: View {
 }
 
 /// Fills with what is left: blue, yellow at 20% left, red at 10% left.
+/// The expand/collapse control at the bottom of a card.
+struct Caret: View {
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isExpanded ? "Show less" : "Show more")
+        .accessibilityLabel(isExpanded ? "Show less" : "Show more")
+    }
+}
+
 /// Spend on one API key; keys with a limit get a meter of what is left of it.
 struct KeyRow: View {
     let key: KeyUsage

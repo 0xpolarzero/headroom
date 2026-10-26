@@ -184,3 +184,15 @@ final class NewProviderTests: XCTestCase {
         XCTAssertEqual(found, [jwt])
     }
 }
+
+final class PanelSplitTests: XCTestCase {
+    func testOnlySessionAndWeeklyShowByDefault() {
+        let w = ["Session", "Weekly", "Fable Weekly", "Claude"].map { UsageWindow(label: $0, usedPercent: 1) }
+        let split = ProviderSection.split(w)
+        XCTAssertEqual(split.main.map(\.label), ["Session", "Weekly"])
+        XCTAssertEqual(split.more.map(\.label), ["Fable Weekly", "Claude"])
+        let credits = ProviderSection.split([UsageWindow(label: "Credits", usedPercent: 10)])
+        XCTAssertEqual(credits.main.map(\.label), ["Credits"])
+        XCTAssertTrue(credits.more.isEmpty)
+    }
+}
