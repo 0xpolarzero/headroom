@@ -72,7 +72,7 @@ extension AppModel {
         var signedIn: [String: String] = [:]
         for account in accounts { signedIn[account.id] = ClaudeApps.appAccountUUID(account) }
         if signedIn != claudeAppAccounts { claudeAppAccounts = signedIn }
-        if accounts.count > 1 { SessionPresets.sync(accounts) { running.contains($0.id) } }
+        if accounts.count > 1 { SessionPresets.sync(accounts) { ClaudeApps.runningApp($0)?.launchDate } }
         await refreshClaudeAccounts(force: false, throttle: panelOpened ? Self.openThrottle : nil)
         announceRecommendation()
     }

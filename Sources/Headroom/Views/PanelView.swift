@@ -157,6 +157,7 @@ struct ProviderSection: View {
                     .padding(.vertical, 1)
                     .background(.quaternary, in: Capsule())
             }
+            ResetBadge(resets: state.snapshot?.resets, now: now)
             Spacer()
             if state.isLoading {
                 ProgressView().controlSize(.mini)
@@ -171,6 +172,40 @@ struct ProviderSection: View {
                     .help(error)
             }
         }
+    }
+}
+
+/// A small ↺ and the number of limit resets the account can spend, in a header line; hovering lists when
+/// each one expires. Nothing when there are none.
+struct ResetBadge: View {
+    let resets: LimitResets?
+    let now: Date
+
+    var body: some View {
+        if let resets = resets?.current(now: now), resets.count > 0 {
+            HStack(spacing: 1) {
+                Image(systemName: "arrow.counterclockwise").font(.system(size: 9, weight: .semibold))
+                Text("\(resets.count)").font(.caption2.weight(.medium)).monospacedDigit()
+            }
+            .foregroundStyle(.secondary)
+            .help(Self.tooltip(resets, now: now))
+            .accessibilityLabel(Self.tooltip(resets, now: now))
+        }
+    }
+
+    /// "2 limit resets to spend. Expire in 3d 4h (Tue 14:30) and in 10d (Nov 5 09:00)."
+    static func tooltip(_ resets: LimitResets, now: Date) -> String {
+        var text = resets.count == 1 ? "1 limit reset to spend." : "\(resets.count) limit resets to spend."
+        let dates = resets.expiries.map { "in \(Format.duration($0.timeIntervalSince(now))) (\(Format.clock($0, now: now)))" }
+        if !dates.isEmpty {
+            // Several resets ending together read once, with a count.
+            var grouped: [(String, Int)] = []
+            for d in dates { if grouped.last?.0 == d { grouped[grouped.count - 1].1 += 1 } else { grouped.append((d, 1)) } }
+            let parts = grouped.map { $1 > 1 ? "\($1) \($0)" : $0 }
+            let list = parts.count > 1 ? parts.dropLast().joined(separator: ", ") + " and " + parts.last! : parts[0]
+            text += (dates.count == 1 ? " Expires " : " Expire ") + list + "."
+        }
+        return text
     }
 }
 

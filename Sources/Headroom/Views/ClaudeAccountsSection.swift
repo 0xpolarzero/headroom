@@ -63,6 +63,7 @@ private struct AccountBlock: View {
                         .background(.quaternary, in: Capsule())
                 }
                 if row.isMain { Text("Main").font(.caption2).foregroundStyle(.secondary) }
+                ResetBadge(resets: row.snapshot?.resets, now: now)
                 Spacer()
                 Button(action: open) {
                     Label(row.isRunning ? "Show" : "Open", systemImage: "macwindow")

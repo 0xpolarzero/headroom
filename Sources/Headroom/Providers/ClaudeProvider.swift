@@ -24,8 +24,44 @@ struct ClaudeProvider: UsageProvider {
         if let expiry = creds.expiresAt, expiry.timeIntervalSinceNow < 60 {
             throw ProviderError.unauthorized(expired)
         }
-        return UsageSnapshot(title: "Claude", plan: creds.plan,
-                             windows: try await Self.usageWindows(accessToken: creds.accessToken, expired: expired))
+        let windows = try await Self.usageWindows(accessToken: creds.accessToken, expired: expired)
+        // After a successful usage fetch, so the token is known to work; a failure only costs the badge.
+        let token = creds.accessToken
+        let resets = await Self.resetCache.value(configDir ?? "main") { try await Self.resetGrants(accessToken: token) }
+        var snapshot = UsageSnapshot(title: "Claude", plan: creds.plan, windows: windows)
+        snapshot.resets = resets
+        return snapshot
+    }
+
+    /// Reset grants are asked for at most once an hour per account: asking on every refresh got
+    /// OpenUsage sustained 429s on the usage endpoint.
+    private static let resetCache = HourlyCache<LimitResets>()
+
+    /// Anthropic's one-off usage-limit resets: the usage endpoint with `cedar_ember=1` adds a
+    /// `cedar_ember` block (as Claude Code and OpenUsage read it).
+    static func resetGrants(accessToken: String) async throws -> LimitResets? {
+        let headers = ["Authorization": "Bearer \(accessToken)", "Accept": "application/json",
+                       "anthropic-beta": "oauth-2025-04-20", "User-Agent": "Headroom"]
+        let (body, http) = try await HTTP.json(HTTP.request(usageURL + "?cedar_ember=1&skip_spend=1", headers: headers))
+        guard (200..<300).contains(http.statusCode), let root = body as? [String: Any] else { throw ProviderError.http(http.statusCode) }
+        return resetGrants(from: root["cedar_ember"])
+    }
+
+    /// `{"eligible": true, "grants": [{"id", "resets_left", "ends_at", "clears"}], "next_grant_id"}`. Nil for
+    /// a missing or `null` block (plans outside the program) or a malformed grant. An ineligible account
+    /// has no usable resets.
+    static func resetGrants(from value: Any?, now: Date = .now) -> LimitResets? {
+        guard let block = value as? [String: Any] else { return nil }
+        var count = 0
+        var expiries: [Date] = []
+        for entry in block["grants"] as? [Any] ?? [] {
+            guard let grant = entry as? [String: Any], let left = grant.double("resets_left") else { return nil }
+            let ends = Dates.iso(grant.string("ends_at"))
+            guard block["eligible"] as? Bool == true, left >= 1, ends.map({ $0 > now }) ?? true else { continue }
+            count += Int(left)
+            if let ends { expiries += Array(repeating: ends, count: Int(left)) }
+        }
+        return LimitResets(count: count, expiries: expiries.sorted())
     }
 
     /// Usage of the account `accessToken` belongs to.

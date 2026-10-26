@@ -23,6 +23,37 @@ struct KeyUsage: Hashable, Sendable, Codable {
     var disabled = false
 }
 
+/// One-off limit resets an account holds and can spend: Claude's reset grants, Codex's reset credits.
+struct LimitResets: Hashable, Sendable, Codable {
+    var count: Int
+    /// When each remaining reset expires, soonest first; one entry per reset. May be shorter than
+    /// `count` when the provider gave no dates.
+    var expiries: [Date]
+
+    /// Without the resets whose deadline has passed.
+    func current(now: Date = .now) -> LimitResets {
+        let gone = expiries.filter { $0 <= now }.count
+        return LimitResets(count: max(0, count - gone), expiries: expiries.filter { $0 > now })
+    }
+}
+
+/// Answers that are worth asking for at most once an hour, per account. A failed attempt keeps the
+/// previous answer and still counts, so an outage or a 429 is retried an hour later, not every refresh.
+actor HourlyCache<Value: Sendable> {
+    private var entries: [String: (checked: Date, value: Value?)] = [:]
+    private let interval: TimeInterval
+
+    init(interval: TimeInterval = 3600) { self.interval = interval }
+
+    func value(_ key: String, fetch: @Sendable () async throws -> Value?) async -> Value? {
+        if let entry = entries[key], Date().timeIntervalSince(entry.checked) < interval { return entry.value }
+        let previous = entries[key]?.value
+        let value = (try? await fetch()) ?? previous
+        entries[key] = (Date(), value)
+        return value
+    }
+}
+
 /// Everything a provider (or one account of a provider) reports in one refresh.
 struct UsageSnapshot: Hashable, Sendable, Codable {
     var title: String           // "Claude", "Codex", "Antigravity", "Z.ai", "OpenRouter"
@@ -32,6 +63,7 @@ struct UsageSnapshot: Hashable, Sendable, Codable {
     var keys: [KeyUsage] = []
     /// Replaces the Session/Weekly percentages in the menu bar ("$37.66").
     var menuBarText: String?
+    var resets: LimitResets?
     var fetchedAt: Date = .now
 }
 

@@ -35,18 +35,28 @@ enum SessionPresets {
     }
 
     /// IDs that were in an account's file at the last sync and are gone now: deleted in that copy.
-    static func deletions(_ sources: [Source], known: [String: [String]]) -> Set<String> {
+    /// `trusted` limits this to copies whose window has seen the file: a window started before Headroom
+    /// last wrote its file still holds its older list and may save it back, which is not a deletion.
+    static func deletions(_ sources: [Source], known: [String: [String]], trusted: Set<String>? = nil) -> Set<String> {
         var deleted = Set<String>()
-        for source in sources {
+        for source in sources where trusted?.contains(source.accountID) ?? true {
             let now = Set(source.presets.compactMap { $0["id"] as? String })
             deleted.formUnion(Set(known[source.accountID] ?? []).subtracting(now))
         }
         return deleted
     }
 
+    /// What Headroom remembers between passes: each account's preset IDs at the last sync, and when it
+    /// last wrote each account's file.
+    struct State: Codable {
+        var known: [String: [String]] = [:]
+        var writtenAt: [String: Date] = [:]
+    }
+
     /// One pass over every account whose copy is signed in. Safe to call often: a file is only
-    /// written when its list differs.
-    static func sync(_ accounts: [ClaudeAccount], isRunning: (ClaudeAccount) -> Bool) {
+    /// written when its list differs. `launchDate` is nil for a copy that isn't running.
+    static func sync(_ accounts: [ClaudeAccount], launchDate: (ClaudeAccount) -> Date?) {
+        func isRunning(_ account: ClaudeAccount) -> Bool { launchDate(account) != nil }
         struct Loaded { var account: ClaudeAccount; var uuid: String; var root: [String: Any]; var source: Source }
         var loaded: [Loaded] = []
         var missing: [(ClaudeAccount, String)] = []   // signed in, no presets file yet
@@ -65,8 +75,12 @@ enum SessionPresets {
         }
         guard !loaded.isEmpty else { return }
 
-        var known = loadKnown()
-        let deleted = deletions(loaded.map(\.source), known: known)
+        var state = loadState()
+        let trusted = Set(loaded.filter { item in
+            guard let launched = launchDate(item.account), let written = state.writtenAt[item.account.id] else { return true }
+            return launched > written
+        }.map(\.account.id))
+        let deleted = deletions(loaded.map(\.source), known: state.known, trusted: trusted)
         let merged = merge(loaded.map(\.source), deleted: deleted)
         let mergedIDs = merged.compactMap { $0["id"] as? String }
         // builtIns and seededFromDraft for copies that have no file yet, taken from one that does.
@@ -75,7 +89,7 @@ enum SessionPresets {
         for item in loaded {
             let current = item.source.presets
             guard !isRunning(item.account) else {
-                known[item.account.id] = current.compactMap { $0["id"] as? String }
+                if trusted.contains(item.account.id) { state.known[item.account.id] = current.compactMap { $0["id"] as? String } }
                 continue
             }
             if !NSDictionary(dictionary: ["p": current]).isEqual(to: ["p": merged]) {
@@ -86,16 +100,18 @@ enum SessionPresets {
                 byAccount[item.uuid] = entry
                 root["byAccount"] = byAccount
                 write(root, to: url(item.account))
+                state.writtenAt[item.account.id] = Date()
             }
-            known[item.account.id] = mergedIDs
+            state.known[item.account.id] = mergedIDs
         }
         for (account, uuid) in missing where !isRunning(account) && !merged.isEmpty {
             var entry = template
             entry["presets"] = merged
             write(["byAccount": [uuid: entry]], to: url(account))
-            known[account.id] = mergedIDs
+            state.writtenAt[account.id] = Date()
+            state.known[account.id] = mergedIDs
         }
-        saveKnown(known)
+        saveState(state)
     }
 
     private static func write(_ root: [String: Any], to url: URL) {
@@ -103,13 +119,15 @@ enum SessionPresets {
         try? data.write(to: url, options: .atomic)
     }
 
-    private static func loadKnown() -> [String: [String]] {
-        (try? Data(contentsOf: HeadroomPaths.presetSync))
-            .flatMap { try? JSONDecoder().decode([String: [String]].self, from: $0) } ?? [:]
+    private static func loadState() -> State {
+        guard let data = try? Data(contentsOf: HeadroomPaths.presetSync) else { return State() }
+        if let state = try? JSONDecoder.headroom.decode(State.self, from: data) { return state }
+        // The first version kept only the IDs.
+        return State(known: (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:])
     }
 
-    private static func saveKnown(_ known: [String: [String]]) {
+    private static func saveState(_ state: State) {
         HeadroomPaths.ensure(HeadroomPaths.support)
-        try? JSONEncoder().encode(known).write(to: HeadroomPaths.presetSync, options: .atomic)
+        try? JSONEncoder.headroom.encode(state).write(to: HeadroomPaths.presetSync, options: .atomic)
     }
 }

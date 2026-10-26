@@ -49,8 +49,36 @@ struct CodexProvider: UsageProvider {
         guard (200..<300).contains(http.statusCode) else { throw ProviderError.http(http.statusCode) }
         guard let root = body as? [String: Any] else { throw ProviderError.invalidResponse }
 
-        return UsageSnapshot(title: "Codex", plan: Self.planName(root.string("plan_type")),
-                             windows: Self.windows(from: root))
+        var snapshot = UsageSnapshot(title: "Codex", plan: Self.planName(root.string("plan_type")),
+                                     windows: Self.windows(from: root))
+        // The usage body carries the count; the dedicated endpoint adds each credit's expiry.
+        let embedded = Self.resetCredits(from: root["rate_limit_reset_credits"])
+        let token = current.accessToken ?? "", account = current.accountID
+        let listed = await Self.resetCache.value(account ?? "codex") { try await Self.requestResetCredits(token: token, account: account) }
+        snapshot.resets = listed ?? embedded
+        return snapshot
+    }
+
+    private static let resetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+    private static let resetCache = HourlyCache<LimitResets>()
+
+    private static func requestResetCredits(token: String, account: String?) async throws -> LimitResets? {
+        var headers = ["Authorization": "Bearer \(token)", "Accept": "application/json", "User-Agent": "Headroom"]
+        if let account { headers["ChatGPT-Account-Id"] = account }
+        let (body, http) = try await HTTP.json(HTTP.request(resetCreditsURL, headers: headers))
+        guard (200..<300).contains(http.statusCode) else { throw ProviderError.http(http.statusCode) }
+        return resetCredits(from: body)
+    }
+
+    /// `{"available_count": 2, "credits": [{"status": "available", "expires_at": …}]}`, from either the
+    /// dedicated endpoint or the usage body's `rate_limit_reset_credits` (count only). A credit without a
+    /// status counts as available; `expires_at` is ISO 8601 or epoch seconds.
+    static func resetCredits(from value: Any?) -> LimitResets? {
+        guard let object = value as? [String: Any], let count = object.double("available_count"), count >= 0 else { return nil }
+        let expiries = (object.array("credits") ?? [])
+            .filter { ($0.string("status") ?? "available") == "available" }
+            .compactMap { credit -> Date? in Dates.iso(credit.string("expires_at")) ?? Dates.epoch(credit.double("expires_at")) }
+        return LimitResets(count: Int(count), expiries: expiries.sorted())
     }
 
     private static func requestUsage(_ creds: Credentials) async throws -> (Any, HTTPURLResponse) {
