@@ -7,8 +7,6 @@ struct MenuBarLabel: View {
     let id: ProviderID
     let snapshot: UsageSnapshot?
     let mode: MenuBarMode
-    /// Which account the numbers are for, when there are several ("Pro", "Max", "2").
-    var badge: String? = nil
 
     var body: some View {
         HStack(spacing: 4) {
@@ -16,12 +14,7 @@ struct MenuBarLabel: View {
                 .renderingMode(.template)
                 .resizable()
                 .frame(width: 15, height: 15)
-            if let badge {
-                Text(badge)
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 3)
-                    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(lineWidth: 1))
-            }
+
             if let text = snapshot?.menuBarText {
                 Text(text).font(.system(size: 13, weight: .medium))
             } else {
@@ -43,7 +36,9 @@ struct MenuBarLabel: View {
         .frame(height: 22)
     }
 
-    private func left(_ label: String) -> String {
+    private func left(_ label: String) -> String { Self.left(label, in: snapshot) }
+
+    static func left(_ label: String, in snapshot: UsageSnapshot?) -> String {
         guard let left = snapshot?.windows.first(where: { $0.label == label })?.remainingPercent else { return "–" }
         return "\(Int(left.rounded()))%"
     }
@@ -57,5 +52,60 @@ struct MenuBarLabel: View {
         let image = renderer.nsImage ?? NSImage()
         image.isTemplate = true
         return image
+    }
+}
+
+/// Claude with several accounts: each account's name and what is left, in priority order. The account
+/// new sessions should use has a filled name tag, the others an outlined one.
+struct ClaudeMenuBarLabel: View {
+    let rows: [ClaudeAccountRow]
+    let mode: MenuBarMode
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(nsImage: Logos.image(.claude))
+                .renderingMode(.template)
+                .resizable()
+                .frame(width: 15, height: 15)
+            ForEach(rows) { row in
+                HStack(spacing: 3) {
+                    tag(row.name, filled: row.isRecommended)
+                    numbers(row.snapshot)
+                }
+            }
+        }
+        .monospacedDigit()
+        .foregroundStyle(.black)
+        .frame(height: 22)
+    }
+
+    /// A filled tag is drawn as a solid shape with the text cut out, so it stays a template image.
+    private func tag(_ name: String, filled: Bool) -> some View {
+        let text = Text(name).font(.system(size: 9, weight: .bold)).padding(.horizontal, 3).padding(.vertical, 1)
+        return ZStack {
+            if filled {
+                RoundedRectangle(cornerRadius: 3).fill(.black)
+                text.blendMode(.destinationOut)
+            } else {
+                RoundedRectangle(cornerRadius: 3).strokeBorder(lineWidth: 1)
+                text
+            }
+        }
+        .fixedSize()
+        .compositingGroup()
+    }
+
+    @ViewBuilder private func numbers(_ snapshot: UsageSnapshot?) -> some View {
+        switch mode {
+        case .session, .weekly:
+            Text(MenuBarLabel.left(mode == .session ? "Session" : "Weekly", in: snapshot))
+                .font(.system(size: 13, weight: .medium))
+        case .both:
+            VStack(alignment: .trailing, spacing: -1) {
+                Text(MenuBarLabel.left("Session", in: snapshot))
+                Text(MenuBarLabel.left("Weekly", in: snapshot))
+            }
+            .font(.system(size: 9, weight: .semibold))
+        }
     }
 }

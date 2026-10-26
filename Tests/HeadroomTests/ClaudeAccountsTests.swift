@@ -1,511 +1,87 @@
-import Network
 import XCTest
 @testable import Headroom
 
 final class ClaudeAccountsTests: XCTestCase {
-    private let now = Date(timeIntervalSince1970: 1_793_000_000)
+    // MARK: Accounts
 
-    // MARK: Rate-limit headers
-
-    func testLimitReachedIsLimitedUntilReset() {
-        let reading = RateLimitReading.read(status: 429, headers: [
-            "anthropic-ratelimit-unified-status": "rejected",
-            "anthropic-ratelimit-unified-representative-claim": "five_hour",
-            "anthropic-ratelimit-unified-reset": "1793018000",
-            "retry-after": "18000",
-        ], now: now)
-        XCTAssertEqual(reading.verdict, .limited(until: Date(timeIntervalSince1970: 1_793_018_000), claim: "five_hour", overage: false))
-        XCTAssertNil(reading.scope)
+    func testKeychainServiceMatchesClaudeCode() {
+        XCTAssertEqual(ClaudeProvider.keychainService(configDir: nil), "Claude Code-credentials")
+        // sha256("/Users/x/.claude-accounts/Pro")[0..<8], as Claude Code 2.1.310 names it.
+        XCTAssertEqual(ClaudeProvider.keychainService(configDir: "/Users/x/.claude-accounts/Pro"), "Claude Code-credentials-71aaf74d")
     }
 
-    func testServedAsExtraUsageCountsAsLimited() {
-        let reading = RateLimitReading.read(status: 200, headers: [
-            "anthropic-ratelimit-unified-status": "rejected",
-            "anthropic-ratelimit-unified-overage-status": "allowed",
-            "anthropic-ratelimit-unified-representative-claim": "seven_day",
-            "anthropic-ratelimit-unified-reset": "1793100000",
-        ], now: now)
-        XCTAssertEqual(reading.verdict, .limited(until: Date(timeIntervalSince1970: 1_793_100_000), claim: "seven_day", overage: true))
+    func testFolders() {
+        let main = ClaudeAccount(id: "main"), pro = ClaudeAccount(id: "Pro")
+        XCTAssertTrue(main.appDataDir.hasSuffix("/Library/Application Support/Claude"))
+        XCTAssertNil(main.cliConfigDir)
+        XCTAssertTrue(pro.appDataDir.hasSuffix("/Library/Application Support/Claude-Pro"))
+        XCTAssertTrue(pro.cliConfigDir!.hasSuffix("/.claude-accounts/Pro"))
     }
 
-    func testHeaderless429IsNotAnAccountLimit() {
-        XCTAssertEqual(RateLimitReading.read(status: 429, headers: ["retry-after": "3"], now: now).verdict, .other)
-        XCTAssertEqual(RateLimitReading.read(status: 529, headers: [:], now: now).verdict, .other)
+    func testSlug() {
+        XCTAssertEqual(ClaudeAccount.slug("Pro"), "Pro")
+        XCTAssertEqual(ClaudeAccount.slug("  my work/acct "), "my-work-acct")
+        XCTAssertEqual(ClaudeAccount.slug("../"), "")
     }
 
-    func testNormalResponseReadsUtilisation() {
-        // The headers seen on a real response (docs/claude-accounts.md, result 2).
-        let reading = RateLimitReading.read(status: 200, headers: [
-            "anthropic-ratelimit-unified-status": "allowed_warning",
-            "anthropic-ratelimit-unified-5h-utilization": "0.09",
-            "anthropic-ratelimit-unified-7d-utilization": "0.92",
-            "anthropic-ratelimit-unified-5h-reset": "1793031600",
-            "anthropic-ratelimit-unified-7d-reset": "1793160000",
-            "anthropic-ratelimit-unified-overage-status": "rejected",
-        ], now: now)
-        XCTAssertEqual(reading.verdict, .ok)
-        XCTAssertEqual(reading.fiveHour, 0.09)
-        XCTAssertEqual(reading.sevenDay, 0.92)
-        XCTAssertEqual(reading.sevenDayReset, Date(timeIntervalSince1970: 1_793_160_000))
-    }
-
-    func testModelScopes() {
-        XCTAssertEqual(RateLimitReading.scope(of: "seven_day_opus"), "opus")
-        XCTAssertNil(RateLimitReading.scope(of: "seven_day"))
-        XCTAssertNil(RateLimitReading.scope(of: "five_hour"))
-        XCTAssertEqual(RateLimitReading.family(ofModel: "claude-opus-5-5"), "opus")
-        XCTAssertEqual(RateLimitReading.family(ofModel: "claude-haiku-5-5"), "haiku")
-        XCTAssertNil(RateLimitReading.family(ofModel: nil))
-    }
-
-    // MARK: Account state
-
-    func testScopedLimitOnlyBlocksThatModel() {
-        var state = AccountLimitState()
-        state.apply(RateLimitReading.read(status: 429, headers: [
-            "anthropic-ratelimit-unified-status": "rejected",
-            "anthropic-ratelimit-unified-representative-claim": "seven_day_opus",
-            "anthropic-ratelimit-unified-reset": "1793100000",
-        ], now: now), now: now)
-        XCTAssertFalse(state.isUsable(family: "opus", allowOverage: false, now: now))
-        XCTAssertTrue(state.isUsable(family: "haiku", allowOverage: false, now: now))
-        XCTAssertTrue(state.isUsable(family: "opus", allowOverage: false, now: Date(timeIntervalSince1970: 1_793_100_001)))
-    }
-
-    func testLimitClearsOnceServedAgain() {
-        var state = AccountLimitState()
-        state.limitedUntil = now.addingTimeInterval(3600)
-        state.limitedClaim = "five_hour"
-        XCTAssertFalse(state.isUsable(family: nil, allowOverage: false, now: now))
-        state.apply(RateLimitReading.read(status: 200, headers: ["anthropic-ratelimit-unified-status": "allowed"], now: now), now: now)
-        XCTAssertNil(state.limitedUntil)
-        XCTAssertTrue(state.isUsable(family: nil, allowOverage: false, now: now))
-    }
-
-    func testOverageOnlyUsableWhenAllowed() {
-        var state = AccountLimitState()
-        state.limitedUntil = now.addingTimeInterval(3600)
-        state.overage = true
-        XCTAssertFalse(state.isUsable(family: nil, allowOverage: false, now: now))
-        XCTAssertTrue(state.isUsable(family: nil, allowOverage: true, now: now))
-    }
-
-    // MARK: Router
-
-    private func config(_ order: [AccountRef], accounts: [String]) -> ClaudeAccountsConfig {
+    func testNormalizeKeepsOneMainAndAddsAccounts() {
         var c = ClaudeAccountsConfig()
-        c.accounts = accounts.map { ClaudeAccount(uuid: $0, email: "\($0)@x", orgUUID: nil, plan: "Pro") }
-        c.order = order
-        return c
-    }
-
-    func testRouterFollowsPriorityAndSkipsLimited() {
-        let c = config([.extra("pro"), .main], accounts: ["pro"])
-        XCTAssertEqual(Router.candidates(config: c, states: [:], model: nil, mainUUID: "max", now: now), [.extra("pro"), .main])
-        var limited = AccountLimitState()
-        limited.limitedUntil = now.addingTimeInterval(600)
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": limited], model: nil, mainUUID: "max", now: now), [.main])
-        // After the reset it is first again.
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": limited], model: nil, mainUUID: "max",
-                                         now: now.addingTimeInterval(601)), [.extra("pro"), .main])
-    }
-
-    func testRouterKeepsMainAsLastResort() {
-        let c = config([.main, .extra("pro")], accounts: ["pro"])
-        var limited = AccountLimitState()
-        limited.limitedUntil = now.addingTimeInterval(600)
-        XCTAssertEqual(Router.candidates(config: c, states: ["max": limited, "pro": limited], model: nil, mainUUID: "max", now: now),
-                       [.main])
-    }
-
-    func testConnectedMainAccountIsUsedThroughMain() {
-        let c = config([.extra("max"), .extra("pro"), .main], accounts: ["max", "pro"])
-        XCTAssertEqual(Router.candidates(config: c, states: [:], model: nil, mainUUID: "max", now: now), [.main, .extra("pro")])
-    }
-
-    func testWarmSessionStaysOnItsAccount() {
-        let c = config([.extra("pro"), .main], accounts: ["pro"])
-        let pin = SessionPin(account: "main", lastUsed: now, warmUntil: now.addingTimeInterval(3000))
-        // Pro has room again, but the session's cache is on Main: it stays.
-        XCTAssertEqual(Router.candidates(config: c, states: [:], model: nil, mainUUID: "max", pin: pin, now: now), [.main, .extra("pro")])
-        // Once the cache is cold, it goes back to the first choice for free.
-        XCTAssertEqual(Router.candidates(config: c, states: [:], model: nil, mainUUID: "max", pin: pin,
-                                         now: now.addingTimeInterval(3001)), [.extra("pro"), .main])
-    }
-
-    func testWarmSessionStillMovesAtTheLimit() {
-        let c = config([.extra("pro"), .main], accounts: ["pro"])
-        var limited = AccountLimitState()
-        limited.limitedUntil = now.addingTimeInterval(600)
-        let pin = SessionPin(account: "pro", lastUsed: now, warmUntil: now.addingTimeInterval(3000))
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": limited], model: nil, mainUUID: "max", pin: pin, now: now), [.main])
-    }
-
-    func testNewSessionsSkipAnAccountAboveTheThreshold() {
-        var c = config([.extra("pro"), .main], accounts: ["pro"])
-        var busy = AccountLimitState()
-        busy.fiveHour = 0.9
-        busy.fiveHourReset = now.addingTimeInterval(3600)
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max", now: now), [.main, .extra("pro")])
-        // A warm session already on Pro keeps using it.
-        let pin = SessionPin(account: "pro", lastUsed: now, warmUntil: now.addingTimeInterval(60))
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max", pin: pin, now: now).first, .extra("pro"))
-        // After the window resets, the old number no longer counts.
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max",
-                                         now: now.addingTimeInterval(3601)).first, .extra("pro"))
-        // With every account above it, the first with room is used; at 100% the threshold is off.
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy, "max": busy], model: nil, mainUUID: "max", now: now).first, .extra("pro"))
-        c.newSessionThreshold = 1
-        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max", now: now).first, .extra("pro"))
-    }
-
-    func testCacheLifetimeFromRequest() {
-        let main = try! JSONSerialization.jsonObject(with: Data(#"{"system":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"content":[{"type":"text","text":"y","cache_control":{"type":"ephemeral"}}]}]}"#.utf8))
-        XCTAssertEqual(Router.cacheLifetime(main), 3600)
-        let sub = try! JSONSerialization.jsonObject(with: Data(#"{"messages":[{"content":[{"cache_control":{"type":"ephemeral"}}]}]}"#.utf8))
-        XCTAssertEqual(Router.cacheLifetime(sub), 300)
-        XCTAssertEqual(Router.cacheLifetime(["messages": []]), 0)
-    }
-
-    func testRewriteAccountOnlyTouchesMetadata() {
-        let old = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", new = "11111111-2222-3333-4444-555555555555"
-        // A message quoting the same shape must stay as it is.
-        let body = #"{"messages":[{"content":"\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\""}],"metadata":{"user_id":"{\"device_id\":\"abc\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"s\"}"}}"#
-        let out = String(decoding: Router.rewriteAccount(in: Data(body.utf8), to: new), as: UTF8.self)
-        XCTAssertEqual(out.count, body.count)
-        XCTAssertEqual(out.components(separatedBy: old).count, 2)   // the message copy is untouched
-        XCTAssertTrue(out.hasSuffix(#"\"account_uuid\":\"11111111-2222-3333-4444-555555555555\",\"session_id\":\"s\"}"}}"#))
-        XCTAssertEqual(Router.rewriteAccount(in: Data(#"{"messages":[]}"#.utf8), to: new), Data(#"{"messages":[]}"#.utf8))
-    }
-
-    func testNormalizeKeepsOneMainAndAddsNewAccountsFirst() {
-        var c = config([.main, .main, .extra("gone")], accounts: ["new"])
+        c.accounts = [ClaudeAccount(id: "Pro")]
+        c.order = ["gone", "main", "main"]
         c.normalize()
-        XCTAssertEqual(c.order, [.extra("new"), .main])
+        XCTAssertEqual(c.order, ["main", "Pro"])
+        c.order = ["Pro"]
+        c.normalize()
+        XCTAssertEqual(c.order, ["main", "Pro"])
+        XCTAssertEqual(c.ordered.map(\.id), ["main", "Pro"])
     }
 
-    // MARK: settings.json
+    // MARK: Where new sessions go
 
-    private let original = """
-    {
-      "$schema": "https://json.schemastore.org/claude-code-settings.json",
-      "env": {
-        "API_TIMEOUT_MS": "3000000"
-      },
-      "permissions": {
-        "allow": ["Bash(ls:*)"]
-      },
-      "model": "opus"
+    func testRecommendation() {
+        // First in the order below the threshold.
+        XCTAssertEqual(AppModel.recommended([40, 10], threshold: 85), 0)
+        XCTAssertEqual(AppModel.recommended([88, 10], threshold: 85), 1)
+        // All above it: the least used that isn't full.
+        XCTAssertEqual(AppModel.recommended([90, 96], threshold: 85), 0)
+        XCTAssertEqual(AppModel.recommended([100, 96], threshold: 85), 1)
+        // All full, or nothing known.
+        XCTAssertNil(AppModel.recommended([100, 100], threshold: 85))
+        XCTAssertNil(AppModel.recommended([nil, nil], threshold: 85))
+        // An account without numbers is skipped, not chosen.
+        XCTAssertEqual(AppModel.recommended([nil, 30], threshold: 85), 1)
     }
 
-    """
+    // MARK: Session presets
 
-    func testSettingsAddBlankRemoveRoundTrips() throws {
-        let added = try SettingsFile.update(original, env: [(key: "HTTPS_PROXY", value: "http://127.0.0.1:47812"),
-                                                            (key: "NODE_EXTRA_CA_CERTS", value: "/a b/ca.pem")])
-        XCTAssertEqual(added, original.replacingOccurrences(of: "\"API_TIMEOUT_MS\": \"3000000\"\n", with:
-            "\"API_TIMEOUT_MS\": \"3000000\",\n    \"HTTPS_PROXY\": \"http://127.0.0.1:47812\",\n    \"NODE_EXTRA_CA_CERTS\": \"/a b/ca.pem\"\n"))
-        XCTAssertEqual(SettingsFile.env(in: added)["NODE_EXTRA_CA_CERTS"], "/a b/ca.pem")
+    private func preset(_ id: String, _ name: String) -> SessionPresets.Preset { ["id": id, "name": name] }
 
-        let blanked = try SettingsFile.update(added, env: [(key: "HTTPS_PROXY", value: ""), (key: "NODE_EXTRA_CA_CERTS", value: "")])
-        XCTAssertEqual(SettingsFile.env(in: blanked)["HTTPS_PROXY"], "")
-
-        let removed = try SettingsFile.update(blanked, env: [(key: "HTTPS_PROXY", value: nil), (key: "NODE_EXTRA_CA_CERTS", value: nil)])
-        XCTAssertEqual(removed, original)
+    func testPresetsMergeNewestFileWins() {
+        let old = SessionPresets.Source(accountID: "main", modified: Date(timeIntervalSince1970: 1),
+                                        presets: [preset("a", "A"), preset("b", "B")])
+        let new = SessionPresets.Source(accountID: "Pro", modified: Date(timeIntervalSince1970: 2),
+                                        presets: [preset("b", "B renamed"), preset("c", "C")])
+        let merged = SessionPresets.merge([old, new], deleted: [])
+        XCTAssertEqual(merged.map { $0["id"] as? String }, ["b", "c", "a"])
+        XCTAssertEqual(merged.first?["name"] as? String, "B renamed")
     }
 
-    func testSettingsCreatesAndRemovesEnv() throws {
-        let plain = "{\n  \"model\": \"opus\"\n}\n"
-        let added = try SettingsFile.update(plain, env: [(key: "HTTPS_PROXY", value: "x")])
-        XCTAssertEqual(added, "{\n  \"env\": {\n    \"HTTPS_PROXY\": \"x\"\n  },\n  \"model\": \"opus\"\n}\n")
-        XCTAssertEqual(try SettingsFile.update(added, env: [(key: "HTTPS_PROXY", value: nil)]), plain)
-        XCTAssertEqual(SettingsFile.env(in: try SettingsFile.update("", env: [(key: "A", value: "1")])), ["A": "1"])
-        XCTAssertEqual(SettingsFile.env(in: try SettingsFile.update("{}", env: [(key: "A", value: "1")])), ["A": "1"])
+    func testPresetDeletedInOneCopyIsDeletedEverywhere() {
+        let main = SessionPresets.Source(accountID: "main", modified: .now, presets: [preset("a", "A")])
+        let pro = SessionPresets.Source(accountID: "Pro", modified: .now, presets: [preset("a", "A"), preset("b", "B")])
+        // Both had a and b at the last sync; main no longer has b.
+        let deleted = SessionPresets.deletions([main, pro], known: ["main": ["a", "b"], "Pro": ["a", "b"]])
+        XCTAssertEqual(deleted, ["b"])
+        XCTAssertEqual(SessionPresets.merge([main, pro], deleted: deleted).map { $0["id"] as? String }, ["a"])
+        // Never seen before: a new preset, not a deletion.
+        XCTAssertEqual(SessionPresets.deletions([main, pro], known: [:]), [])
     }
 
-    func testSettingsReplacesNonObjectEnv() throws {
-        let out = try SettingsFile.update("{\n  \"env\": null,\n  \"model\": \"opus\"\n}\n", env: [(key: "A", value: "1")])
-        XCTAssertEqual(SettingsFile.env(in: out), ["A": "1"])
-        XCTAssertEqual(out.components(separatedBy: "\"env\"").count, 2)
+    // MARK: Processes
+
+    func testReadsOwnArguments() {
+        let args = ClaudeApps.arguments(of: getpid())
+        XCTAssertEqual(args?.count, CommandLine.arguments.count)
+        XCTAssertEqual(args?.last, CommandLine.arguments.last)
     }
-
-    func testClaudeCodeProcessPaths() {
-        XCTAssertTrue(ClientProcess.isClaudeCode(path: "/Users/x/Library/Application Support/Claude/claude-code/2.1.308/a/claude.app/Contents/MacOS/claude"))
-        XCTAssertTrue(ClientProcess.isClaudeCode(path: "/Users/x/.local/share/claude/versions/2.1.310"))
-        XCTAssertFalse(ClientProcess.isClaudeCode(path: "/usr/bin/curl"))
-        XCTAssertFalse(ClientProcess.isClaudeCode(path: "/opt/homebrew/bin/node"))
-    }
-
-    func testDechunk() {
-        XCTAssertEqual(Upstream.dechunk(Data("4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n".utf8)), Data("Wikipedia".utf8))
-    }
-
-    func testSettingsRefusesNonJSON() {
-        XCTAssertThrowsError(try SettingsFile.update("{ // comment\n}", env: [(key: "A", value: "1")]))
-    }
-
-    // MARK: HTTP framing
-
-    func testChunkedScannerStopsAtEndOfBody() {
-        var scanner = ChunkedScanner()
-        let body = Data("4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n".utf8)
-        let next = Data("HTTP/1.1 200 OK\r\n".utf8)
-        XCTAssertEqual(scanner.feed(body.prefix(7)), 7)
-        XCTAssertFalse(scanner.isDone)
-        XCTAssertEqual(scanner.feed(Data(body.dropFirst(7)) + next), body.count - 7)
-        XCTAssertTrue(scanner.isDone)
-    }
-
-    func testHeadParsesAndEdits() {
-        var head = HTTPHead.parse(Data("POST /v1/messages?beta=true HTTP/1.1\r\nHost: api.anthropic.com\r\nAuthorization: Bearer a\r\nContent-Length: 2".utf8))!
-        XCTAssertEqual(head.path, "/v1/messages")
-        XCTAssertEqual(head.contentLength, 2)
-        head.set("authorization", "Bearer b")
-        XCTAssertEqual(head.value("Authorization"), "Bearer b")
-        XCTAssertEqual(head.headers.count, 3)
-        XCTAssertEqual(RelayServer.split("api.anthropic.com:443").0, "api.anthropic.com")
-        XCTAssertEqual(RelayServer.split("[::1]:8443").1, 8443)
-    }
-
-    // MARK: OAuth
-
-    func testRefreshKeepsOldRefreshTokenWhenNotRotated() {
-        let login = ClaudeOAuth.login(from: ["access_token": "new", "expires_in": 3600], previousRefresh: "old", now: now)
-        XCTAssertEqual(login?.refreshToken, "old")
-        XCTAssertEqual(login?.expiresAt, now.addingTimeInterval(3600))
-        XCTAssertEqual(ClaudeOAuth.login(from: ["access_token": "a", "refresh_token": "rotated"], previousRefresh: "old")?.refreshToken, "rotated")
-    }
-
-    func testProfileParsing() {
-        let profile = ClaudeOAuth.profile(from: [
-            "account": ["uuid": "u1", "email": "me@x"],
-            "organization": ["uuid": "o1", "organization_type": "claude_max", "rate_limit_tier": "default_claude_max_20x"],
-        ])
-        XCTAssertEqual(profile?.uuid, "u1")
-        XCTAssertEqual(profile?.plan, "Max 20x")
-    }
-
-    // MARK: Failover, end to end on loopback
-
-    func testLimitedAccountFailsOverToMainWithinOneRequest() async throws {
-        let server = try await FakeAnthropic.start()
-        var deps = RelayEngine.Dependencies()
-        var c = config([.extra("pro"), .main], accounts: ["pro"])
-        c.routing = true
-        deps.fixedConfig = c
-        deps.persist = false
-        deps.token = { _, _ in "pro-token" }
-        deps.profile = { _ in ClaudeOAuth.Profile(uuid: "max", email: "max@x", orgUUID: nil, plan: "Max 20x") }
-        deps.upstream = { Upstream(host: "127.0.0.1", port: server.port, tls: false) }
-        let engine = RelayEngine(deps)
-        let front = try await Front.start(engine: engine)
-
-        func send() async throws -> (Int, String) {
-            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(front.port)/v1/messages?beta=true")!)
-            request.httpMethod = "POST"
-            request.setValue("Bearer max-token", forHTTPHeaderField: "Authorization")
-            request.httpBody = Data(#"{"model":"claude-haiku-5-5","messages":[]}"#.utf8)
-            let (data, response) = try await HTTP.session.data(for: request)
-            return ((response as! HTTPURLResponse).statusCode, String(decoding: data, as: UTF8.self))
-        }
-
-        let (status, body) = try await send()
-        XCTAssertEqual(status, 200)
-        XCTAssertEqual(body, "served by max-token")
-        XCTAssertEqual(server.seen, ["pro-token", "max-token"])   // tried Pro, then Main, in one request
-        let state = engine.snapshot
-        XCTAssertEqual(state.inUse, "main")
-        XCTAssertNotNil(state.accounts["pro"]?.limitedUntil)
-        XCTAssertEqual(state.accounts["max"]?.sevenDay, 0.5)
-
-        // The next request skips Pro until its reset.
-        _ = try await send()
-        XCTAssertEqual(server.seen, ["pro-token", "max-token", "max-token"])
-        front.stop()
-        server.stop()
-    }
-
-    /// A session stays on its account while new sessions go elsewhere once that account is busy, and
-    /// requests sent with another account's token name that account in their metadata.
-    func testSessionsArePinnedAndNewOnesSkipABusyAccount() async throws {
-        let pro = "11111111-2222-3333-4444-555555555555", max = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-        let server = try await FakeAnthropic.start(limitedToken: "none", busyToken: "pro-token")
-        var deps = RelayEngine.Dependencies()
-        var c = config([.extra(pro), .main], accounts: [pro])
-        c.routing = true
-        deps.fixedConfig = c
-        deps.persist = false
-        deps.token = { _, _ in "pro-token" }
-        deps.profile = { _ in ClaudeOAuth.Profile(uuid: max, email: nil, orgUUID: nil, plan: nil) }
-        deps.upstream = { Upstream(host: "127.0.0.1", port: server.port, tls: false) }
-        let engine = RelayEngine(deps)
-        let front = try await Front.start(engine: engine)
-
-        func send(session: String) async throws {
-            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(front.port)/v1/messages")!)
-            request.httpMethod = "POST"
-            request.setValue("Bearer max-token", forHTTPHeaderField: "Authorization")
-            request.setValue(session, forHTTPHeaderField: "x-claude-code-session-id")
-            let user = #"{\"device_id\":\"d\",\"account_uuid\":\"\#(max)\",\"session_id\":\"\#(session)\"}"#
-            request.httpBody = Data(#"{"model":"claude-opus-5-5","system":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}],"metadata":{"user_id":"\#(user)"}}"#.utf8)
-            _ = try await HTTP.session.data(for: request)
-        }
-
-        try await send(session: "s1")   // Pro: answers that it is at 90% of its Session window
-        try await send(session: "s2")   // new session: Pro is over 85%, so Main
-        try await send(session: "s1")   // s1's cache is warm on Pro: stays
-        XCTAssertEqual(server.seen, ["pro-token", "max-token", "pro-token"])
-        XCTAssertEqual(server.bodyAccounts, [pro, max, pro])
-        let state = engine.snapshot
-        XCTAssertEqual(state.pins["s1"]?.account, pro)
-        XCTAssertEqual(state.pins["s2"]?.account, "main")
-        XCTAssertEqual(state.inUse, "main")
-        XCTAssertEqual(state.events.last?.reason, "Over 85%")
-        XCTAssertEqual(state.activeSessions(), [pro: 1, "main": 1])
-        front.stop()
-        server.stop()
-    }
-
-    /// Main is out and the only account left can't sign in: Claude Code gets Main's own "limit
-    /// reached" (with its reset time), not the other account's 401.
-    func testOutOfOptionsPassesOnTheLimitNotA401() async throws {
-        let server = try await FakeAnthropic.start(limitedToken: "max-token", unauthorizedToken: "pro-token")
-        var deps = RelayEngine.Dependencies()
-        var c = config([.main, .extra("pro")], accounts: ["pro"])
-        c.routing = true
-        deps.fixedConfig = c
-        deps.persist = false
-        deps.token = { _, _ in "pro-token" }
-        deps.profile = { _ in ClaudeOAuth.Profile(uuid: "max", email: nil, orgUUID: nil, plan: nil) }
-        deps.upstream = { Upstream(host: "127.0.0.1", port: server.port, tls: false) }
-        let engine = RelayEngine(deps)
-        let front = try await Front.start(engine: engine)
-
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(front.port)/v1/messages")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer max-token", forHTTPHeaderField: "Authorization")
-        request.setValue("100-continue", forHTTPHeaderField: "Expect")
-        request.httpBody = Data(#"{"model":"claude-opus-5-5"}"#.utf8)
-        let (data, response) = try await HTTP.session.data(for: request)
-        XCTAssertEqual((response as! HTTPURLResponse).statusCode, 429)
-        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("rate_limit_error"))
-        // Main once, Pro twice (once more after a refresh), and nothing sent twice otherwise.
-        XCTAssertEqual(server.seen, ["max-token", "pro-token", "pro-token"])
-        XCTAssertEqual(server.expects, 0)
-        XCTAssertTrue(engine.snapshot.accounts["pro"]?.signInNeeded == true)
-        front.stop()
-        server.stop()
-    }
-}
-
-/// Answers `/v1/messages` like Anthropic: 429 "limit reached" for `pro-token`, 200 for anything else.
-private final class FakeAnthropic: @unchecked Sendable {
-    let listener: NWListener
-    var port: UInt16 { listener.port!.rawValue }
-    private let lock = NSLock()
-    private var _seen: [String] = []
-    private var _expects = 0
-    private var _bodyAccounts: [String] = []
-    var seen: [String] { lock.withLock { _seen } }
-    var expects: Int { lock.withLock { _expects } }
-    /// `account_uuid` from each request's `metadata.user_id`.
-    var bodyAccounts: [String] { lock.withLock { _bodyAccounts } }
-    let limitedToken: String
-    let unauthorizedToken: String?
-    /// Answers normally, but says the account is at 90% of its Session window.
-    let busyToken: String?
-
-    private init(_ listener: NWListener, limitedToken: String, unauthorizedToken: String?, busyToken: String?) {
-        self.listener = listener
-        self.limitedToken = limitedToken
-        self.unauthorizedToken = unauthorizedToken
-        self.busyToken = busyToken
-    }
-
-    static func start(limitedToken: String = "pro-token", unauthorizedToken: String? = nil,
-                      busyToken: String? = nil) async throws -> FakeAnthropic {
-        let params = NWParameters.tcp
-        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        let server = FakeAnthropic(try NWListener(using: params), limitedToken: limitedToken,
-                                   unauthorizedToken: unauthorizedToken, busyToken: busyToken)
-        server.listener.newConnectionHandler = { connection in
-            connection.start(queue: .global())
-            Task { await server.serve(ByteStream(connection)) }
-        }
-        try await server.ready()
-        return server
-    }
-
-    private func ready() async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            let once = Once()
-            listener.stateUpdateHandler = { state in
-                if case .ready = state, once.claim() { cont.resume() }
-                if case .failed(let e) = state, once.claim() { cont.resume(throwing: e) }
-            }
-            listener.start(queue: .global())
-        }
-    }
-
-    private func serve(_ stream: ByteStream) async {
-        while let head = try? await stream.readHead(), let body = try? await stream.readBody(of: head) {
-            let token = head.value("authorization")?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
-            let user = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?.dict("metadata")?.string("user_id")
-            let account = user.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?.string("account_uuid")
-            lock.withLock {
-                _seen.append(token)
-                if head.value("expect") != nil { _expects += 1 }
-                if let account { _bodyAccounts.append(account) }
-            }
-            let response: String
-            if token == unauthorizedToken {
-                response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"
-            } else if token == limitedToken {
-                let body = #"{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}"#
-                response = "HTTP/1.1 429 Too Many Requests\r\nanthropic-ratelimit-unified-status: rejected\r\n"
-                    + "anthropic-ratelimit-unified-representative-claim: five_hour\r\n"
-                    + "anthropic-ratelimit-unified-reset: \(Int(Date().timeIntervalSince1970) + 3600)\r\n"
-                    + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)"
-            } else {
-                let body = "served by \(token)"
-                let fiveHour = token == busyToken ? "anthropic-ratelimit-unified-5h-utilization: 0.9\r\n"
-                    + "anthropic-ratelimit-unified-5h-reset: \(Int(Date().timeIntervalSince1970) + 3600)\r\n" : ""
-                response = "HTTP/1.1 200 OK\r\nanthropic-ratelimit-unified-status: allowed\r\n" + fiveHour
-                    + "anthropic-ratelimit-unified-7d-utilization: 0.5\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)"
-            }
-            try? await stream.send(Data(response.utf8))
-        }
-        stream.close()
-    }
-
-    func stop() { listener.cancel() }
-}
-
-/// Plain-HTTP front door that hands each connection to the engine, as the TLS listener does.
-private final class Front: @unchecked Sendable {
-    let listener: NWListener
-    var port: UInt16 { listener.port!.rawValue }
-
-    private init(_ listener: NWListener) { self.listener = listener }
-
-    static func start(engine: RelayEngine) async throws -> Front {
-        let params = NWParameters.tcp
-        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        let front = Front(try NWListener(using: params))
-        front.listener.newConnectionHandler = { connection in
-            connection.start(queue: .global())
-            Task { await engine.serve(ByteStream(connection), from: ClientProcess(pid: 0, path: "claude", startedAt: Date())) }
-        }
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            let once = Once()
-            front.listener.stateUpdateHandler = { state in
-                if case .ready = state, once.claim() { cont.resume() }
-                if case .failed(let e) = state, once.claim() { cont.resume(throwing: e) }
-            }
-            front.listener.start(queue: .global())
-        }
-        return front
-    }
-
-    func stop() { listener.cancel() }
 }

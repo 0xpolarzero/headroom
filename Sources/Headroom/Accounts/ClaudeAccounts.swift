@@ -1,16 +1,13 @@
 import Foundation
 
-/// Where Headroom keeps its own files: the account list, the relay's state, its CA and its log.
+/// Where Headroom keeps its own files.
 enum HeadroomPaths {
     static let support: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("Headroom", isDirectory: true)
     }()
     static let accounts = support.appendingPathComponent("claude-accounts.json")
-    static let relayState = support.appendingPathComponent("relay-state.json")
-    static let relayDir = support.appendingPathComponent("relay", isDirectory: true)
-    static let tokenLock = support.appendingPathComponent("claude-tokens.lock")
-    static let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Headroom", isDirectory: true)
+    static let presetSync = support.appendingPathComponent("preset-sync.json")
 
     /// Creates `dir` readable by the user only.
     static func ensure(_ dir: URL) {
@@ -19,107 +16,77 @@ enum HeadroomPaths {
     }
 }
 
-/// One entry of the priority list: the account Claude Code is signed in to, or one Headroom signed in.
-enum AccountRef: Hashable, Codable, Sendable, CustomStringConvertible {
-    /// Whatever account the request's own token belongs to (the Claude app's or the terminal's sign-in).
-    case main
-    case extra(String)   // account UUID
-
-    var key: String {
-        switch self {
-        case .main: "main"
-        case .extra(let uuid): uuid
-        }
-    }
-
-    init(key: String) { self = key == "main" ? .main : .extra(key) }
-
-    var description: String { key }
-
-    init(from decoder: Decoder) throws { self.init(key: try decoder.singleValueContainer().decode(String.self)) }
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
-        try c.encode(key)
-    }
-}
-
-/// An account Headroom signed in itself. Its tokens are in the keychain, never in this file.
+/// One Claude account: its own copy of the Claude app (a data folder of its own, so its own sign-in and
+/// session list) and its own terminal sign-in (a Claude Code config folder), which is what Headroom reads
+/// usage from. Main is the default pair: the Claude app as installed, and `~/.claude`.
 struct ClaudeAccount: Codable, Hashable, Sendable, Identifiable {
-    var uuid: String
-    var email: String?
-    var orgUUID: String?
-    var plan: String?
-    /// Keep using it past its limit when Anthropic would bill extra usage.
-    var allowOverage = false
+    static let mainID = "main"
+
+    /// "main", or a short name also used in folder names ("Pro").
+    var id: String
     var addedAt = Date()
 
-    var id: String { uuid }
+    var isMain: Bool { id == Self.mainID }
 
-    init(uuid: String, email: String?, orgUUID: String?, plan: String?) {
-        self.uuid = uuid
-        self.email = email
-        self.orgUUID = orgUUID
-        self.plan = plan
+    /// The Claude app's data folder for this account.
+    var appDataDir: String {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].path
+        return isMain ? support + "/Claude" : support + "/Claude-\(id)"
     }
 
-    // Missing keys take their defaults, so fields can be added without losing saved accounts.
+    /// `CLAUDE_CONFIG_DIR` for this account's terminal sign-in; nil for Main (the default `~/.claude`).
+    var cliConfigDir: String? { isMain ? nil : NSHomeDirectory() + "/.claude-accounts/\(id)" }
+
+    init(id: String) { self.id = id }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        uuid = try c.decode(String.self, forKey: .uuid)
-        email = try c.decodeIfPresent(String.self, forKey: .email)
-        orgUUID = try c.decodeIfPresent(String.self, forKey: .orgUUID)
-        plan = try c.decodeIfPresent(String.self, forKey: .plan)
-        allowOverage = try c.decodeIfPresent(Bool.self, forKey: .allowOverage) ?? false
+        id = try c.decode(String.self, forKey: .id)
         addedAt = try c.decodeIfPresent(Date.self, forKey: .addedAt) ?? Date()
+    }
+
+    /// "Pro" → "Pro"; "my work" → "my-work". Letters, digits, "-" and "_" only.
+    static func slug(_ name: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let parts = name.trimmingCharacters(in: .whitespaces).components(separatedBy: allowed.inverted)
+        return parts.filter { !$0.isEmpty }.joined(separator: "-")
     }
 }
 
-/// The account list and routing switch, shared by the app (writes) and the relay (reads).
+/// The account list and its order, in Headroom's support folder.
 struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
+    /// Accounts besides Main.
     var accounts: [ClaudeAccount] = []
-    /// Priority order; always contains `.main` exactly once.
-    var order: [AccountRef] = [.main]
-    /// Keep using Main past its limit when Anthropic would bill extra usage.
-    var mainAllowOverage = false
-    /// New sessions skip an account once its Session or Weekly use reaches this (0...1); 1 = never.
+    /// Priority order of account IDs; always contains "main" exactly once.
+    var order: [String] = [ClaudeAccount.mainID]
+    /// New sessions go to the first account below this share (0...1) of its Session and Weekly limits.
     var newSessionThreshold = ClaudeAccountsConfig.defaultThreshold
     static let defaultThreshold = 0.85
-    /// Claude Code is pointed at the relay (the keys are in `~/.claude/settings.json`).
-    var routing = false
-    /// When those keys were last written. Only processes started after this trust the relay's CA.
-    var routingSince: Date?
-    /// The `env` keys Headroom added to `settings.json`, so turning off touches only those.
-    var wroteKeys: [String] = []
-    /// After turning off, the keys stay as "" until then (so running sessions drop them), then go.
-    var cleanupAfter: Date?
 
     init() {}
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         accounts = try c.decodeIfPresent([ClaudeAccount].self, forKey: .accounts) ?? []
-        order = try c.decodeIfPresent([AccountRef].self, forKey: .order) ?? [.main]
-        mainAllowOverage = try c.decodeIfPresent(Bool.self, forKey: .mainAllowOverage) ?? false
+        order = try c.decodeIfPresent([String].self, forKey: .order) ?? [ClaudeAccount.mainID]
         newSessionThreshold = try c.decodeIfPresent(Double.self, forKey: .newSessionThreshold) ?? Self.defaultThreshold
-        routing = try c.decodeIfPresent(Bool.self, forKey: .routing) ?? false
-        routingSince = try c.decodeIfPresent(Date.self, forKey: .routingSince)
-        wroteKeys = try c.decodeIfPresent([String].self, forKey: .wroteKeys) ?? []
-        cleanupAfter = try c.decodeIfPresent(Date.self, forKey: .cleanupAfter)
     }
 
-    func account(_ uuid: String) -> ClaudeAccount? { accounts.first { $0.uuid == uuid } }
+    /// Every account, Main included, in priority order.
+    var ordered: [ClaudeAccount] {
+        order.compactMap { id in id == ClaudeAccount.mainID ? ClaudeAccount(id: id) : accounts.first { $0.id == id } }
+    }
 
-    /// Keeps `order` consistent with `accounts`: drops unknown entries, appends missing ones, one `.main`.
+    /// Keeps `order` consistent with `accounts`: drops unknown IDs, appends missing ones, one "main".
     mutating func normalize() {
-        var seen = Set<AccountRef>()
-        order = order.filter { ref in
-            guard !seen.contains(ref) else { return false }
-            if case .extra(let uuid) = ref, account(uuid) == nil { return false }
-            seen.insert(ref)
+        var seen = Set<String>()
+        order = order.filter { id in
+            guard !seen.contains(id), id == ClaudeAccount.mainID || accounts.contains(where: { $0.id == id }) else { return false }
+            seen.insert(id)
             return true
         }
-        if !seen.contains(.main) { order.append(.main) }
-        for a in accounts where !seen.contains(.extra(a.uuid)) { order.insert(.extra(a.uuid), at: 0) }
+        if !seen.contains(ClaudeAccount.mainID) { order.insert(ClaudeAccount.mainID, at: 0) }
+        for a in accounts where !seen.contains(a.id) { order.append(a.id) }
     }
 
     static func load() -> ClaudeAccountsConfig {
@@ -131,8 +98,7 @@ struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
 
     func save() throws {
         HeadroomPaths.ensure(HeadroomPaths.support)
-        let data = try JSONEncoder.headroom.encode(self)
-        try data.write(to: HeadroomPaths.accounts, options: .atomic)
+        try JSONEncoder.headroom.encode(self).write(to: HeadroomPaths.accounts, options: .atomic)
     }
 }
 

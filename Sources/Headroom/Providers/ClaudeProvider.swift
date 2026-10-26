@@ -1,15 +1,18 @@
+import CryptoKit
 import Foundation
 
 /// Claude (Pro/Max subscription) limits, read with the OAuth login Claude Code keeps in the keychain.
 struct ClaudeProvider: UsageProvider {
     var id: ProviderID { .claude }
+    /// The Claude Code config folder whose sign-in to read (`CLAUDE_CONFIG_DIR`); nil for the default.
+    var configDir: String?
 
     private static let usageURL = "https://api.anthropic.com/api/oauth/usage"
 
     struct Credentials { var accessToken: String; var expiresAt: Date?; var plan: String? }
 
     func fetch() async throws -> UsageSnapshot {
-        guard let raw = Self.storedCredentials() else {
+        guard let raw = Self.storedCredentials(configDir: configDir) else {
             throw ProviderError.notConfigured("Run `claude` to sign in.")
         }
         guard let creds = Self.credentials(from: raw) else {
@@ -25,7 +28,7 @@ struct ClaudeProvider: UsageProvider {
                              windows: try await Self.usageWindows(accessToken: creds.accessToken, expired: expired))
     }
 
-    /// Usage of the account `accessToken` belongs to; also used for the accounts Headroom signed in.
+    /// Usage of the account `accessToken` belongs to.
     static func usageWindows(accessToken: String, expired: String) async throws -> [UsageWindow] {
         let headers = ["Authorization": "Bearer \(accessToken)", "Accept": "application/json",
                        "anthropic-beta": "oauth-2025-04-20", "User-Agent": "Headroom"]
@@ -35,16 +38,6 @@ struct ClaudeProvider: UsageProvider {
         guard (200..<300).contains(http.statusCode) else { throw ProviderError.http(http.statusCode) }
         guard let root = body as? [String: Any] else { throw ProviderError.invalidResponse }
         return windows(from: root)
-    }
-
-    /// The account the Claude app and the terminal `claude` are signed in to, as far as their files say.
-    static func signedInAccounts() -> (appUUID: String?, cliUUID: String?, cliEmail: String?) {
-        let home = NSHomeDirectory()
-        let app = (try? Data(contentsOf: URL(fileURLWithPath: home + "/Library/Application Support/Claude/config.json")))
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-        let cli = (try? Data(contentsOf: URL(fileURLWithPath: home + "/.claude.json")))
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?.dict("oauthAccount")
-        return (app?.string("lastKnownAccountUuid"), cli?.string("accountUuid"), cli?.string("emailAddress"))
     }
 
     // MARK: Mapping (pure)
@@ -97,11 +90,28 @@ struct ClaudeProvider: UsageProvider {
 
     // MARK: Credential loading
 
-    private static func storedCredentials() -> String? {
-        if let raw = Keychain.read(service: "Claude Code-credentials") { return raw }
-        let dir = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { ($0 as NSString).expandingTildeInPath }
+    private static func storedCredentials(configDir: String?) -> String? {
+        if let raw = Keychain.read(service: keychainService(configDir: configDir)) { return raw }
+        let dir = configDir ?? ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { ($0 as NSString).expandingTildeInPath }
             ?? NSHomeDirectory() + "/.claude"
         guard let data = FileManager.default.contents(atPath: dir + "/.credentials.json") else { return nil }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Claude Code's keychain item for a config folder: `Claude Code-credentials`, plus the first 8 hex
+    /// digits of the SHA-256 of the folder path when `CLAUDE_CONFIG_DIR` is set (Claude Code 2.1.310).
+    static func keychainService(configDir: String?) -> String {
+        guard let configDir else { return "Claude Code-credentials" }
+        let digest = SHA256.hash(data: Data(configDir.precomposedStringWithCanonicalMapping.utf8))
+        return "Claude Code-credentials-" + digest.map { String(format: "%02x", $0) }.joined().prefix(8)
+    }
+
+    /// The account a Claude Code config folder is signed in to: `oauthAccount` in its `.claude.json`
+    /// (`~/.claude.json` for the default folder).
+    static func signedInAccount(configDir: String?) -> (uuid: String?, email: String?) {
+        let path = configDir.map { $0 + "/.claude.json" } ?? NSHomeDirectory() + "/.claude.json"
+        let account = (try? Data(contentsOf: URL(fileURLWithPath: path)))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?.dict("oauthAccount")
+        return (account?.string("accountUuid"), account?.string("emailAddress"))
     }
 }

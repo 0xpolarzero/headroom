@@ -25,7 +25,7 @@ open dist/Headroom.app
 
 For development, `swift run Headroom` starts the app without a bundle (launch at login and notifications
 are then unavailable). `swift run Headroom --print` fetches every provider once and prints the result.
-`swift test` runs the mapping, routing and relay tests.
+`swift test` runs the mapping and account tests.
 
 ## Providers
 
@@ -37,70 +37,46 @@ are then unavailable). `swift run Headroom --print` fetches every provider once 
 | Z.ai | **Sign in** in Settings opens a z.ai window; the web session is kept in Headroom's keychain item. Falls back to `~/.config/zai/key.json` or `ZAI_API_KEY` / `GLM_API_KEY`. |
 | OpenRouter | API key saved in Settings, or `OPENROUTER_API_KEY`. A management key also lists usage for every key. |
 
-Headroom only reads usage. It never changes another app's state, with two exceptions. When the Codex
+Headroom only reads usage. It never changes another app's state, with one exception: when the Codex
 access token is about to expire or is rejected, Headroom refreshes it as the Codex CLI does and writes the new
 tokens back into `auth.json`, changing only the token fields and `last_refresh`. A keychain-based Codex login
-is never refreshed. And while **Switch Claude Code between accounts** is on, Headroom adds three keys to
-`~/.claude/settings.json` (below). Headroom's own logins (Antigravity, Z.ai, OpenRouter, extra Claude
-accounts) live in keychain items under the service `Headroom`.
+is never refreshed. Headroom's own logins (Antigravity, Z.ai, OpenRouter) live in keychain items under the
+service `Headroom`.
 
 ## Several Claude accounts
 
-Connect more Claude accounts and put them in an order, for example a $20 Pro first and Max second. With
-**Switch Claude Code between accounts** on, new Claude Code sessions start on the first account that has room
-left, and the list is used again once the first one resets. Nothing in the Claude app changes: its sign-in,
-sessions and settings stay as they are.
+Each Claude account gets its own copy of the Claude app, signed in to that account, so its Code-tab sessions
+run entirely as that account. Nothing is relayed or rewritten: each copy is the official app with a normal
+sign-in. Headroom opens the copies, shows every account's limits and says which one to use for new sessions.
 
-- **Sessions stay put while their cache is warm.** Moving a running session to another account would make
-  that account read the whole conversation again at full price, since the prompt cache belongs to the account.
-  So a session keeps its account until that account runs out (the one case where it has to move) or until it
-  has been idle longer than its cache lasts (1 hour for Claude Code's main loop). Then it is placed again for
-  free, which is how it gets back to the first account after a reset. Subagents share their session's
-  account.
-- **New sessions skip a busy account.** Once an account reaches 85% of its Session or Weekly limit (75%, 95%
-  or "its limit" in Settings), new sessions start on the next one. The rest is kept for the sessions already
-  running there, so they're less likely to be moved.
-
-- **Main** is the account the Claude app (and the terminal `claude`) is signed in to. It is always in the list,
-  needs no extra sign-in, and requests for it go out with Claude Code's own token.
-- **Add account** signs another account in through the system's sign-in sheet in private mode, so it can't
-  pick up the account your browser is signed in to. An email address, if given, is filled in for you. The login
-  is kept in the keychain and refreshed by Headroom.
-- **How the switch happens.** The toggle sets `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` and `NO_PROXY` in
-  `~/.claude/settings.json` and starts a relay on `127.0.0.1:47812` (a LaunchAgent,
-  `dev.polarzero.headroom.relay`, logs in `~/Library/Logs/Headroom/relay.log`). Every connection is tunnelled
-  untouched, except Claude Code's own connections to `api.anthropic.com`: the relay decrypts them with a local
-  CA that only Claude Code trusts, through `NODE_EXTRA_CA_CERTS`, and that only covers `api.anthropic.com`. It
-  never goes into the system keychain. Each `/v1/messages` request gets the token of the account that should
-  take it, and the account ID in its metadata is changed to match. A "limit reached" answer is retried on the
-  next account, so Claude Code sees a normal reply. Everything else (settings, plugins, Remote Control) stays
-  on the Claude app's account.
-- **Which sessions take part.** Claude Code sessions started after the toggle. Sessions already running pick up
-  the proxy too, but they don't trust the CA, so they only get the tunnel and keep their own account.
-- **Extra usage.** An account that would be billed extra usage past its limit counts as out, unless you allow it
-  in its menu in Settings.
-- **The panel** lists the accounts in order, with a dot on the one new sessions start on, how many sessions
-  each one has, when a used-up one comes back, and the last switch. The menu bar shows the account new
-  sessions use, marked with its plan ("Pro", "Max") or its place in the order when plans repeat, and "Out"
-  when every account is out. A notification says when new sessions change account and when a running session had to move.
-- **Turning it off** blanks the keys (running sessions drop the proxy within seconds), removes them a minute
-  later, and the relay stops by itself after 30 idle minutes. `Headroom --routing on|off` does the same from a
-  terminal.
-- While it is on, the relay has to keep running: without it, Claude Code and the tools it starts can't reach
-  the network. launchd restarts it if it crashes.
-
-Anthropic's terms allow several accounts but forbid "bypassing any of our systems or protective measures".
-Switching automatically to get past usage limits can be read that way, so the switch is off until you turn it
-on. Headroom also signs accounts in with Claude Code's own OAuth client. Details and the research behind this
-are in [docs/claude-accounts.md](docs/claude-accounts.md).
+- **Add account** (Settings → Claude accounts) with a short name, for example "Pro". Headroom opens a new
+  Claude window with its own data folder (`~/Library/Application Support/Claude-Pro`, through the app's
+  `--user-data-dir`). To sign it in, quit your main Claude app first: the sign-in link goes to whichever copy is
+  open. Sign in in the new window, then reopen your main app with its **Open** button in Headroom.
+- **Sign in in Terminal** once per account. Headroom opens Terminal on `claude` with the account's own config
+  folder (`~/.claude-accounts/Pro`); Claude Code signs in and keeps that login itself. Headroom reads its usage
+  from it, the same way it reads your main account from `~/.claude`. If that sign-in isn't used for a long
+  time it expires; run `claude` there again.
+- **Open / Show** brings an account's window forward or starts it. Use these rather than the Dock icon: macOS
+  sees every copy as the same app, so the Dock only reaches whichever copy is already running.
+- **What is shared:** everything Claude Code reads from `~/.claude` (settings, hooks, skills, agents,
+  plugins, CLAUDE.md, MCP servers, memory), because every copy runs Claude Code on it. The terminal folders
+  link the same items. Session presets are kept the same in every copy (written to copies that aren't
+  running, so a change shows up in the others once they have been closed and reopened).
+- **What is separate:** each copy's list of sessions, and what Anthropic keeps per account (chats,
+  Customize, connectors, Remote Control).
+- **Which account for new sessions:** the first in your order below 85% of its Session or Weekly limit (75%,
+  95% or "its limit" in Settings). The menu bar shows each account's name and what is left, with a filled
+  name tag on that account. A notification says when it changes. A running session stays where it is.
+- Running two paid subscriptions side by side is your call; nothing here moves a session between accounts.
 
 ## Behaviour
 
 - Refreshes every 5 minutes, when the panel opens and on ⌘R. After a failure it retries after 60 s and keeps
   showing the last good data with a warning icon (hover it for the error).
 - A provider shows **Outdated** after 10 minutes without a successful refresh.
-- Settings (gear icon): enable, disable and reorder providers, what the menu bar shows, Claude accounts and
-  switching, other accounts (Antigravity, Z.ai, OpenRouter), launch at login, and notifications.
+- Settings (gear icon): enable, disable and reorder providers, what the menu bar shows, Claude accounts,
+  other accounts (Antigravity, Z.ai, OpenRouter), launch at login, and notifications.
 - Notifications: one alert when a Session or Weekly window reaches 100%, once per reset.
 
 ## License

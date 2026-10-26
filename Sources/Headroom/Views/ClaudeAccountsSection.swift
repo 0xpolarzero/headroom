@@ -1,19 +1,29 @@
 import SwiftUI
 
-/// The Claude card when several accounts are connected or routing is on: one block per account in
-/// priority order, the one Claude Code is using marked, and the latest switch.
+/// The Claude card with several accounts: one block per account in priority order, with a button to
+/// open its Claude window and a mark on the one new sessions should use.
 struct ClaudeAccountsSection: View {
     @Bindable var model: AppModel
     let now: Date
 
     var body: some View {
+        let rows = model.claudeRows
         VStack(alignment: .leading, spacing: 10) {
-            header
-            ForEach(model.claudeRows) { row in
-                AccountBlock(row: row, now: now)
+            HStack(spacing: 6) {
+                Image(nsImage: Logos.image(.claude))
+                    .renderingMode(.template)
+                    .resizable()
+                    .frame(width: 16, height: 16)
+                    .foregroundStyle(LinearGradient(colors: ProviderID.claude.brandColors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                Text("Claude").font(.headline)
+                Spacer()
             }
-            if let note = activity {
-                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ForEach(rows) { row in
+                AccountBlock(row: row, now: now, open: { model.openClaudeWindow(row.id) },
+                             signIn: { model.signInTerminal(row.id) })
+            }
+            if !rows.contains(where: \.isRecommended), rows.contains(where: { $0.used != nil }) {
+                Text("Every account is at its limit.").font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 12)
@@ -22,59 +32,29 @@ struct ClaudeAccountsSection: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .strokeBorder(ProviderID.claude.brandColors[0].opacity(0.25), lineWidth: 0.5))
     }
-
-    private var header: some View {
-        HStack(spacing: 6) {
-            Image(nsImage: Logos.image(.claude))
-                .renderingMode(.template)
-                .resizable()
-                .frame(width: 16, height: 16)
-                .foregroundStyle(LinearGradient(colors: ProviderID.claude.brandColors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            Text("Claude").font(.headline)
-            Spacer()
-            if model.claudeConfig.routing {
-                if model.relayHealthy {
-                    Text("Auto-switch").font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 6).padding(.vertical, 1)
-                        .background(.quaternary, in: Capsule())
-                } else {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        .help("The relay is not running, so Claude Code can't connect. Headroom is restarting it.")
-                }
-            }
-        }
-    }
-
-    /// "13:02 Switched to Max: session limit on Pro" and when the first account comes back.
-    private var activity: String? {
-        guard model.claudeConfig.routing else { return nil }
-        var parts: [String] = []
-        if let event = model.relayState?.events.last(where: { $0.from != nil }), now.timeIntervalSince(event.at) < 12 * 3600 {
-            parts.append("\(Format.clock(event.at, now: now)) " + AppModel.describe(event, name: model.name(forKey:)))
-        }
-        if let back = model.claudeReturnNote { parts.append(back + ".") }
-        return parts.isEmpty ? nil : parts.joined(separator: " ")
-    }
 }
 
 private struct AccountBlock: View {
     let row: ClaudeAccountRow
     let now: Date
+    let open: () -> Void
+    let signIn: () -> Void
     @AppStorage private var showMore: Bool
 
-    init(row: ClaudeAccountRow, now: Date) {
+    init(row: ClaudeAccountRow, now: Date, open: @escaping () -> Void, signIn: @escaping () -> Void) {
         self.row = row
         self.now = now
-        _showMore = AppStorage(wrappedValue: false, "showMore.claude.\(row.ref.key)")
+        self.open = open
+        self.signIn = signIn
+        _showMore = AppStorage(wrappedValue: false, "showMore.claude.\(row.id)")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Circle().fill(row.inUse ? Color.green : Color.clear).frame(width: 6, height: 6)
-                    .help(row.inUse ? "New Claude Code sessions start on this account" : "")
-                Text(row.name).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                if let plan = row.plan {
+                Circle().fill(row.isRecommended ? Color.green : Color.clear).frame(width: 6, height: 6)
+                Text(row.name).font(.subheadline.weight(.semibold))
+                if let plan = row.plan, plan != row.name {
                     Text(plan)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -82,20 +62,24 @@ private struct AccountBlock: View {
                         .padding(.vertical, 1)
                         .background(.quaternary, in: Capsule())
                 }
-                if row.isMain {
-                    Text("Main").font(.caption2).foregroundStyle(.secondary)
-                        .help("The account the Claude app is signed in to. Claude Code's own sign-in is used for it.")
-                }
+                if row.isMain { Text("Main").font(.caption2).foregroundStyle(.secondary) }
                 Spacer()
-                if row.activeSessions > 0 {
-                    Text(row.activeSessions == 1 ? "1 session" : "\(row.activeSessions) sessions")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .help("Claude Code sessions on this account. Each stays here while its cache is warm.")
+                Button(action: open) {
+                    Label(row.isRunning ? "Show" : "Open", systemImage: "macwindow")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption)
                 }
+                .buttonStyle(.borderless)
+                .help(row.isRunning ? "Bring this account's Claude window forward" : "Open this account's Claude window")
             }
-            if let status {
-                Text(status).font(.caption).foregroundStyle(.orange).padding(.top, -4)
+            if row.isRecommended || row.email != nil {
+                Text([row.isRecommended ? "New sessions here" : nil, row.email].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(row.isRecommended ? Color.green : Color.secondary)
+                    .lineLimit(1)
+                    .padding(.top, -4)
             }
+            issue
             if let snapshot = row.snapshot {
                 let windows = ProviderSection.split(snapshot.windows)
                 ForEach(windows.main, id: \.label) { WindowRow(window: $0, now: now) }
@@ -103,28 +87,37 @@ private struct AccountBlock: View {
                 if !windows.more.isEmpty {
                     Caret(isExpanded: showMore) { showMore.toggle() }.padding(.bottom, -4)
                 }
-            } else if let error = row.error, row.limits?.signInNeeded != true {   // already the status line
+            } else if row.cliUUID != nil, let error = row.error {
                 Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            } else {
+            } else if row.cliUUID != nil {
                 Text("Loading…").font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(8)
-        .background(row.inUse || row.activeSessions > 0 ? AnyShapeStyle(.background.opacity(0.35)) : AnyShapeStyle(.clear),
+        .background(row.isRecommended ? AnyShapeStyle(.background.opacity(0.35)) : AnyShapeStyle(.clear),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    /// "Limit until 17:40", "Extra usage", "Sign in again".
-    private var status: String? {
-        guard let limits = row.limits else { return nil }
-        if limits.signInNeeded { return "Sign in again" }
-        if let until = limits.limitedUntil, until > now {
-            if limits.overage { return row.allowOverage ? "Extra usage" : "Skipped: extra usage" }
-            return "\(Router.reason(limits)), back at \(Format.clock(until, now: now))"
+    /// What keeps this account from working fully, and the fix.
+    @ViewBuilder private var issue: some View {
+        if row.appUUID == nil && !row.isMain {
+            Text("Its Claude window isn't signed in yet. Open it and sign in while your main Claude app is closed.")
+                .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
         }
-        if let scoped = limits.scoped.filter({ $0.value > now }).min(by: { $0.value < $1.value }) {
-            return "\(scoped.key.capitalized) out until \(Format.clock(scoped.value, now: now)), other models still here"
+        if row.cliUUID == nil {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Sign in once in Terminal so Headroom can show its usage.")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Sign in", action: signIn).font(.caption).buttonStyle(.borderless)
+            }
+        } else if row.mismatch {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Its window and its Terminal sign-in are different accounts.")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Fix", action: signIn).font(.caption).buttonStyle(.borderless)
+            }
         }
-        return nil
     }
 }

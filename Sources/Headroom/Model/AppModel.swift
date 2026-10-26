@@ -80,19 +80,16 @@ final class AppModel {
     private var signInTask: Task<Void, Never>?
     // Claude accounts (AppModel+Claude.swift)
     var claudeConfig = ClaudeAccountsConfig.load()
-    var relayState: RelayState?
-    var relayHealthy = false
-    /// Usage of the accounts Headroom signed in, by account UUID.
+    /// Usage of the accounts besides Main, by account ID.
     var claudeAccountStates: [String: ProviderState] = [:]
-    var claudeSigningIn = false
+    /// Accounts whose copy of the Claude app is running.
+    var claudeRunning: Set<String> = []
+    /// The account each app copy is signed in to (account ID → account UUID).
+    var claudeAppAccounts: [String: String] = [:]
     var claudeError: String?
-    var routingBusy = false
-    var claudeSignInTask: Task<Void, Never>?
-    /// Who the Claude app and the terminal `claude` are signed in as, from their files.
-    var signedIn: (appUUID: String?, cliUUID: String?, cliEmail: String?) = (nil, nil, nil)
-    /// The newest relay event already announced.
-    var lastAnnouncedSwitch: Date? {
-        didSet { defaults.set(lastAnnouncedSwitch, forKey: "lastAnnouncedSwitch") }
+    /// The account last announced as the one for new sessions.
+    var lastRecommended: String? {
+        didSet { defaults.set(lastRecommended, forKey: "lastRecommendedClaude") }
     }
 
     /// Windows already announced as full; an entry clears once usage drops below 100%.
@@ -113,7 +110,7 @@ final class AppModel {
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
         loadAccounts()
-        lastAnnouncedSwitch = defaults.object(forKey: "lastAnnouncedSwitch") as? Date
+        lastRecommended = defaults.string(forKey: "lastRecommendedClaude")
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
     }
 
@@ -140,7 +137,6 @@ final class AppModel {
     func start() {
         guard loop == nil else { return }
         if notificationsOn { requestNotificationPermission() }
-        startClaude()
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshDue()
@@ -322,7 +318,7 @@ final class AppModel {
                 alerted.remove(key)
             } else if !alerted.contains(key) {
                 alerted.insert(key)
-                if notificationsOn { notify(id, window, account: account.flatMap { claudeConfig.account($0)?.email }) }
+                if notificationsOn { notify(id, window, account: account) }
             }
         }
     }

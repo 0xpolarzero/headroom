@@ -1,7 +1,40 @@
 # Several Claude accounts, with automatic failover for Claude Code
 
-Status: built (2026-10-26). The design below is what was researched; [As built](#as-built) lists where the
-code differs and what is still untested.
+Status: **replaced (2026-10-26).** The relay described here was built, then removed. Headroom now gives
+each account its own copy of the Claude app instead; see [Current design](#current-design-one-app-copy-per-account).
+The rest of this document is the research and the relay design, kept for reference; the code is in git
+history (commits 72aecac to a0f4307).
+
+## Current design: one app copy per account
+
+Why the relay went: it could only swap the token on model requests, so a session's other traffic (settings,
+telemetry, Remote Control) still went out as the Claude app's account; its connections didn't look like
+Claude Code's own; it signed accounts in with Claude Code's OAuth client; and moving a running session between
+accounts is the part most likely to break Anthropic's terms. Each account having its own native sign-in
+avoids all four.
+
+- **App copies.** The Claude app honours Chromium's `--user-data-dir` (it ignores `CLAUDE_USER_DATA_DIR` in
+  signed builds, see its log line "signed builds ignore it"). A copy started with
+  `--user-data-dir=~/Library/Application Support/Claude-<name>` has its own sign-in, session list and
+  single-instance lock. Checked: the copies run side by side, each signed in to its own account.
+- **Signing a copy in.** The app finishes sign-in through a `claude://` link, and macOS hands it to the copy
+  that is already running. So the main app has to be closed while a new copy signs in. After that each copy
+  keeps and renews its own sign-in.
+- **Opening the right copy.** macOS treats every copy as one app. Headroom finds each running copy by the
+  `--user-data-dir` in its arguments (`KERN_PROCARGS2`) and activates that process, or starts a new instance
+  with the argument.
+- **Usage.** The app's own sign-in is encrypted with the "Claude Safe Storage" key, which only Claude.app may
+  read. Headroom reads a Claude Code terminal sign-in instead: Main's is `~/.claude` (keychain item
+  `Claude Code-credentials`); another account's is its own `CLAUDE_CONFIG_DIR` (`~/.claude-accounts/<name>`,
+  keychain item `Claude Code-credentials-<first 8 hex of sha256(folder)>`, as Claude Code 2.1.310 names it).
+- **Sharing.** Every copy's Code tab runs Claude Code on `~/.claude`, so settings, hooks, skills, agents,
+  plugins, CLAUDE.md, MCP servers and memory are shared. Separate: each copy's session list and what Anthropic
+  keeps per account. Session presets (`ccd-session-presets.json`, keyed by account UUID; a preset is a folder,
+  model, effort and worktree switch) are synced by Headroom: union across copies, the most recently written
+  file wins per preset, deletions tracked against the last sync, and only written to copies that aren't
+  running.
+- **Which account for new sessions:** the first in the order whose Session and Weekly use are below the
+  threshold (85% by default); if none, the least used one that isn't full.
 
 ## Goal
 

@@ -3,7 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var model: AppModel
     @State private var openRouterKey = ""
-    @State private var claudeEmail = ""
+    @State private var claudeName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -47,7 +47,7 @@ struct SettingsView: View {
             }
 
             section("Claude accounts") {
-                ClaudeAccountsSettings(model: model, email: $claudeEmail)
+                ClaudeAccountsSettings(model: model, name: $claudeName)
             }
 
             section("Accounts") {
@@ -137,34 +137,33 @@ struct SettingsView: View {
     }
 }
 
-/// The priority order of Claude accounts, adding and removing them, and the switch that routes
-/// Claude Code through Headroom.
+/// The Claude accounts in priority order: each one's window and Terminal sign-in, adding and
+/// removing accounts, and when new sessions should move on to the next account.
 struct ClaudeAccountsSettings: View {
     @Bindable var model: AppModel
-    @Binding var email: String
+    @Binding var name: String
 
     var body: some View {
         let rows = model.claudeRows
         ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
             HStack(spacing: 6) {
                 Text("\(index + 1).").monospacedDigit().foregroundStyle(.secondary).frame(width: 16, alignment: .trailing)
-                Text(row.name).lineLimit(1).truncationMode(.middle)
+                Text(row.name).lineLimit(1)
                 if row.isMain { Text("Main").font(.caption).foregroundStyle(.secondary) }
-                if let plan = row.plan { Text(plan).font(.caption).foregroundStyle(.secondary) }
+                if let email = row.email { Text(email).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
                 Spacer()
-                Button { model.moveClaudeAccount(row.ref, by: -1) } label: { Image(systemName: "chevron.up") }
+                Button { model.moveClaudeAccount(row.id, by: -1) } label: { Image(systemName: "chevron.up") }
                     .disabled(index == 0)
-                    .help("Use earlier")
-                Button { model.moveClaudeAccount(row.ref, by: 1) } label: { Image(systemName: "chevron.down") }
+                    .help("Suggest earlier")
+                Button { model.moveClaudeAccount(row.id, by: 1) } label: { Image(systemName: "chevron.down") }
                     .disabled(index == rows.count - 1)
-                    .help("Use later")
+                    .help("Suggest later")
                 Menu {
-                    Toggle("Use extra usage past the limit", isOn: Binding(
-                        get: { row.allowOverage }, set: { model.setAllowOverage(row.ref, $0) }))
-                    if case .extra(let uuid) = row.ref {
+                    Button(row.isRunning ? "Show its Claude window" : "Open its Claude window") { model.openClaudeWindow(row.id) }
+                    Button("Sign in in Terminal") { model.signInTerminal(row.id) }
+                    if !row.isMain {
                         Divider()
-                        Button("Sign in again") { model.addClaudeAccount(loginHint: row.name) }
-                        Button("Remove", role: .destructive) { model.removeClaudeAccount(uuid) }
+                        Button("Remove", role: .destructive) { model.removeClaudeAccount(row.id) }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -177,26 +176,25 @@ struct ClaudeAccountsSettings: View {
         }
 
         HStack(spacing: 6) {
-            if model.claudeSigningIn {
-                ProgressView().controlSize(.small)
-                Text("Waiting for sign-in…").foregroundStyle(.secondary)
-                Spacer()
-                Button("Cancel", action: model.cancelClaudeSignIn)
-            } else {
-                TextField("Email (optional)", text: $email)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(add)
-                Button("Add account", action: add)
-            }
+            TextField("Name, e.g. Pro", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(add)
+            Button("Add account", action: add)
+                .disabled(ClaudeAccount.slug(name).isEmpty)
         }
         .buttonStyle(.borderless)
-        Text("Signs in to another Claude account in a private window. The account the Claude app uses is already in the list as Main.")
+        Text("""
+            Each account gets its own Claude window, with its own sign-in and sessions; settings, skills, hooks \
+            and plugins in ~/.claude are shared, and session presets are kept in sync. To sign a new window in, \
+            quit your main Claude app first (the sign-in link goes to whichever copy is open), sign in, then \
+            reopen Claude from here. Then sign in once in Terminal so Headroom can show its usage.
+            """)
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
         HStack {
-            Text("New sessions skip an account at")
+            Text("Suggest the next account at")
             Spacer()
-            Picker("New sessions skip an account at", selection: Binding(
+            Picker("Suggest the next account at", selection: Binding(
                 get: { model.claudeConfig.newSessionThreshold }, set: { model.setNewSessionThreshold($0) })) {
                 ForEach([0.75, 0.85, 0.95], id: \.self) { Text("\(Int($0 * 100))%").tag($0) }
                 Text("Its limit").tag(1.0)
@@ -204,31 +202,15 @@ struct ClaudeAccountsSettings: View {
             .labelsHidden()
             .fixedSize()
         }
-        Text("A running session stays on its account while its cache is warm, so the conversation isn't read again at full price. New sessions leave an account once it reaches this share of its Session or Weekly limit, keeping the rest for the sessions already on it.")
+        Text("New sessions are suggested on the first account below this share of its Session or Weekly limit. A running session stays on its account.")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-
-        Toggle("Switch Claude Code between accounts", isOn: Binding(
-            get: { model.claudeConfig.routing }, set: { model.setRouting($0) }))
-            .disabled(model.routingBusy)
-        Text(routingHelp)
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        if model.claudeConfig.routing && !model.relayHealthy && !model.routingBusy {
-            Text("The relay is not running, so Claude Code can't connect. Turn the switch off and on, or see ~/Library/Logs/Headroom/relay.log.")
-                .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-        }
         if let error = model.claudeError {
             Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var routingHelp: String {
-        "New sessions start on the first account with room left. A session moves down the list only when its "
-            + "account runs out, and back up once its cache has gone cold. Adds HTTPS_PROXY to ~/.claude/settings.json; "
-            + "sessions started after that take part. Anthropic's terms forbid bypassing usage limits, so use it at your own risk."
-    }
-
     private func add() {
-        model.addClaudeAccount(loginHint: email)
-        email = ""
+        model.addClaudeAccount(name: name)
+        if model.claudeError == nil { name = "" }
     }
 }
