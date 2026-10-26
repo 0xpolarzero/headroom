@@ -80,7 +80,7 @@ final class ProviderMappingTests: XCTestCase {
         XCTAssertEqual(w[0].usedPercent, 30)
         XCTAssertEqual(w[0].resetsAt, Date(timeIntervalSince1970: 1_770_648_402.389))
         XCTAssertEqual(w[2].usedPercent, 25)
-        XCTAssertEqual(w[2].detail, "25 / 100")
+        XCTAssertEqual(w[2].detail, "75 / 100 left")
         XCTAssertEqual(ZAIProvider.plan(from: obj(#"{"data":[{"productName":"GLM Coding Max"}]}"#)), "GLM Coding Max")
     }
 
@@ -100,7 +100,7 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(Format.duration(3 * 86400 + 4 * 3600 + 59), "3d 4h")
         let now = Date()
         XCTAssertEqual(Format.resets(now.addingTimeInterval(-5), now: now), "Resetting now")
-        XCTAssertEqual(Format.used(UsageWindow(label: "Session", usedPercent: 41.6)), "42% used")
+        XCTAssertEqual(Format.left(UsageWindow(label: "Session", usedPercent: 41.6)), "58% left")
     }
 
     func testCodexTokenExpiry() {
@@ -121,13 +121,18 @@ final class ClaudeMappingTests: XCTestCase {
         let root = try JSONSerialization.jsonObject(with: Data("""
         {"five_hour":{"utilization":6.0,"resets_at":"2026-10-26T19:59:59.943648+00:00"},
          "seven_day":{"utilization":35,"resets_at":"2026-10-30T10:00:00+00:00"},
-         "seven_day_opus":null,"seven_day_sonnet":{"utilization":12.5,"resets_at":null}}
+         "seven_day_opus":null,"seven_day_sonnet":{"utilization":12.5,"resets_at":null},
+         "limits":[{"kind":"weekly_all","percent":35},
+                   {"kind":"weekly_scoped","percent":10,"resets_at":"2026-10-28T03:59:59.802507+00:00",
+                    "scope":{"model":{"id":null,"display_name":"Fable"}}}]}
         """.utf8)) as! [String: Any]
         let w = ClaudeProvider.windows(from: root)
-        XCTAssertEqual(w.map(\.label), ["Session", "Weekly", "Sonnet Weekly"])
+        XCTAssertEqual(w.map(\.label), ["Session", "Weekly", "Fable Weekly", "Sonnet Weekly"])
+        XCTAssertEqual(w[2].usedPercent, 10)
+        XCTAssertNotNil(w[2].resetsAt)
         XCTAssertEqual(w[0].usedPercent, 6)
         XCTAssertEqual(w[0].resetsAt?.timeIntervalSince1970 ?? 0, 1_793_044_799.943, accuracy: 0.01)
-        XCTAssertNil(w[2].resetsAt)
+        XCTAssertNil(w[3].resetsAt)
 
         XCTAssertEqual(ClaudeProvider.planName(type: "max", tier: "default_claude_max_20x"), "Max 20x")
         XCTAssertEqual(ClaudeProvider.planName(type: "pro", tier: "default_claude_ai"), "Pro")
@@ -135,5 +140,47 @@ final class ClaudeMappingTests: XCTestCase {
         XCTAssertEqual(creds?.accessToken, "t")
         XCTAssertEqual(creds?.plan, "Max")
         XCTAssertNil(ClaudeProvider.credentials(from: "{}"))
+    }
+}
+
+final class NewProviderTests: XCTestCase {
+    private func obj(_ json: String) -> [String: Any] {
+        try! JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
+    }
+
+    func testAntigravityArgonWeekly() {
+        let body = obj("""
+        {"groups":[{"displayName":"Gemini","buckets":[{"bucketId":"gemini-5h","remainingFraction":0.5},
+                                                      {"bucketId":"gemini-weekly","remainingFraction":0.8}]},
+                   {"displayName":"Gemini 4 Argon","buckets":[{"bucketId":"argon-weekly","window":"weekly","remainingFraction":0.25}]},
+                   {"displayName":"Claude","buckets":[{"bucketId":"3p-5h","remainingFraction":1}]}]}
+        """)
+        let w = AntigravityProvider.windows(fromSummaries: [body])
+        XCTAssertEqual(w.map(\.label), ["Session", "Weekly", "Argon Weekly", "Claude"])
+        XCTAssertEqual(w[2].remainingPercent ?? -1, 25, accuracy: 0.001)
+    }
+
+    func testOpenRouterMapping() {
+        let balance = OpenRouterProvider.balance(from: obj(#"{"data":{"total_credits":50,"total_usage":12.34}}"#))
+        XCTAssertEqual(balance?.total, 50)
+        let window = OpenRouterProvider.creditsWindow(balance!)
+        XCTAssertEqual(window.detail, "$37.66 of $50.00 left")
+        XCTAssertEqual(window.remainingPercent ?? -1, 75.32, accuracy: 0.001)
+
+        let keys = OpenRouterProvider.keys(fromList: obj("""
+        {"data":[{"name":"small","usage":1.5,"usage_daily":0.1,"usage_monthly":1,"limit":null,"disabled":false},
+                 {"name":"","label":"sk-or-v1-abc...xyz","usage":9,"limit":20,"limit_remaining":11,"disabled":true}]}
+        """))
+        XCTAssertEqual(keys.map(\.name), ["sk-or-v1-abc...xyz", "small"])
+        XCTAssertEqual(keys[0].limitRemaining, 11)
+        XCTAssertTrue(keys[0].disabled)
+        XCTAssertEqual(keys[1].today, 0.1)
+    }
+
+    func testZAISessionCandidates() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl"
+        let found = ZAISignInWindow.candidates([("user", #"{"name":"x","token":"\#(jwt)"}"#), ("theme", "dark"),
+                                                ("z-ai-token", jwt)])
+        XCTAssertEqual(found, [jwt])
     }
 }

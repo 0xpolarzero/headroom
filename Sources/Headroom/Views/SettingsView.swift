@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var model: AppModel
-    @State private var zaiKey = ""
+    @State private var openRouterKey = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -45,23 +45,51 @@ struct SettingsView: View {
                 .labelsHidden()
             }
 
-            section("Z.ai API key") {
-                if model.hasZAIKey {
-                    HStack {
-                        Label("Saved in Keychain", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.secondary)
+            section("Accounts") {
+                account(.antigravity) {
+                    if model.antigravitySigningIn {
+                        ProgressView().controlSize(.small)
+                        Text("Waiting for browser…").foregroundStyle(.secondary)
                         Spacer()
-                        Button("Remove", role: .destructive) { model.removeZAIKey() }
-                            .buttonStyle(.borderless)
+                        Button("Cancel", action: model.cancelSignIn)
+                    } else if model.antigravitySignedIn {
+                        Text(model.antigravityEmail ?? "Signed in").foregroundStyle(.secondary).lineLimit(1)
+                        Spacer()
+                        Button("Sign out", action: model.signOutAntigravity)
+                    } else {
+                        Text("Antigravity app").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Sign in with Google", action: model.signInAntigravity)
                     }
-                } else {
-                    HStack {
-                        SecureField("Paste your API key", text: $zaiKey)
+                }
+                account(.zai) {
+                    Text(model.zaiSignedIn ? "Signed in" : "Not signed in").foregroundStyle(.secondary)
+                    Spacer()
+                    if model.zaiSignedIn {
+                        Button("Sign out", action: model.signOutZAI)
+                    } else {
+                        Button("Sign in", action: model.signInZAI)
+                    }
+                }
+                account(.openrouter) {
+                    if model.hasOpenRouterKey {
+                        Text("API key saved").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Remove", role: .destructive, action: model.removeOpenRouterKey)
+                    } else {
+                        SecureField("API key", text: $openRouterKey)
                             .textFieldStyle(.roundedBorder)
-                            .onSubmit(save)
-                        Button("Save", action: save)
-                            .disabled(zaiKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .onSubmit(saveOpenRouter)
+                        Button("Save", action: saveOpenRouter)
+                            .disabled(openRouterKey.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
+                }
+                if !model.hasOpenRouterKey {
+                    Text("A management key also lists the usage of every key.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let error = model.accountError {
+                    Text(error).font(.caption).foregroundStyle(.red)
                 }
             }
 
@@ -82,9 +110,18 @@ struct SettingsView: View {
         .padding(14)
     }
 
-    private func save() {
-        model.saveZAIKey(zaiKey)
-        zaiKey = ""
+    private func saveOpenRouter() {
+        model.saveOpenRouterKey(openRouterKey)
+        openRouterKey = ""
+    }
+
+    private func account(_ id: ProviderID, @ViewBuilder content: () -> some View) -> some View {
+        HStack(spacing: 6) {
+            Image(nsImage: Logos.image(id)).renderingMode(.template).resizable().frame(width: 14, height: 14)
+            Text(id.displayName).frame(width: 74, alignment: .leading)
+            content()
+        }
+        .buttonStyle(.borderless)
     }
 
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {

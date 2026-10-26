@@ -16,10 +16,10 @@ enum Format {
         return left <= 0 ? "Resetting now" : "Resets in \(duration(left))"
     }
 
-    static func used(_ window: UsageWindow) -> String {
+    static func left(_ window: UsageWindow) -> String {
         if let detail = window.detail { return detail }
-        guard let p = window.usedPercent else { return "—" }
-        return "\(Int(p.rounded()))% used"
+        guard let p = window.remainingPercent else { return "—" }
+        return "\(Int(p.rounded()))% left"
     }
 
     /// "14:30" today, "Tue 14:30" otherwise.
@@ -27,5 +27,14 @@ enum Format {
         Calendar.current.isDate(date, inSameDayAs: now)
             ? date.formatted(date: .omitted, time: .shortened)
             : date.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+    }
+}
+
+extension Format {
+    /// "$37.66", or "$1,240" from $1,000 up.
+    static func dollars(_ value: Double) -> String {
+        value >= 1000
+            ? value.formatted(.currency(code: "USD").precision(.fractionLength(0)).locale(Locale(identifier: "en_US")))
+            : value.formatted(.currency(code: "USD").precision(.fractionLength(2)).locale(Locale(identifier: "en_US")))
     }
 }

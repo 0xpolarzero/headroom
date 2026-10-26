@@ -25,7 +25,7 @@ struct ClaudeProvider: UsageProvider {
                        "anthropic-beta": "oauth-2025-04-20", "User-Agent": "Headroom"]
         let (body, http) = try await HTTP.json(HTTP.request(Self.usageURL, headers: headers))
         if http.statusCode == 401 || http.statusCode == 403 { throw ProviderError.unauthorized(expired) }
-        if http.statusCode == 429 { throw ProviderError.message("Claude usage is rate limited. Retrying soon.") }
+        if http.statusCode == 429 { throw ProviderError.rateLimited("Claude usage is rate limited. Retrying in 5 minutes.") }
         guard (200..<300).contains(http.statusCode) else { throw ProviderError.http(http.statusCode) }
         guard let root = body as? [String: Any] else { throw ProviderError.invalidResponse }
 
@@ -34,18 +34,30 @@ struct ClaudeProvider: UsageProvider {
 
     // MARK: Mapping (pure)
 
-    private static let slots: [(key: String, label: String)] = [
-        ("five_hour", "Session"), ("seven_day", "Weekly"),
-        ("seven_day_sonnet", "Sonnet Weekly"), ("seven_day_opus", "Opus Weekly"),
-    ]
-
-    /// `utilization` is already a 0-100 percentage; model-specific windows are null when unused.
+    /// Session and Weekly, then one weekly row per model-scoped limit ("Fable Weekly").
+    /// Anthropic moved per-model windows from `seven_day_<model>` into the `limits` array;
+    /// the legacy keys are still read when present. `utilization` and `percent` are 0-100.
     static func windows(from root: [String: Any]) -> [UsageWindow] {
-        slots.compactMap { slot in
-            guard let window = root.dict(slot.key), let used = window.double("utilization") else { return nil }
-            return UsageWindow(label: slot.label, usedPercent: min(max(used, 0), 100),
-                               resetsAt: Dates.iso(window.string("resets_at")))
+        func window(_ label: String, _ used: Double?, _ reset: String?) -> UsageWindow? {
+            guard let used else { return nil }
+            return UsageWindow(label: label, usedPercent: min(max(used, 0), 100), resetsAt: Dates.iso(reset))
         }
+        var windows = [("five_hour", "Session"), ("seven_day", "Weekly")].compactMap { key, label in
+            window(label, root.dict(key)?.double("utilization"), root.dict(key)?.string("resets_at"))
+        }
+        for limit in root.array("limits") ?? [] where limit.string("kind") == "weekly_scoped" {
+            guard let name = limit.dict("scope")?.dict("model")?.string("display_name"), !name.isEmpty,
+                  let w = window("\(name) Weekly", limit.double("percent"), limit.string("resets_at")),
+                  !windows.contains(where: { $0.label == w.label }) else { continue }
+            windows.append(w)
+        }
+        for (key, label) in [("seven_day_sonnet", "Sonnet Weekly"), ("seven_day_opus", "Opus Weekly")]
+        where !windows.contains(where: { $0.label == label }) {
+            if let w = window(label, root.dict(key)?.double("utilization"), root.dict(key)?.string("resets_at")) {
+                windows.append(w)
+            }
+        }
+        return windows
     }
 
     /// Parses Claude Code's `{"claudeAiOauth": {...}}` credentials blob.

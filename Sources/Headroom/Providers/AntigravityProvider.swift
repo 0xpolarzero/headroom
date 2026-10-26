@@ -7,29 +7,82 @@ struct AntigravityProvider: UsageProvider {
     private static let hosts = ["https://cloudcode-pa.googleapis.com", "https://daily-cloudcode-pa.googleapis.com"]
     private static let summaryPath = "/v1internal:retrieveUserQuotaSummary"
     private static let loadPath = "/v1internal:loadCodeAssist"
+    /// Cloud Code answers 403 "no valid license" unless the caller sends the Antigravity client's
+    /// User-Agent (OpenUsage does the same). Sent at the user's request.
+    private static let userAgent = "antigravity/2.24.0 (aidev_client; os_type=darwin; arch=\(arch))"
+    #if arch(arm64)
+    private static let arch = "arm64"
+    #else
+    private static let arch = "amd64"
+    #endif
     private static let loadBody: [String: Any] = ["metadata": ["ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"]]
 
     // MARK: Fetch
 
     struct KeychainToken { var access: String?; var refresh: String?; var expiry: Date? }
 
-    func fetch() async throws -> UsageSnapshot {
-        guard let raw = Keychain.read(service: "gemini", account: "antigravity") else {
-            throw ProviderError.notConfigured("Open Antigravity and sign in.")
-        }
-        guard let stored = Self.parseKeychain(raw) else { throw ProviderError.message("Antigravity credentials are unreadable.") }
+    /// Headroom's own Google login (Settings → Sign in) wins over the token Antigravity keeps.
+    static let loginService = "Headroom", loginAccount = "antigravity-login"
 
-        // Read-only: Antigravity refreshes its own login, so an expired token just means "open Antigravity".
-        guard let token = stored.access, stored.expiry.map({ $0.timeIntervalSinceNow > 60 }) ?? true else {
-            throw ProviderError.unauthorized("Antigravity sign-in expired. Open Antigravity to refresh it.")
+    func fetch() async throws -> UsageSnapshot {
+        let stored = try Self.storedToken()
+        var token = try await Self.accessToken(stored, forceRefresh: false)
+        var outcome = await Self.fetchSummaries(token: token)
+        if case .authFailed = outcome, stored.refresh != nil {
+            token = try await Self.accessToken(stored, forceRefresh: true)
+            outcome = await Self.fetchSummaries(token: token)
         }
-        switch await Self.fetchSummaries(token: token) {
-        case .authFailed: throw ProviderError.unauthorized("Antigravity sign-in expired. Open Antigravity to refresh it.")
+        switch outcome {
+        case .authFailed: throw ProviderError.unauthorized(Self.expiredMessage)
+        case .refused(let reason): throw ProviderError.message("Google refused the quota request: \(reason)")
         case .unavailable: throw ProviderError.message("Antigravity quota is temporarily unavailable.")
         case .ok(let bodies):
             let plan = await Self.loadPlan(token: token)
             return UsageSnapshot(title: "Antigravity", plan: plan, windows: Self.windows(fromSummaries: bodies))
         }
+    }
+
+    private static let expiredMessage = "Antigravity sign-in expired. Sign in again in Settings."
+
+    private static func storedToken() throws -> KeychainToken {
+        if let raw = Keychain.readOwn(service: loginService, account: loginAccount),
+           let json = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+           let refresh = json.string("refresh_token") {
+            return KeychainToken(access: nil, refresh: refresh, expiry: nil)
+        }
+        guard let raw = Keychain.read(service: "gemini", account: "antigravity") else {
+            throw ProviderError.notConfigured("Sign in with Google in Settings, or open Antigravity.")
+        }
+        guard let token = parseKeychain(raw) else { throw ProviderError.message("Antigravity credentials are unreadable.") }
+        return token
+    }
+
+    /// A still-valid stored token, else one minted from the refresh token. Google refresh tokens don't
+    /// rotate, so this never touches Antigravity's own login; minted tokens live only in memory.
+    private static func accessToken(_ stored: KeychainToken, forceRefresh: Bool) async throws -> String {
+        if !forceRefresh, let access = stored.access, stored.expiry.map({ $0.timeIntervalSinceNow > 60 }) ?? true {
+            return access
+        }
+        guard let refresh = stored.refresh else { throw ProviderError.unauthorized(expiredMessage) }
+        if !forceRefresh, let cached = await tokenCache.token(for: refresh) { return cached }
+        switch await GoogleOAuth.refresh(refresh) {
+        case .refreshed(let access, let expiresIn):
+            await tokenCache.store(access, expiresAt: .now.addingTimeInterval(expiresIn), for: refresh)
+            return access
+        case .revoked: throw ProviderError.unauthorized(expiredMessage)
+        case .unavailable: throw ProviderError.message("Google sign-in is temporarily unavailable.")
+        }
+    }
+
+    private static let tokenCache = TokenCache()
+
+    private actor TokenCache {
+        private var entries: [String: (token: String, expiresAt: Date)] = [:]
+        func token(for refresh: String) -> String? {
+            guard let entry = entries[refresh], entry.expiresAt.timeIntervalSinceNow > 60 else { return nil }
+            return entry.token
+        }
+        func store(_ token: String, expiresAt: Date, for refresh: String) { entries[refresh] = (token, expiresAt) }
     }
 
     // MARK: Mapping (pure)
@@ -38,11 +91,14 @@ struct AntigravityProvider: UsageProvider {
         ("gemini-5h", "Session"), ("gemini-weekly", "Weekly"), ("3p-5h", "Claude"), ("3p-weekly", "Claude Weekly"),
     ]
 
+    private static let argonGroup = "Gemini 4 Argon"
+
     /// Merges one or more `retrieveUserQuotaSummary` bodies by bucket id (first usable one wins).
+    /// Order: Session, Weekly, Argon Weekly, Claude, Claude Weekly.
     static func windows(fromSummaries bodies: [[String: Any]]) -> [UsageWindow] {
         var found: [String: UsageWindow] = [:]
         for body in bodies {
-            for group in groups(body) where group.string("displayName") != "Gemini 4 Argon" {
+            for group in groups(body) where group.string("displayName") != argonGroup {
                 for bucket in group.array("buckets") ?? [] {
                     guard let id = bucket.string("bucketId"), found[id] == nil,
                           let spec = buckets.first(where: { $0.id == id }),
@@ -53,7 +109,22 @@ struct AntigravityProvider: UsageProvider {
                 }
             }
         }
-        return buckets.compactMap { found[$0.id] }
+        var windows = buckets.compactMap { found[$0.id] }
+        if let argon = bodies.lazy.compactMap(argonWeekly).first {
+            windows.insert(argon, at: windows.firstIndex { $0.label.hasPrefix("Claude") } ?? windows.endIndex)
+        }
+        return windows
+    }
+
+    /// Argon has its own group with one weekly bucket; judged per body so hosts are never mixed.
+    private static func argonWeekly(_ body: [String: Any]) -> UsageWindow? {
+        let weekly = groups(body).filter { $0.string("displayName") == argonGroup }
+            .flatMap { $0.array("buckets") ?? [] }
+            .filter { $0.string("window") == "weekly" }
+        guard weekly.count == 1, let bucket = weekly.first, bucket["disabled"] as? Bool != true,
+              let fraction = bucket.double("remainingFraction"), fraction.isFinite else { return nil }
+        return UsageWindow(label: "Argon Weekly", usedPercent: min(max((1 - fraction) * 100, 0), 100),
+                           resetsAt: Dates.iso(bucket.string("resetTime")))
     }
 
     private static func groups(_ body: [String: Any]) -> [[String: Any]] {
@@ -109,7 +180,7 @@ struct AntigravityProvider: UsageProvider {
 
     // MARK: Network
 
-    private enum Outcome { case ok([[String: Any]]), authFailed, unavailable }
+    private enum Outcome { case ok([[String: Any]]), authFailed, refused(String), unavailable }
 
     private static func post(_ host: String, _ path: String, token: String, ua: String, body: [String: Any]) async -> (Int, [String: Any])? {
         let headers = ["Accept": "application/json", "Authorization": "Bearer \(token)", "User-Agent": ua]
@@ -121,20 +192,24 @@ struct AntigravityProvider: UsageProvider {
     private static func fetchSummaries(token: String) async -> Outcome {
         var bodies: [[String: Any]] = []
         var authFailed = false
+        var refusal: String?
         for (index, host) in hosts.enumerated() {
-            guard let (status, body) = await post(host, summaryPath, token: token, ua: "Headroom", body: [:]) else { continue }
-            if status == 401 || status == 403 { authFailed = true; continue }
+            guard let (status, body) = await post(host, summaryPath, token: token, ua: userAgent, body: [:]) else { continue }
+            if status == 401 { authFailed = true; continue }
+            // 403 is Google turning the caller away (e.g. "no valid license"), not an expired login.
+            if status == 403 { refusal = body.dict("error")?.string("message") ?? "HTTP 403"; continue }
             guard (200..<300).contains(status) else { continue }
             bodies.append(body)
             if index == 0, isComplete(body) { break }
         }
         if !bodies.isEmpty { return .ok(bodies) }
-        return authFailed ? .authFailed : .unavailable
+        if authFailed { return .authFailed }
+        return refusal.map { .refused(String($0.prefix(120))) } ?? .unavailable
     }
 
     private static func loadPlan(token: String) async -> String? {
         for host in hosts {
-            if let (status, body) = await post(host, loadPath, token: token, ua: "Headroom", body: loadBody),
+            if let (status, body) = await post(host, loadPath, token: token, ua: userAgent, body: loadBody),
                (200..<300).contains(status) {
                 return plan(fromLoadCodeAssist: body)
             }

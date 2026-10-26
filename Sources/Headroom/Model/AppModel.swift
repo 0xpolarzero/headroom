@@ -13,6 +13,12 @@ struct ProviderState: Sendable {
     var lastSuccess: Date?
     /// The provider has no login or key at all; its menu bar item is hidden.
     var notConfigured = false
+    /// The last failure was a 429, so retrying sooner would only extend it.
+    var rateLimited = false
+
+    var retryDelay: TimeInterval {
+        error == nil || rateLimited ? AppModel.refreshInterval : AppModel.retryInterval
+    }
 
     func isStale(now: Date) -> Bool {
         guard let lastSuccess else { return false }
@@ -35,13 +41,12 @@ enum MenuBarMode: String, CaseIterable, Identifiable {
 
 @MainActor @Observable
 final class AppModel {
-    static let refreshInterval: TimeInterval = 5 * 60
-    static let retryInterval: TimeInterval = 60
+    nonisolated static let refreshInterval: TimeInterval = 5 * 60
+    nonisolated static let retryInterval: TimeInterval = 60
     nonisolated static let staleAfter: TimeInterval = 10 * 60
     /// Opening the panel refreshes providers whose data is older than this.
     static let openThrottle: TimeInterval = 30
     static let alertWindows: Set<String> = ["Session", "Weekly"]
-    static let zaiService = "Headroom", zaiAccount = "zai-api-key"
     /// Notifications and login items need a real app bundle, not `swift run`.
     static let isBundled = Bundle.main.bundleIdentifier != nil
 
@@ -65,7 +70,14 @@ final class AppModel {
     }
     private(set) var launchAtLogin = false
     private(set) var launchAtLoginError: String?
-    private(set) var hasZAIKey = false
+    // Accounts
+    private(set) var antigravityEmail: String?
+    private(set) var antigravitySignedIn = false
+    private(set) var antigravitySigningIn = false
+    private(set) var accountError: String?
+    private(set) var zaiSignedIn = false
+    private(set) var hasOpenRouterKey = false
+    private var signInTask: Task<Void, Never>?
 
     /// Windows already announced as full; an entry clears once usage drops below 100%.
     private var alerted: Set<String> {
@@ -73,7 +85,7 @@ final class AppModel {
     }
     private let defaults = UserDefaults.standard
     private let providers: [ProviderID: any UsageProvider] = [
-        .claude: ClaudeProvider(), .codex: CodexProvider(), .antigravity: AntigravityProvider(), .zai: ZAIProvider(),
+        .claude: ClaudeProvider(), .codex: CodexProvider(), .openrouter: OpenRouterProvider(), .antigravity: AntigravityProvider(), .zai: ZAIProvider(),
     ]
     private var loop: Task<Void, Never>?
 
@@ -84,7 +96,7 @@ final class AppModel {
         menuBarMode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
-        hasZAIKey = Keychain.readOwn(service: Self.zaiService, account: Self.zaiAccount) != nil
+        loadAccounts()
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
     }
 
@@ -125,7 +137,7 @@ final class AppModel {
         await refresh(enabledProviders.filter { id in
             let s = state(id)
             guard let last = s.lastAttempt else { return true }
-            return now.timeIntervalSince(last) >= (s.error == nil ? Self.refreshInterval : Self.retryInterval)
+            return now.timeIntervalSince(last) >= s.retryDelay
         })
     }
 
@@ -134,7 +146,7 @@ final class AppModel {
         let ids = enabledProviders.filter { id in
             let s = state(id)
             guard let last = s.lastAttempt else { return true }
-            return now.timeIntervalSince(last) >= (s.error == nil ? Self.openThrottle : Self.retryInterval)
+            return now.timeIntervalSince(last) >= (s.error == nil ? Self.openThrottle : s.retryDelay)
         }
         Task { await refresh(ids) }
     }
@@ -159,11 +171,13 @@ final class AppModel {
             states[id]?.snapshot = snapshot   // keep the last good data on failure
             states[id]?.error = nil
             states[id]?.notConfigured = false
+            states[id]?.rateLimited = false
             states[id]?.lastSuccess = .now
             checkLimits(id, snapshot)
         } catch {
             states[id]?.error = error.localizedDescription
             if case ProviderError.notConfigured = error { states[id]?.notConfigured = true }
+            if case ProviderError.rateLimited = error { states[id]?.rateLimited = true }
         }
         states[id]?.isLoading = false
     }
@@ -186,18 +200,84 @@ final class AppModel {
         order.swapAt(i, i + offset)
     }
 
-    func saveZAIKey(_ key: String) {
-        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, Keychain.writeOwn(service: Self.zaiService, account: Self.zaiAccount, value: key) else { return }
-        hasZAIKey = true
-        Task { await refresh([.zai]) }
+    // MARK: Accounts
+
+    private func loadAccounts() {
+        let login = Keychain.readOwn(service: AntigravityProvider.loginService, account: AntigravityProvider.loginAccount)
+        antigravitySignedIn = login != nil
+        antigravityEmail = login.flatMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }?.string("email")
+        zaiSignedIn = Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.sessionAccount) != nil
+            || Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.keyAccount) != nil
+        hasOpenRouterKey = Keychain.readOwn(service: OpenRouterProvider.keyService, account: OpenRouterProvider.keyAccount) != nil
     }
 
-    func removeZAIKey() {
-        Keychain.delete(service: Self.zaiService, account: Self.zaiAccount)
-        hasZAIKey = false
-        states[.zai] = nil
-        Task { await refresh([.zai]) }
+    func signInAntigravity() {
+        guard !antigravitySigningIn else { return }
+        antigravitySigningIn = true
+        accountError = nil
+        signInTask = Task {
+            do {
+                let (refreshToken, email) = try await GoogleOAuth.signIn()
+                var login: [String: Any] = ["refresh_token": refreshToken]
+                login["email"] = email
+                let data = try JSONSerialization.data(withJSONObject: login)
+                guard Keychain.writeOwn(service: AntigravityProvider.loginService, account: AntigravityProvider.loginAccount,
+                                        value: String(decoding: data, as: UTF8.self)) else {
+                    throw ProviderError.message("Could not save the login to the Keychain.")
+                }
+                loadAccounts()
+                await refresh([.antigravity])
+            } catch is CancellationError {
+            } catch {
+                accountError = error.localizedDescription
+            }
+            antigravitySigningIn = false
+            NSApp.activate()
+        }
+    }
+
+    func cancelSignIn() { signInTask?.cancel() }
+
+    func signOutAntigravity() {
+        Keychain.delete(service: AntigravityProvider.loginService, account: AntigravityProvider.loginAccount)
+        loadAccounts()
+        reset(.antigravity)
+    }
+
+    func signInZAI() {
+        accountError = nil
+        ZAISignInWindow.present { [weak self] success in
+            guard let self else { return }
+            self.loadAccounts()
+            if success { self.reset(.zai) }
+        }
+    }
+
+    func signOutZAI() {
+        Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.sessionAccount)
+        Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.keyAccount)
+        loadAccounts()
+        reset(.zai)
+    }
+
+    func saveOpenRouterKey(_ key: String) {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty,
+              Keychain.writeOwn(service: OpenRouterProvider.keyService, account: OpenRouterProvider.keyAccount, value: key) else { return }
+        loadAccounts()
+        reset(.openrouter)
+    }
+
+    func removeOpenRouterKey() {
+        Keychain.delete(service: OpenRouterProvider.keyService, account: OpenRouterProvider.keyAccount)
+        loadAccounts()
+        reset(.openrouter)
+    }
+
+    /// Drops what a provider showed and fetches it again with the new credentials.
+    private func reset(_ id: ProviderID) {
+        states[id] = nil
+        Task { await refresh([id]) }
     }
 
     func setLaunchAtLogin(_ on: Bool) {

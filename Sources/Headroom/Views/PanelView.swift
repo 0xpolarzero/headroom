@@ -17,9 +17,6 @@ struct PanelView: View {
             footer
         }
         .frame(width: 320)
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            model.panelOpened()
-        }
     }
 
     @ViewBuilder
@@ -78,6 +75,7 @@ struct ProviderSection: View {
     let id: ProviderID
     let state: ProviderState
     let now: Date
+    @State private var showKeys = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -88,6 +86,19 @@ struct ProviderSection: View {
                 }
                 ForEach(snapshot.windows, id: \.label) { window in
                     WindowRow(window: window, now: now)
+                }
+                if !snapshot.keys.isEmpty {
+                    DisclosureGroup(isExpanded: $showKeys) {
+                        VStack(spacing: 8) {
+                            ForEach(snapshot.keys, id: \.self) { KeyRow(key: $0) }
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        Text(snapshot.keys.count == 1 ? "API key" : "API keys (\(snapshot.keys.count))")
+                            .font(.subheadline)
+                            .contentShape(Rectangle())
+                            .onTapGesture { withAnimation { showKeys.toggle() } }
+                    }
                 }
             } else if let error = state.error {
                 Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -141,12 +152,12 @@ struct WindowRow: View {
             HStack {
                 Text(window.label).font(.subheadline)
                 Spacer()
-                Text(Format.used(window))
+                Text(Format.left(window))
                     .font(.subheadline)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            Meter(percent: window.usedPercent ?? 0)
+            Meter(remaining: window.remainingPercent ?? 0)
             if let reset = window.resetsAt {
                 Text(Format.resets(reset, now: now))
                     .font(.caption)
@@ -156,8 +167,39 @@ struct WindowRow: View {
     }
 }
 
+/// Fills with what is left: blue, yellow at 20% left, red at 10% left.
+/// Spend on one API key; keys with a limit get a meter of what is left of it.
+struct KeyRow: View {
+    let key: KeyUsage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(key.name).font(.subheadline).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(key.disabled ? .secondary : .primary)
+                Spacer()
+                Text(Format.dollars(key.total)).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+            }
+            if let limit = key.limit, limit > 0 {
+                let left = key.limitRemaining ?? max(limit - key.total, 0)
+                Meter(remaining: left / limit * 100)
+                Text("\(Format.dollars(left)) of \(Format.dollars(limit)) left").font(.caption).foregroundStyle(.tertiary)
+            }
+            if let periods = periods {
+                Text(periods).font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var periods: String? {
+        let parts = [key.today.map { "Today \(Format.dollars($0))" }, key.month.map { "This month \(Format.dollars($0))" }]
+            .compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
 struct Meter: View {
-    let percent: Double
+    let remaining: Double
 
     var body: some View {
         GeometryReader { geo in
@@ -165,14 +207,14 @@ struct Meter: View {
                 Capsule().fill(.quaternary)
                 Capsule()
                     .fill(color)
-                    .frame(width: geo.size.width * min(max(percent, 0), 100) / 100)
+                    .frame(width: geo.size.width * min(max(remaining, 0), 100) / 100)
             }
         }
         .frame(height: 6)
-        .animation(.easeOut(duration: 0.3), value: percent)
+        .animation(.easeOut(duration: 0.3), value: remaining)
     }
 
     private var color: Color {
-        percent >= 90 ? .red : percent >= 80 ? .yellow : .blue
+        remaining <= 10 ? .red : remaining <= 20 ? .yellow : .blue
     }
 }

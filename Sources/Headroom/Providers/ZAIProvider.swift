@@ -8,12 +8,13 @@ struct ZAIProvider: UsageProvider {
     private static let subscriptionURL = "https://api.z.ai/api/biz/subscription/list"
 
     func fetch() async throws -> UsageSnapshot {
-        guard let key = Self.apiKey() else { throw ProviderError.notConfigured("Add your Z.ai API key in Settings.") }
-        let headers = ["Authorization": "Bearer \(key)", "Accept": "application/json"]
+        guard let auth = Self.authorization() else { throw ProviderError.notConfigured("Sign in to Z.ai in Settings.") }
+        let headers = ["Authorization": auth.header, "Accept": "application/json"]
 
         let (body, http) = try await HTTP.json(HTTP.request(Self.quotaURL, headers: headers))
         if http.statusCode == 401 || http.statusCode == 403 {
-            throw ProviderError.unauthorized("Z.ai API key invalid. Check it in Settings.")
+            throw ProviderError.unauthorized(auth.isSession ? "Z.ai session expired. Sign in again in Settings."
+                                                            : "Z.ai API key invalid. Check it in Settings.")
         }
         guard (200..<300).contains(http.statusCode) else { throw ProviderError.http(http.statusCode) }
         guard let root = body as? [String: Any] else { throw ProviderError.invalidResponse }
@@ -63,7 +64,7 @@ struct ZAIProvider: UsageProvider {
             windows.append(UsageWindow(label: "Web Searches",
                                        usedPercent: limit > 0 ? min(max(used / limit * 100, 0), 100) : nil,
                                        resetsAt: reset(web),
-                                       detail: "\(Int(used)) / \(Int(limit))"))
+                                       detail: "\(Int(max(limit - used, 0))) / \(Int(limit)) left"))
         }
         return windows
     }
@@ -73,10 +74,31 @@ struct ZAIProvider: UsageProvider {
         return name
     }
 
-    // MARK: API key lookup
+    // MARK: Credentials
+
+    static let service = "Headroom", sessionAccount = "zai-session", keyAccount = "zai-api-key"
+
+    /// The web session from Settings → Sign in, else an API key.
+    private static func authorization() -> (header: String, isSession: Bool)? {
+        if let header = Keychain.readOwn(service: service, account: sessionAccount), !header.isEmpty { return (header, true) }
+        return apiKey().map { ("Bearer \($0)", false) }
+    }
+
+    /// The first candidate token that the quota endpoint accepts, as a full `Authorization` value.
+    static func validSessionHeader(_ candidates: [String]) async -> String? {
+        for token in candidates {
+            for header in ["Bearer \(token)", token] {
+                let req = HTTP.request(quotaURL, headers: ["Authorization": header, "Accept": "application/json"])
+                guard let (body, http) = try? await HTTP.json(req), (200..<300).contains(http.statusCode),
+                      let root = body as? [String: Any], (try? windows(from: root)) != nil else { continue }
+                return header
+            }
+        }
+        return nil
+    }
 
     private static func apiKey() -> String? {
-        if let k = Keychain.readOwn(service: "Headroom", account: "zai-api-key"), !k.isEmpty { return k }
+        if let k = Keychain.readOwn(service: service, account: keyAccount), !k.isEmpty { return k }
         if let k = keyFromFile() { return k }
         for name in ["ZAI_API_KEY", "GLM_API_KEY"] {
             if let k = envValue(name) { return k }
