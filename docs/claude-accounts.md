@@ -1,6 +1,7 @@
 # Several Claude accounts, with automatic failover for Claude Code
 
-Status: design, not built. Written 2026-10-26.
+Status: built (2026-10-26). The design below is what was researched; [As built](#as-built) lists where the
+code differs and what is still untested.
 
 ## Goal
 
@@ -428,6 +429,59 @@ out doesn't need testing.
 requests, so Anthropic sees normal Claude Code traffic. But a third-party app taking part in Claude Code's sign-in is exactly
 the kind of thing Anthropic's terms on subscription tokens restrict, and it fits under the same warning as
 the automatic switching (see Terms).
+
+## As built
+
+| Piece | Where |
+| --- | --- |
+| Account list, order, routing flags | `Accounts/ClaudeAccounts.swift`, `~/Library/Application Support/Headroom/claude-accounts.json` |
+| Sign-in (system sheet, private mode, loopback redirect) | `Accounts/ClaudeOAuth.swift`, `Support/LoopbackReceiver.swift` |
+| Tokens, refresh under a cross-process lock | `Accounts/ClaudeTokens.swift`, keychain service `Headroom`, account `claude.<uuid>` |
+| Proxy, tunnel, splice to the TLS listener | `Relay/RelayServer.swift` (port 47812) |
+| Account choice, token swap, replay on a limit | `Relay/RelayEngine.swift`, `Relay/Router.swift`, `Relay/RateLimit.swift` |
+| Which process connected, and when it started | `Relay/ClientProcess.swift` (`proc_pidinfo`, no `lsof`) |
+| CA and leaf | `Relay/LocalCA.swift`, `/usr/bin/openssl`, files in `…/Headroom/relay/` |
+| `settings.json` edits, LaunchAgent, on and off | `Relay/SettingsFile.swift`, `Relay/RelayInstaller.swift` |
+| State the relay shares with the app | `…/Headroom/relay-state.json`, written every few seconds |
+| Panel, menu bar, Settings | `Views/ClaudeAccountsSection.swift`, `Views/SettingsView.swift`, `Model/AppModel+Claude.swift` |
+
+Differences from the design:
+
+- **RSA, not EC.** LibreSSL (macOS's `/usr/bin/openssl`) writes EC keys with explicit curve parameters. Claude
+  Code then fails every request with "unable to decode issuer public key", and `SecPKCS12Import` with
+  `kSecImportToMemoryOnly` crashes on such a key. The CA is RSA 3072, the leaf RSA 2048.
+- **The relay and the app share files, not a socket.** The relay writes its state to a JSON file; the app reads
+  it every 15 s and when the panel opens. The app writes the account list, and the relay re-reads it when it changes.
+- **Main is matched by account UUID.** If an account you add is the one Claude Code is signed in to, it is
+  used as Main with Claude Code's own token, wherever it sits in the order.
+- **`count_tokens` follows the same choice as `/v1/messages`.**
+- **Turning off** blanks the keys, removes them after a minute, and the relay exits after 30 idle minutes
+  and deletes its LaunchAgent file.
+
+Tested:
+
+- Unit tests: header reading, routing, account state, `settings.json` edits (add, blank, remove back to the
+  original bytes), HTTP framing, token parsing.
+- A loopback test with a fake Anthropic server: a limit-reached 429 for the first account is resent with the
+  main account's token within the same request, and the next request skips the first account.
+- The relay on this Mac with both the Claude app's bundled `claude` and the native terminal install
+  (`~/.local/bin/claude` → `~/.local/share/claude/versions/<v>`), with the proxy passed through `--settings`:
+  decrypted, passed through with Claude Code's own token, account and limits recorded.
+- An independent code review found nine defects, all fixed with tests where testable:
+  - the terminal install wasn't recognised (its process is named after its version);
+  - a `100 Continue` or a dropped kept-alive connection could make a request go out twice;
+  - an extra account's 401 could reach Claude Code instead of Main's "limit reached";
+  - a 502 could be written into a half-sent response;
+  - the tunnel cut half-closed connections;
+  - `settings.json` could lose Claude Code's own concurrent edits, or get a second `env`;
+  - the token lock blocked worker threads.
+
+Not tested yet:
+
+- Installing the LaunchAgent and turning routing on through the app. The automated session building this
+  wasn't allowed to install a login item, so the first run is yours.
+- A Code-tab session through the Swift relay. Same mechanism as spike 3, which worked.
+- Signing in an extra account, and a real switch at a real limit.
 
 ## Still to check
 

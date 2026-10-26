@@ -21,15 +21,30 @@ struct ClaudeProvider: UsageProvider {
         if let expiry = creds.expiresAt, expiry.timeIntervalSinceNow < 60 {
             throw ProviderError.unauthorized(expired)
         }
-        let headers = ["Authorization": "Bearer \(creds.accessToken)", "Accept": "application/json",
+        return UsageSnapshot(title: "Claude", plan: creds.plan,
+                             windows: try await Self.usageWindows(accessToken: creds.accessToken, expired: expired))
+    }
+
+    /// Usage of the account `accessToken` belongs to; also used for the accounts Headroom signed in.
+    static func usageWindows(accessToken: String, expired: String) async throws -> [UsageWindow] {
+        let headers = ["Authorization": "Bearer \(accessToken)", "Accept": "application/json",
                        "anthropic-beta": "oauth-2025-04-20", "User-Agent": "Headroom"]
-        let (body, http) = try await HTTP.json(HTTP.request(Self.usageURL, headers: headers))
+        let (body, http) = try await HTTP.json(HTTP.request(usageURL, headers: headers))
         if http.statusCode == 401 || http.statusCode == 403 { throw ProviderError.unauthorized(expired) }
         if http.statusCode == 429 { throw ProviderError.rateLimited("Claude usage is rate limited. Retrying in 5 minutes.") }
         guard (200..<300).contains(http.statusCode) else { throw ProviderError.http(http.statusCode) }
         guard let root = body as? [String: Any] else { throw ProviderError.invalidResponse }
+        return windows(from: root)
+    }
 
-        return UsageSnapshot(title: "Claude", plan: creds.plan, windows: Self.windows(from: root))
+    /// The account the Claude app and the terminal `claude` are signed in to, as far as their files say.
+    static func signedInAccounts() -> (appUUID: String?, cliUUID: String?, cliEmail: String?) {
+        let home = NSHomeDirectory()
+        let app = (try? Data(contentsOf: URL(fileURLWithPath: home + "/Library/Application Support/Claude/config.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let cli = (try? Data(contentsOf: URL(fileURLWithPath: home + "/.claude.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?.dict("oauthAccount")
+        return (app?.string("lastKnownAccountUuid"), cli?.string("accountUuid"), cli?.string("emailAddress"))
     }
 
     // MARK: Mapping (pure)

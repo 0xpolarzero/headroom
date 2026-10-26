@@ -7,7 +7,9 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             if model.showingSettings {
-                SettingsView(model: model)
+                CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 80) {
+                    SettingsView(model: model)
+                }
             } else {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     usage(now: context.date)
@@ -31,7 +33,11 @@ struct PanelView: View {
             CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 80) {
                 VStack(spacing: 8) {
                     ForEach(model.enabledProviders) { id in
-                        ProviderSection(id: id, state: model.state(id), now: now)
+                        if id == .claude && model.showsClaudeAccounts {
+                            ClaudeAccountsSection(model: model, now: now)
+                        } else {
+                            ProviderSection(id: id, state: model.state(id), now: now)
+                        }
                     }
                 }
                 .padding(10)

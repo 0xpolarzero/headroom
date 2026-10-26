@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var model: AppModel
     @State private var openRouterKey = ""
+    @State private var claudeEmail = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -43,6 +44,10 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+            }
+
+            section("Claude accounts") {
+                ClaudeAccountsSettings(model: model, email: $claudeEmail)
             }
 
             section("Accounts") {
@@ -129,5 +134,87 @@ struct SettingsView: View {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             content()
         }
+    }
+}
+
+/// The priority order of Claude accounts, adding and removing them, and the switch that routes
+/// Claude Code through Headroom.
+struct ClaudeAccountsSettings: View {
+    @Bindable var model: AppModel
+    @Binding var email: String
+
+    var body: some View {
+        let rows = model.claudeRows
+        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+            HStack(spacing: 6) {
+                Text("\(index + 1).").monospacedDigit().foregroundStyle(.secondary).frame(width: 16, alignment: .trailing)
+                Text(row.name).lineLimit(1).truncationMode(.middle)
+                if row.isMain { Text("Main").font(.caption).foregroundStyle(.secondary) }
+                if let plan = row.plan { Text(plan).font(.caption).foregroundStyle(.secondary) }
+                Spacer()
+                Button { model.moveClaudeAccount(row.ref, by: -1) } label: { Image(systemName: "chevron.up") }
+                    .disabled(index == 0)
+                    .help("Use earlier")
+                Button { model.moveClaudeAccount(row.ref, by: 1) } label: { Image(systemName: "chevron.down") }
+                    .disabled(index == rows.count - 1)
+                    .help("Use later")
+                Menu {
+                    Toggle("Use extra usage past the limit", isOn: Binding(
+                        get: { row.allowOverage }, set: { model.setAllowOverage(row.ref, $0) }))
+                    if case .extra(let uuid) = row.ref {
+                        Divider()
+                        Button("Sign in again") { model.addClaudeAccount(loginHint: row.name) }
+                        Button("Remove", role: .destructive) { model.removeClaudeAccount(uuid) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+            .buttonStyle(.borderless)
+        }
+
+        HStack(spacing: 6) {
+            if model.claudeSigningIn {
+                ProgressView().controlSize(.small)
+                Text("Waiting for sign-in…").foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", action: model.cancelClaudeSignIn)
+            } else {
+                TextField("Email (optional)", text: $email)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(add)
+                Button("Add account", action: add)
+            }
+        }
+        .buttonStyle(.borderless)
+        Text("Signs in to another Claude account in a private window. The account the Claude app uses is already in the list as Main.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
+        Toggle("Switch Claude Code between accounts", isOn: Binding(
+            get: { model.claudeConfig.routing }, set: { model.setRouting($0) }))
+            .disabled(model.routingBusy)
+        Text(routingHelp)
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if model.claudeConfig.routing && !model.relayHealthy && !model.routingBusy {
+            Text("The relay is not running, so Claude Code can't connect. Turn the switch off and on, or see ~/Library/Logs/Headroom/relay.log.")
+                .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
+        if let error = model.claudeError {
+            Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var routingHelp: String {
+        "Claude Code uses the first account with room left and moves down the list when its Session or Weekly "
+            + "limit runs out, then comes back after the reset. Adds HTTPS_PROXY to ~/.claude/settings.json; "
+            + "sessions started after that take part. Anthropic's terms forbid bypassing usage limits, so use it at your own risk."
+    }
+
+    private func add() {
+        model.addClaudeAccount(loginHint: email)
+        email = ""
     }
 }

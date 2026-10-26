@@ -78,12 +78,28 @@ final class AppModel {
     private(set) var zaiSignedIn = false
     private(set) var hasOpenRouterKey = false
     private var signInTask: Task<Void, Never>?
+    // Claude accounts (AppModel+Claude.swift)
+    var claudeConfig = ClaudeAccountsConfig.load()
+    var relayState: RelayState?
+    var relayHealthy = false
+    /// Usage of the accounts Headroom signed in, by account UUID.
+    var claudeAccountStates: [String: ProviderState] = [:]
+    var claudeSigningIn = false
+    var claudeError: String?
+    var routingBusy = false
+    var claudeSignInTask: Task<Void, Never>?
+    /// Who the Claude app and the terminal `claude` are signed in as, from their files.
+    var signedIn: (appUUID: String?, cliUUID: String?, cliEmail: String?) = (nil, nil, nil)
+    /// The newest relay event already announced.
+    var lastAnnouncedSwitch: Date? {
+        didSet { defaults.set(lastAnnouncedSwitch, forKey: "lastAnnouncedSwitch") }
+    }
 
     /// Windows already announced as full; an entry clears once usage drops below 100%.
     private var alerted: Set<String> {
         didSet { defaults.set(Array(alerted), forKey: "alertedLimits") }
     }
-    private let defaults = UserDefaults.standard
+    let defaults = UserDefaults.standard
     private let providers: [ProviderID: any UsageProvider] = [
         .claude: ClaudeProvider(), .codex: CodexProvider(), .openrouter: OpenRouterProvider(), .antigravity: AntigravityProvider(), .zai: ZAIProvider(),
     ]
@@ -97,6 +113,7 @@ final class AppModel {
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
         loadAccounts()
+        lastAnnouncedSwitch = defaults.object(forKey: "lastAnnouncedSwitch") as? Date
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
     }
 
@@ -123,9 +140,11 @@ final class AppModel {
     func start() {
         guard loop == nil else { return }
         if notificationsOn { requestNotificationPermission() }
+        startClaude()
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshDue()
+                await self?.claudeTick()
                 try? await Task.sleep(for: .seconds(15))
             }
         }
@@ -149,13 +168,15 @@ final class AppModel {
             return now.timeIntervalSince(last) >= (s.error == nil ? Self.openThrottle : s.retryDelay)
         }
         Task { await refresh(ids) }
+        Task { await claudeTick(panelOpened: true) }
     }
 
     func refreshAll() {
         Task { await refresh(enabledProviders) }
+        Task { await refreshClaudeAccounts(force: true) }
     }
 
-    private func refresh(_ ids: [ProviderID]) async {
+    func refresh(_ ids: [ProviderID]) async {
         let ids = ids.filter { states[$0]?.isLoading != true }
         await withTaskGroup(of: Void.self) { group in
             for id in ids { group.addTask { await self.refreshOne(id) } }
@@ -293,27 +314,30 @@ final class AppModel {
 
     // MARK: Notifications
 
-    private func checkLimits(_ id: ProviderID, _ snapshot: UsageSnapshot) {
+    func checkLimits(_ id: ProviderID, _ snapshot: UsageSnapshot, account: String? = nil) {
         for window in snapshot.windows where Self.alertWindows.contains(window.label) {
             guard let used = window.usedPercent else { continue }
-            let key = "\(id.rawValue).\(window.label)"
+            let key = "\(id.rawValue)\(account.map { ".\($0)" } ?? "").\(window.label)"
             if used < 100 {
                 alerted.remove(key)
             } else if !alerted.contains(key) {
                 alerted.insert(key)
-                if notificationsOn { notify(id, window) }
+                if notificationsOn { notify(id, window, account: account.flatMap { claudeConfig.account($0)?.email }) }
             }
         }
     }
 
-    private func notify(_ id: ProviderID, _ window: UsageWindow) {
+    private func notify(_ id: ProviderID, _ window: UsageWindow, account: String? = nil) {
+        var text = "\(id.displayName)\(account.map { " (\($0))" } ?? "") \(window.label) limit reached"
+        if let reset = window.resetsAt { text += " — resets at \(Format.clock(reset))" }
+        post(text, id: "\(id.rawValue).\(account ?? "").\(window.label)")
+    }
+
+    func post(_ text: String, id: String) {
         guard Self.isBundled else { return }
         let content = UNMutableNotificationContent()
-        var text = "\(id.displayName) \(window.label) limit reached"
-        if let reset = window.resetsAt { text += " — resets at \(Format.clock(reset))" }
         content.body = text
-        let request = UNNotificationRequest(identifier: "\(id.rawValue).\(window.label)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
     private func requestNotificationPermission() {
