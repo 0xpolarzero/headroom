@@ -81,6 +81,9 @@ struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
     var order: [AccountRef] = [.main]
     /// Keep using Main past its limit when Anthropic would bill extra usage.
     var mainAllowOverage = false
+    /// New sessions skip an account once its Session or Weekly use reaches this (0...1); 1 = never.
+    var newSessionThreshold = ClaudeAccountsConfig.defaultThreshold
+    static let defaultThreshold = 0.85
     /// Claude Code is pointed at the relay (the keys are in `~/.claude/settings.json`).
     var routing = false
     /// When those keys were last written. Only processes started after this trust the relay's CA.
@@ -97,6 +100,7 @@ struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
         accounts = try c.decodeIfPresent([ClaudeAccount].self, forKey: .accounts) ?? []
         order = try c.decodeIfPresent([AccountRef].self, forKey: .order) ?? [.main]
         mainAllowOverage = try c.decodeIfPresent(Bool.self, forKey: .mainAllowOverage) ?? false
+        newSessionThreshold = try c.decodeIfPresent(Double.self, forKey: .newSessionThreshold) ?? Self.defaultThreshold
         routing = try c.decodeIfPresent(Bool.self, forKey: .routing) ?? false
         routingSince = try c.decodeIfPresent(Date.self, forKey: .routingSince)
         wroteKeys = try c.decodeIfPresent([String].self, forKey: .wroteKeys) ?? []

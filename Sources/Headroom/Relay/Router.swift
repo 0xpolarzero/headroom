@@ -55,6 +55,21 @@ struct RelayEvent: Codable, Equatable, Sendable {
     var from: String?      // AccountRef key
     var to: String
     var reason: String
+    /// "moved": a running session had to move. Nil: new sessions start on `to` from now on.
+    var kind: String?
+}
+
+/// Which account a Claude Code session is on, so it stays there while its prompt cache is warm:
+/// moving a warm session makes the new account read the whole conversation again at full price.
+struct SessionPin: Codable, Equatable, Sendable {
+    /// `AccountRef.key`: "main" or an account UUID.
+    var account: String
+    var lastUsed: Date
+    /// When the session's last cached prefix expires: the latest request time plus that request's
+    /// cache lifetime (1 h for Claude Code's main loop, 5 min for subagents).
+    var warmUntil: Date
+
+    func isWarm(_ now: Date) -> Bool { warmUntil > now }
 }
 
 /// Written by the relay every few seconds while it works; read by the app.
@@ -62,14 +77,39 @@ struct RelayState: Codable, Equatable, Sendable {
     var updatedAt = Date()
     var pid: Int32 = 0
     var accounts: [String: AccountLimitState] = [:]
-    /// The account the last `/v1/messages` request went to.
+    /// Where new sessions start now (an `AccountRef.key`).
     var inUse: String?
+    /// Sessions by `x-claude-code-session-id`.
+    var pins: [String: SessionPin] = [:]
     var events: [RelayEvent] = []
     var mainEmail: String?
     var mainUUID: String?
     var mainPlan: String?
     var decrypting = false
     var lastError: String?
+
+    init() {}
+
+    // Missing keys take their defaults, so a state file from an older relay still loads.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        pid = try c.decodeIfPresent(Int32.self, forKey: .pid) ?? 0
+        accounts = try c.decodeIfPresent([String: AccountLimitState].self, forKey: .accounts) ?? [:]
+        inUse = try c.decodeIfPresent(String.self, forKey: .inUse)
+        pins = try c.decodeIfPresent([String: SessionPin].self, forKey: .pins) ?? [:]
+        events = try c.decodeIfPresent([RelayEvent].self, forKey: .events) ?? []
+        mainEmail = try c.decodeIfPresent(String.self, forKey: .mainEmail)
+        mainUUID = try c.decodeIfPresent(String.self, forKey: .mainUUID)
+        mainPlan = try c.decodeIfPresent(String.self, forKey: .mainPlan)
+        decrypting = try c.decodeIfPresent(Bool.self, forKey: .decrypting) ?? false
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+    }
+
+    /// Sessions per account (`AccountRef.key`) whose cache is still warm.
+    func activeSessions(now: Date = .now) -> [String: Int] {
+        pins.values.filter { $0.isWarm(now) }.reduce(into: [:]) { $0[$1.account, default: 0] += 1 }
+    }
 
     static func load() -> RelayState? {
         guard let data = try? Data(contentsOf: HeadroomPaths.relayState) else { return nil }
@@ -96,15 +136,20 @@ enum Router {
     /// every account is out, Claude Code still gets Anthropic's own answer with the real reset time.
     /// `mainUUID` is the account the request's own token belongs to; a connected account that is the
     /// same one is used through Main, with Claude Code's own token.
+    ///
+    /// A session whose cache is warm stays on its account while that account has room (`pin`). A new
+    /// session, or one whose cache has expired, starts on the first account in the order that is below
+    /// `config.newSessionThreshold`, so an account close to its limit is kept for the sessions already
+    /// on it. If every account is above the threshold, the first one with room is used.
     static func candidates(config: ClaudeAccountsConfig, states: [String: AccountLimitState],
-                           model: String?, mainUUID: String?, now: Date = .now) -> [AccountRef] {
+                           model: String?, mainUUID: String?, pin: SessionPin? = nil, now: Date = .now) -> [AccountRef] {
         let family = RateLimitReading.family(ofModel: model)
         var seen = Set<AccountRef>()
         let order = config.order.compactMap { ref -> AccountRef? in
             let resolved: AccountRef = ref == .extra(mainUUID ?? "") ? .main : ref
             return seen.insert(resolved).inserted ? resolved : nil
         }
-        var result = order.filter { ref in
+        let usable = order.filter { ref in
             let state = states[stateKey(ref, mainUUID: mainUUID)] ?? AccountLimitState()
             switch ref {
             case .main:
@@ -114,8 +159,58 @@ enum Router {
                 return state.isUsable(family: family, allowOverage: account.allowOverage, now: now)
             }
         }
+        let first: AccountRef?
+        if let pin, pin.isWarm(now), let pinned = usable.first(where: { $0.key == pin.account }) {
+            first = pinned
+        } else {
+            first = usable.first { load(states[stateKey($0, mainUUID: mainUUID)], now: now) < config.newSessionThreshold }
+                ?? usable.first
+        }
+        var result = first.map { [$0] } ?? []
+        result += usable.filter { $0 != first }
         if !result.contains(.main) { result.append(.main) }
         return result
+    }
+
+    /// How full an account is: the fuller of its Session and Weekly windows, 0...1. A window whose
+    /// reset has passed counts as empty; an account never seen counts as empty.
+    static func load(_ state: AccountLimitState?, now: Date) -> Double {
+        guard let state else { return 0 }
+        let five = (state.fiveHourReset.map { $0 > now } ?? true) ? (state.fiveHour ?? 0) : 0
+        let seven = (state.sevenDayReset.map { $0 > now } ?? true) ? (state.sevenDay ?? 0) : 0
+        return max(five, seven)
+    }
+
+    /// The longest cache lifetime a request asks for (`cache_control.ttl`, "5m" when absent).
+    static func cacheLifetime(_ json: Any?) -> TimeInterval {
+        var longest: TimeInterval = 0
+        func walk(_ value: Any) {
+            if let dict = value as? [String: Any] {
+                if let cc = dict["cache_control"] as? [String: Any] {
+                    longest = max(longest, (cc["ttl"] as? String) == "1h" ? 3600 : 300)
+                }
+                dict.values.forEach(walk)
+            } else if let array = value as? [Any] {
+                array.forEach(walk)
+            }
+        }
+        if let json { walk(json) }
+        return longest
+    }
+
+    /// Puts `account` in place of the account UUID in the body's `metadata.user_id`, so the body names
+    /// the account whose token goes with it. Only the last `"metadata"` object is touched, and the
+    /// UUID keeps its length, so the body is otherwise byte for byte the same.
+    static func rewriteAccount(in body: Data, to account: String) -> Data {
+        guard account.count == 36, let text = String(data: body, encoding: .utf8),
+              let meta = text.range(of: "\"metadata\"", options: .backwards) else { return body }
+        let pattern = #"(\\"account_uuid\\"\s*:\s*\\")([0-9a-fA-F-]{36})(\\")"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(meta.lowerBound..., in: text)),
+              let uuid = Range(match.range(at: 2), in: text) else { return body }
+        var out = text
+        out.replaceSubrange(uuid, with: account)
+        return Data(out.utf8)
     }
 
     /// "Session limit", "Weekly limit", "Opus weekly limit", "Extra usage".

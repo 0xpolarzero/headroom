@@ -9,7 +9,10 @@ struct ClaudeAccountRow: Identifiable {
     var snapshot: UsageSnapshot?
     var error: String?
     var limits: AccountLimitState?
+    /// New Claude Code sessions start on this account now.
     var inUse: Bool
+    /// Claude Code sessions on this account whose cache is still warm.
+    var activeSessions: Int
     var isMain: Bool { ref == .main }
     var allowOverage: Bool
     var id: String { ref.key }
@@ -25,6 +28,7 @@ extension AppModel {
 
     var claudeRows: [ClaudeAccountRow] {
         let inUse = relayState?.inUse
+        let active = relayState?.activeSessions() ?? [:]
         return claudeConfig.order.compactMap { ref in
             switch ref {
             case .main:
@@ -33,7 +37,8 @@ extension AppModel {
                 return ClaudeAccountRow(ref: .main, name: email ?? "Claude app account",
                                         plan: relayState?.mainPlan ?? state(.claude).snapshot?.plan,
                                         snapshot: state(.claude).snapshot, error: state(.claude).error,
-                                        limits: relayState?.accounts[key], inUse: claudeConfig.routing && inUse == key,
+                                        limits: relayState?.accounts[key], inUse: claudeConfig.routing && inUse == "main",
+                                        activeSessions: claudeConfig.routing ? active["main", default: 0] : 0,
                                         allowOverage: claudeConfig.mainAllowOverage)
             case .extra(let uuid):
                 guard let account = claudeConfig.account(uuid) else { return nil }
@@ -43,6 +48,7 @@ extension AppModel {
                                         plan: s?.snapshot?.plan ?? account.plan, snapshot: s?.snapshot,
                                         error: limits?.signInNeeded == true ? "Sign in again." : s?.error,
                                         limits: limits, inUse: claudeConfig.routing && inUse == uuid,
+                                        activeSessions: claudeConfig.routing ? active[uuid, default: 0] : 0,
                                         allowOverage: account.allowOverage)
             }
         }
@@ -101,11 +107,22 @@ extension AppModel {
         // The first time, only remember where the history ends.
         guard lastAnnouncedSwitch != nil, notificationsOn, claudeConfig.routing else { return }
         for event in fresh.suffix(2) {
-            let to = name(forKey: event.to)
-            let from = event.from.map(name(forKey:)) ?? ""
-            post("Claude Code switched to \(to): \(event.reason.lowercased()) on \(from).",
-                 id: "claude.switch.\(event.at.timeIntervalSince1970)")
+            post(Self.describe(event, name: name(forKey:)), id: "claude.switch.\(event.at.timeIntervalSince1970)")
         }
+    }
+
+    /// "A running session moved to Max: session limit on Pro." / "New sessions start on Max: Pro is over 85%."
+    static func describe(_ event: RelayEvent, name: (String) -> String) -> String {
+        let to = name(event.to)
+        let from = event.from.map(name) ?? ""
+        if event.kind == "moved" { return "A running session moved to \(to): \(event.reason.lowercased()) on \(from)." }
+        if event.reason.hasPrefix("Over") { return "New sessions start on \(to): \(from) is \(event.reason.lowercased())." }
+        if event.reason == "Available again" { return "New sessions start on \(to) again." }
+        return "New sessions start on \(to): \(event.reason.lowercased()) on \(from)."
+    }
+
+    func setNewSessionThreshold(_ value: Double) {
+        updateConfig { $0.newSessionThreshold = value }
     }
 
     func name(forKey key: String) -> String {

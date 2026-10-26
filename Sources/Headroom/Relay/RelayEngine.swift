@@ -157,9 +157,12 @@ final class RelayEngine: @unchecked Sendable {
         reloadConfigIfChanged()
         let incoming = request.value("authorization")
         let main = await mainProfile(incoming)
-        let model = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["model"] as? String
-        let (config, states) = lock.withLock { (self.config, state.accounts) }
-        let candidates = Router.candidates(config: config, states: states, model: model, mainUUID: main?.uuid)
+        let json = try? JSONSerialization.jsonObject(with: body)
+        let model = (json as? [String: Any])?["model"] as? String
+        let lifetime = Router.cacheLifetime(json)
+        let session = request.value("x-claude-code-session-id")
+        let (config, states, pin) = lock.withLock { (self.config, state.accounts, session.flatMap { state.pins[$0] }) }
+        let candidates = Router.candidates(config: config, states: states, model: model, mainUUID: main?.uuid, pin: pin)
         /// The last "limit reached" answer, kept to hand to Claude Code if no later account can serve:
         /// it carries the real reset time, unlike an extra account's sign-in error.
         var refusal: (head: HTTPHead, body: Data)?
@@ -168,6 +171,7 @@ final class RelayEngine: @unchecked Sendable {
             let key = Router.stateKey(ref, mainUUID: main?.uuid)
             let isLast = index == candidates.count - 1
             var outgoing = request
+            var outgoingBody = body
             var rejected: String?
             while true {
                 if case .extra(let uuid) = ref {
@@ -182,11 +186,14 @@ final class RelayEngine: @unchecked Sendable {
                         continue candidates
                     }
                     outgoing.set("Authorization", "Bearer \(token)")
+                    // The body names the sending account too; make it the one whose token goes with it.
+                    outgoingBody = Router.rewriteAccount(in: body, to: uuid)
+                    outgoing.set("Content-Length", String(outgoingBody.count))
                 } else if let incoming {
                     outgoing.set("Authorization", incoming)
                 }
 
-                let response = try await upstream.send(outgoing, body)
+                let response = try await upstream.send(outgoing, outgoingBody)
                 if response.statusCode == 401, case .extra = ref {
                     try await upstream.discard(response, method: outgoing.method)
                     if rejected == nil {
@@ -207,7 +214,9 @@ final class RelayEngine: @unchecked Sendable {
                     refusal = (response, try await upstream.readBody(response, method: outgoing.method))
                     continue candidates
                 }
-                if request.path == "/v1/messages", (200..<300).contains(response.statusCode) { markInUse(key, ref: ref) }
+                if request.path == "/v1/messages", (200..<300).contains(response.statusCode) {
+                    settle(ref, session: session, lifetime: lifetime, mainUUID: main?.uuid, threshold: config.newSessionThreshold)
+                }
                 return try await upstream.relay(response, method: outgoing.method, to: client)
             }
         }
@@ -238,23 +247,54 @@ final class RelayEngine: @unchecked Sendable {
         }
     }
 
-    private func markInUse(_ key: String, ref: AccountRef) {
+    /// Records where a session was served: its pin, and an event when a warm session had to move or
+    /// new sessions start on another account than before.
+    private func settle(_ ref: AccountRef, session: String?, lifetime: TimeInterval, mainUUID: String?, threshold: Double) {
         mutate { s in
-            guard s.inUse != key else { return }
+            let now = Date()
+            let key = ref.key
+            func limits(_ account: String) -> AccountLimitState? {
+                s.accounts[Router.stateKey(AccountRef(key: account), mainUUID: mainUUID)]
+            }
+            var isNew = true
+            if let session {
+                let previous = s.pins[session]
+                let stayed = previous.map { $0.isWarm(now) && $0.account == key } ?? false
+                isNew = !(previous?.isWarm(now) ?? false)
+                let warmUntil = max(stayed ? previous!.warmUntil : now, now.addingTimeInterval(lifetime))
+                s.pins[session] = SessionPin(account: key, lastUsed: now, warmUntil: warmUntil)
+                if let previous, previous.isWarm(now), previous.account != key {
+                    let reason = limits(previous.account).map(Router.reason) ?? "Limit reached"
+                    let recent = s.events.last { $0.from == previous.account && $0.to == key && now.timeIntervalSince($0.at) < 600 }
+                    if recent == nil { addEvent(&s, from: previous.account, to: key, reason: reason, kind: "moved", now: now) }
+                }
+                if s.pins.count > 300 {
+                    let keep = s.pins.sorted { $0.value.lastUsed > $1.value.lastUsed }.prefix(200)
+                    s.pins = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+                }
+                s.pins = s.pins.filter { now.timeIntervalSince($0.value.lastUsed) < 24 * 3600 }
+            }
+            guard isNew, s.inUse != key else { return }
             let previous = s.inUse
             let reason: String
-            if let previous, let prev = s.accounts[previous], let until = prev.limitedUntil, until > Date() {
+            if let previous, let prev = limits(previous), let until = prev.limitedUntil, until > now {
                 reason = Router.reason(prev)
             } else if previous == nil {
                 reason = "First request"
+            } else if let previous, Router.load(limits(previous), now: now) >= threshold {
+                reason = "Over \(Int((threshold * 100).rounded()))%"
             } else {
                 reason = "Available again"
             }
             s.inUse = key
-            s.events.append(RelayEvent(at: Date(), from: previous, to: key, reason: reason))
-            if s.events.count > 50 { s.events.removeFirst(s.events.count - 50) }
-            relayLog("Now using \(key) (\(reason))")
+            addEvent(&s, from: previous, to: key, reason: reason, now: now)
         }
+    }
+
+    private func addEvent(_ s: inout RelayState, from: String?, to: String, reason: String, kind: String? = nil, now: Date) {
+        s.events.append(RelayEvent(at: now, from: from, to: to, reason: reason, kind: kind))
+        if s.events.count > 50 { s.events.removeFirst(s.events.count - 50) }
+        relayLog("\(from ?? "-") → \(to) (\(reason))")
     }
 
     /// Who the token Claude Code sent belongs to, looked up once per token.

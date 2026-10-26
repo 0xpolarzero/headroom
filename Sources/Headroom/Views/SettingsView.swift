@@ -193,6 +193,20 @@ struct ClaudeAccountsSettings: View {
         Text("Signs in to another Claude account in a private window. The account the Claude app uses is already in the list as Main.")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
+        HStack {
+            Text("New sessions skip an account at")
+            Spacer()
+            Picker("New sessions skip an account at", selection: Binding(
+                get: { model.claudeConfig.newSessionThreshold }, set: { model.setNewSessionThreshold($0) })) {
+                ForEach([0.75, 0.85, 0.95], id: \.self) { Text("\(Int($0 * 100))%").tag($0) }
+                Text("Its limit").tag(1.0)
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+        Text("A running session stays on its account while its cache is warm, so the conversation isn't read again at full price. New sessions leave an account once it reaches this share of its Session or Weekly limit, keeping the rest for the sessions already on it.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
         Toggle("Switch Claude Code between accounts", isOn: Binding(
             get: { model.claudeConfig.routing }, set: { model.setRouting($0) }))
             .disabled(model.routingBusy)
@@ -208,8 +222,8 @@ struct ClaudeAccountsSettings: View {
     }
 
     private var routingHelp: String {
-        "Claude Code uses the first account with room left and moves down the list when its Session or Weekly "
-            + "limit runs out, then comes back after the reset. Adds HTTPS_PROXY to ~/.claude/settings.json; "
+        "New sessions start on the first account with room left. A session moves down the list only when its "
+            + "account runs out, and back up once its cache has gone cold. Adds HTTPS_PROXY to ~/.claude/settings.json; "
             + "sessions started after that take part. Anthropic's terms forbid bypassing usage limits, so use it at your own risk."
     }
 

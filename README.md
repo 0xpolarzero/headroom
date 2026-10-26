@@ -47,9 +47,19 @@ accounts) live in keychain items under the service `Headroom`.
 ## Several Claude accounts
 
 Connect more Claude accounts and put them in an order, for example a $20 Pro first and Max second. With
-**Switch Claude Code between accounts** on, Claude Code uses the first account that has room left. When its
-Session or Weekly limit runs out it moves to the next one, and comes back once the first one resets. Nothing
-in the Claude app changes: its sign-in, sessions and settings stay as they are.
+**Switch Claude Code between accounts** on, new Claude Code sessions start on the first account that has room
+left, and the list is used again once the first one resets. Nothing in the Claude app changes: its sign-in,
+sessions and settings stay as they are.
+
+- **Sessions stay put while their cache is warm.** Moving a running session to another account would make
+  that account read the whole conversation again at full price, since the prompt cache belongs to the account.
+  So a session keeps its account until that account runs out (the one case where it has to move) or until it
+  has been idle longer than its cache lasts (1 hour for Claude Code's main loop). Then it is placed again for
+  free, which is how it gets back to the first account after a reset. Subagents share their session's
+  account.
+- **New sessions skip a busy account.** Once an account reaches 85% of its Session or Weekly limit (75%, 95%
+  or "its limit" in Settings), new sessions start on the next one. The rest is kept for the sessions already
+  running there, so they're less likely to be moved.
 
 - **Main** is the account the Claude app (and the terminal `claude`) is signed in to. It is always in the list,
   needs no extra sign-in, and requests for it go out with Claude Code's own token.
@@ -62,14 +72,16 @@ in the Claude app changes: its sign-in, sessions and settings stay as they are.
   untouched, except Claude Code's own connections to `api.anthropic.com`: the relay decrypts them with a local
   CA that only Claude Code trusts, through `NODE_EXTRA_CA_CERTS`, and that only covers `api.anthropic.com`. It
   never goes into the system keychain. Each `/v1/messages` request gets the token of the account that should
-  take it. A "limit reached" answer is retried on the next account, so Claude Code sees a normal reply.
-  Everything else (settings, plugins, Remote Control) stays on the Claude app's account.
+  take it, and the account ID in its metadata is changed to match. A "limit reached" answer is retried on the
+  next account, so Claude Code sees a normal reply. Everything else (settings, plugins, Remote Control) stays
+  on the Claude app's account.
 - **Which sessions take part.** Claude Code sessions started after the toggle. Sessions already running pick up
   the proxy too, but they don't trust the CA, so they only get the tunnel and keep their own account.
 - **Extra usage.** An account that would be billed extra usage past its limit counts as out, unless you allow it
   in its menu in Settings.
-- **The panel** lists the accounts in order, with a dot on the one Claude Code is using, when a used-up one
-  comes back, and the last switch. The menu bar shows the account in use. A notification announces each switch.
+- **The panel** lists the accounts in order, with a dot on the one new sessions start on, how many sessions
+  each one has, when a used-up one comes back, and the last switch. The menu bar shows the account new
+  sessions use. A notification says when new sessions change account and when a running session had to move.
 - **Turning it off** blanks the keys (running sessions drop the proxy within seconds), removes them a minute
   later, and the relay stops by itself after 30 idle minutes. `Headroom --routing on|off` does the same from a
   terminal.

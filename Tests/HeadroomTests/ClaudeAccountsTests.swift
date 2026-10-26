@@ -123,6 +123,61 @@ final class ClaudeAccountsTests: XCTestCase {
         XCTAssertEqual(Router.candidates(config: c, states: [:], model: nil, mainUUID: "max", now: now), [.main, .extra("pro")])
     }
 
+    func testWarmSessionStaysOnItsAccount() {
+        let c = config([.extra("pro"), .main], accounts: ["pro"])
+        let pin = SessionPin(account: "main", lastUsed: now, warmUntil: now.addingTimeInterval(3000))
+        // Pro has room again, but the session's cache is on Main: it stays.
+        XCTAssertEqual(Router.candidates(config: c, states: [:], model: nil, mainUUID: "max", pin: pin, now: now), [.main, .extra("pro")])
+        // Once the cache is cold, it goes back to the first choice for free.
+        XCTAssertEqual(Router.candidates(config: c, states: [:], model: nil, mainUUID: "max", pin: pin,
+                                         now: now.addingTimeInterval(3001)), [.extra("pro"), .main])
+    }
+
+    func testWarmSessionStillMovesAtTheLimit() {
+        let c = config([.extra("pro"), .main], accounts: ["pro"])
+        var limited = AccountLimitState()
+        limited.limitedUntil = now.addingTimeInterval(600)
+        let pin = SessionPin(account: "pro", lastUsed: now, warmUntil: now.addingTimeInterval(3000))
+        XCTAssertEqual(Router.candidates(config: c, states: ["pro": limited], model: nil, mainUUID: "max", pin: pin, now: now), [.main])
+    }
+
+    func testNewSessionsSkipAnAccountAboveTheThreshold() {
+        var c = config([.extra("pro"), .main], accounts: ["pro"])
+        var busy = AccountLimitState()
+        busy.fiveHour = 0.9
+        busy.fiveHourReset = now.addingTimeInterval(3600)
+        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max", now: now), [.main, .extra("pro")])
+        // A warm session already on Pro keeps using it.
+        let pin = SessionPin(account: "pro", lastUsed: now, warmUntil: now.addingTimeInterval(60))
+        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max", pin: pin, now: now).first, .extra("pro"))
+        // After the window resets, the old number no longer counts.
+        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max",
+                                         now: now.addingTimeInterval(3601)).first, .extra("pro"))
+        // With every account above it, the first with room is used; at 100% the threshold is off.
+        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy, "max": busy], model: nil, mainUUID: "max", now: now).first, .extra("pro"))
+        c.newSessionThreshold = 1
+        XCTAssertEqual(Router.candidates(config: c, states: ["pro": busy], model: nil, mainUUID: "max", now: now).first, .extra("pro"))
+    }
+
+    func testCacheLifetimeFromRequest() {
+        let main = try! JSONSerialization.jsonObject(with: Data(#"{"system":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"content":[{"type":"text","text":"y","cache_control":{"type":"ephemeral"}}]}]}"#.utf8))
+        XCTAssertEqual(Router.cacheLifetime(main), 3600)
+        let sub = try! JSONSerialization.jsonObject(with: Data(#"{"messages":[{"content":[{"cache_control":{"type":"ephemeral"}}]}]}"#.utf8))
+        XCTAssertEqual(Router.cacheLifetime(sub), 300)
+        XCTAssertEqual(Router.cacheLifetime(["messages": []]), 0)
+    }
+
+    func testRewriteAccountOnlyTouchesMetadata() {
+        let old = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", new = "11111111-2222-3333-4444-555555555555"
+        // A message quoting the same shape must stay as it is.
+        let body = #"{"messages":[{"content":"\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\""}],"metadata":{"user_id":"{\"device_id\":\"abc\",\"account_uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"session_id\":\"s\"}"}}"#
+        let out = String(decoding: Router.rewriteAccount(in: Data(body.utf8), to: new), as: UTF8.self)
+        XCTAssertEqual(out.count, body.count)
+        XCTAssertEqual(out.components(separatedBy: old).count, 2)   // the message copy is untouched
+        XCTAssertTrue(out.hasSuffix(#"\"account_uuid\":\"11111111-2222-3333-4444-555555555555\",\"session_id\":\"s\"}"}}"#))
+        XCTAssertEqual(Router.rewriteAccount(in: Data(#"{"messages":[]}"#.utf8), to: new), Data(#"{"messages":[]}"#.utf8))
+    }
+
     func testNormalizeKeepsOneMainAndAddsNewAccountsFirst() {
         var c = config([.main, .main, .extra("gone")], accounts: ["new"])
         c.normalize()
@@ -259,13 +314,54 @@ final class ClaudeAccountsTests: XCTestCase {
         XCTAssertEqual(body, "served by max-token")
         XCTAssertEqual(server.seen, ["pro-token", "max-token"])   // tried Pro, then Main, in one request
         let state = engine.snapshot
-        XCTAssertEqual(state.inUse, "max")
+        XCTAssertEqual(state.inUse, "main")
         XCTAssertNotNil(state.accounts["pro"]?.limitedUntil)
         XCTAssertEqual(state.accounts["max"]?.sevenDay, 0.5)
 
         // The next request skips Pro until its reset.
         _ = try await send()
         XCTAssertEqual(server.seen, ["pro-token", "max-token", "max-token"])
+        front.stop()
+        server.stop()
+    }
+
+    /// A session stays on its account while new sessions go elsewhere once that account is busy, and
+    /// requests sent with another account's token name that account in their metadata.
+    func testSessionsArePinnedAndNewOnesSkipABusyAccount() async throws {
+        let pro = "11111111-2222-3333-4444-555555555555", max = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        let server = try await FakeAnthropic.start(limitedToken: "none", busyToken: "pro-token")
+        var deps = RelayEngine.Dependencies()
+        var c = config([.extra(pro), .main], accounts: [pro])
+        c.routing = true
+        deps.fixedConfig = c
+        deps.persist = false
+        deps.token = { _, _ in "pro-token" }
+        deps.profile = { _ in ClaudeOAuth.Profile(uuid: max, email: nil, orgUUID: nil, plan: nil) }
+        deps.upstream = { Upstream(host: "127.0.0.1", port: server.port, tls: false) }
+        let engine = RelayEngine(deps)
+        let front = try await Front.start(engine: engine)
+
+        func send(session: String) async throws {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(front.port)/v1/messages")!)
+            request.httpMethod = "POST"
+            request.setValue("Bearer max-token", forHTTPHeaderField: "Authorization")
+            request.setValue(session, forHTTPHeaderField: "x-claude-code-session-id")
+            let user = #"{\"device_id\":\"d\",\"account_uuid\":\"\#(max)\",\"session_id\":\"\#(session)\"}"#
+            request.httpBody = Data(#"{"model":"claude-opus-5-5","system":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}],"metadata":{"user_id":"\#(user)"}}"#.utf8)
+            _ = try await HTTP.session.data(for: request)
+        }
+
+        try await send(session: "s1")   // Pro: answers that it is at 90% of its Session window
+        try await send(session: "s2")   // new session: Pro is over 85%, so Main
+        try await send(session: "s1")   // s1's cache is warm on Pro: stays
+        XCTAssertEqual(server.seen, ["pro-token", "max-token", "pro-token"])
+        XCTAssertEqual(server.bodyAccounts, [pro, max, pro])
+        let state = engine.snapshot
+        XCTAssertEqual(state.pins["s1"]?.account, pro)
+        XCTAssertEqual(state.pins["s2"]?.account, "main")
+        XCTAssertEqual(state.inUse, "main")
+        XCTAssertEqual(state.events.last?.reason, "Over 85%")
+        XCTAssertEqual(state.activeSessions(), [pro: 1, "main": 1])
         front.stop()
         server.stop()
     }
@@ -309,21 +405,29 @@ private final class FakeAnthropic: @unchecked Sendable {
     private let lock = NSLock()
     private var _seen: [String] = []
     private var _expects = 0
+    private var _bodyAccounts: [String] = []
     var seen: [String] { lock.withLock { _seen } }
     var expects: Int { lock.withLock { _expects } }
+    /// `account_uuid` from each request's `metadata.user_id`.
+    var bodyAccounts: [String] { lock.withLock { _bodyAccounts } }
     let limitedToken: String
     let unauthorizedToken: String?
+    /// Answers normally, but says the account is at 90% of its Session window.
+    let busyToken: String?
 
-    private init(_ listener: NWListener, limitedToken: String, unauthorizedToken: String?) {
+    private init(_ listener: NWListener, limitedToken: String, unauthorizedToken: String?, busyToken: String?) {
         self.listener = listener
         self.limitedToken = limitedToken
         self.unauthorizedToken = unauthorizedToken
+        self.busyToken = busyToken
     }
 
-    static func start(limitedToken: String = "pro-token", unauthorizedToken: String? = nil) async throws -> FakeAnthropic {
+    static func start(limitedToken: String = "pro-token", unauthorizedToken: String? = nil,
+                      busyToken: String? = nil) async throws -> FakeAnthropic {
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        let server = FakeAnthropic(try NWListener(using: params), limitedToken: limitedToken, unauthorizedToken: unauthorizedToken)
+        let server = FakeAnthropic(try NWListener(using: params), limitedToken: limitedToken,
+                                   unauthorizedToken: unauthorizedToken, busyToken: busyToken)
         server.listener.newConnectionHandler = { connection in
             connection.start(queue: .global())
             Task { await server.serve(ByteStream(connection)) }
@@ -344,11 +448,14 @@ private final class FakeAnthropic: @unchecked Sendable {
     }
 
     private func serve(_ stream: ByteStream) async {
-        while let head = try? await stream.readHead(), (try? await stream.readBody(of: head)) != nil {
+        while let head = try? await stream.readHead(), let body = try? await stream.readBody(of: head) {
             let token = head.value("authorization")?.replacingOccurrences(of: "Bearer ", with: "") ?? ""
+            let user = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?.dict("metadata")?.string("user_id")
+            let account = user.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?.string("account_uuid")
             lock.withLock {
                 _seen.append(token)
                 if head.value("expect") != nil { _expects += 1 }
+                if let account { _bodyAccounts.append(account) }
             }
             let response: String
             if token == unauthorizedToken {
@@ -361,7 +468,9 @@ private final class FakeAnthropic: @unchecked Sendable {
                     + "Content-Length: \(body.utf8.count)\r\n\r\n\(body)"
             } else {
                 let body = "served by \(token)"
-                response = "HTTP/1.1 200 OK\r\nanthropic-ratelimit-unified-status: allowed\r\n"
+                let fiveHour = token == busyToken ? "anthropic-ratelimit-unified-5h-utilization: 0.9\r\n"
+                    + "anthropic-ratelimit-unified-5h-reset: \(Int(Date().timeIntervalSince1970) + 3600)\r\n" : ""
+                response = "HTTP/1.1 200 OK\r\nanthropic-ratelimit-unified-status: allowed\r\n" + fiveHour
                     + "anthropic-ratelimit-unified-7d-utilization: 0.5\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)"
             }
             try? await stream.send(Data(response.utf8))

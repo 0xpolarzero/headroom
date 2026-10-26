@@ -483,6 +483,41 @@ Not tested yet:
 - A Code-tab session through the Swift relay. Same mechanism as spike 3, which worked.
 - Signing in an extra account, and a real switch at a real limit.
 
+## Session pinning (added 2026-10-26)
+
+Switching a running session to another account costs one full re-read of the conversation on the new
+account, because the prompt cache belongs to the account. So sessions stay put while their cache is warm.
+
+Checked first with the terminal `claude` 2.1.310 through a pass-through relay, logging headers and cache
+settings only:
+
+- Every request carries `x-claude-code-session-id`. A subagent's requests carry the **same** ID, plus
+  `x-claude-code-agent-id`.
+- `cache_control.ttl` is `1h` on the main loop and the default 5 minutes for subagents. Each keeps its own
+  cache (the subagent wrote 16k tokens, then read them back).
+- `--resume` keeps the session ID and reads the cache when it's still warm.
+- The body's `metadata.user_id` is a JSON string with `device_id`, `account_uuid` and `session_id`.
+
+Rules (`Router.candidates`, `RelayEngine.settle`):
+
+1. A session whose cache is warm stays on its account while that account has room. "Warm" means: the latest of
+   each request's time plus that request's longest `cache_control.ttl`.
+2. A new session, or one whose cache has expired, starts on the first account in the order whose Session and
+   Weekly use are below `newSessionThreshold` (default 85%, from the last response headers; a window past its
+   reset counts as empty). If every account is above it, the first with room is used.
+3. At a hard limit, a warm session moves anyway: one full re-read on the new account, then it is pinned there.
+4. Requests sent with another account's token have `metadata.user_id.account_uuid` changed to that account,
+   the same length, nothing else touched.
+5. Events: "moved" when a warm session had to move; otherwise one when new sessions start on another account
+   ("Over 85%", a limit, or "Available again").
+
+Pins live in the relay's state file (at most 200 sessions, dropped after 24 h). After a relay restart they
+are read back.
+
+Tested: unit tests for the rules and the metadata rewrite, a loopback test (a session stays on Pro while a
+new one goes to Main because Pro is over 85%, and each body names the account of its token), and one real
+request through the Swift relay (pinned to Main, warm for 60 minutes).
+
 ## Still to check
 
 1. Probably fine to send every Claude Code session's subprocess traffic through Headroom (not decided yet).

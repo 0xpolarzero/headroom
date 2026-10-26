@@ -50,8 +50,7 @@ struct ClaudeAccountsSection: View {
         guard model.claudeConfig.routing else { return nil }
         var parts: [String] = []
         if let event = model.relayState?.events.last(where: { $0.from != nil }), now.timeIntervalSince(event.at) < 12 * 3600 {
-            let from = event.from.map(model.name(forKey:)) ?? ""
-            parts.append("\(Format.clock(event.at, now: now)) Switched to \(model.name(forKey: event.to)): \(event.reason.lowercased()) on \(from).")
+            parts.append("\(Format.clock(event.at, now: now)) " + AppModel.describe(event, name: model.name(forKey:)))
         }
         if let back = model.claudeReturnNote { parts.append(back + ".") }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
@@ -73,7 +72,7 @@ private struct AccountBlock: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Circle().fill(row.inUse ? Color.green : Color.clear).frame(width: 6, height: 6)
-                    .help(row.inUse ? "Claude Code is using this account" : "")
+                    .help(row.inUse ? "New Claude Code sessions start on this account" : "")
                 Text(row.name).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
                 if let plan = row.plan {
                     Text(plan)
@@ -88,7 +87,13 @@ private struct AccountBlock: View {
                         .help("The account the Claude app is signed in to. Claude Code's own sign-in is used for it.")
                 }
                 Spacer()
-                if let status { Text(status).font(.caption).foregroundStyle(.orange).lineLimit(1) }
+                if let status {
+                    Text(status).font(.caption).foregroundStyle(.orange).lineLimit(1)
+                } else if row.activeSessions > 0 {
+                    Text(row.activeSessions == 1 ? "1 session" : "\(row.activeSessions) sessions")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .help("Claude Code sessions on this account. Each stays here while its cache is warm.")
+                }
             }
             if let snapshot = row.snapshot {
                 let windows = ProviderSection.split(snapshot.windows)
@@ -104,7 +109,7 @@ private struct AccountBlock: View {
             }
         }
         .padding(8)
-        .background(row.inUse ? AnyShapeStyle(.background.opacity(0.35)) : AnyShapeStyle(.clear),
+        .background(row.inUse || row.activeSessions > 0 ? AnyShapeStyle(.background.opacity(0.35)) : AnyShapeStyle(.clear),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
