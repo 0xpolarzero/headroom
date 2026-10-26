@@ -16,9 +16,15 @@ struct SettingsView: View {
             section("Providers") {
                 ForEach(Array(model.order.enumerated()), id: \.element) { index, id in
                     HStack {
-                        Toggle(id.displayName, isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { model.isEnabled(id) },
-                            set: { model.setEnabled(id, $0) }))
+                            set: { model.setEnabled(id, $0) })) {
+                            Label {
+                                Text(id.displayName)
+                            } icon: {
+                                Image(nsImage: Logos.image(id)).renderingMode(.template).resizable().frame(width: 14, height: 14)
+                            }
+                        }
                         Spacer()
                         Button { model.move(id, by: -1) } label: { Image(systemName: "chevron.up") }
                             .disabled(index == 0)
@@ -29,6 +35,14 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                 }
+            }
+
+            section("Menu bar") {
+                Picker("Menu bar", selection: $model.menuBarMode) {
+                    ForEach(MenuBarMode.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
 
             section("Z.ai API key") {

@@ -11,7 +11,7 @@ enum Entry {
     private static func printUsage() {
         let done = DispatchSemaphore(value: 0)
         Task.detached {
-            let providers: [any UsageProvider] = [CodexProvider(), AntigravityProvider(), ZAIProvider()]
+            let providers: [any UsageProvider] = [ClaudeProvider(), CodexProvider(), AntigravityProvider(), ZAIProvider()]
             for provider in providers {
                 do {
                     let s = try await provider.fetch()
@@ -41,12 +41,29 @@ struct HeadroomApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            PanelView(model: model)
-        } label: {
-            MenuBarLabel(percent: model.menuBarPercent)
-        }
-        .menuBarExtraStyle(.window)
+        let shown = model.menuBarProviders
+        MenuBarExtra(isInserted: inserted(shown.contains(.claude))) { panel } label: { label(.claude) }
+            .menuBarExtraStyle(.window)
+        MenuBarExtra(isInserted: inserted(shown.contains(.codex))) { panel } label: { label(.codex) }
+            .menuBarExtraStyle(.window)
+        MenuBarExtra(isInserted: inserted(shown.contains(.antigravity))) { panel } label: { label(.antigravity) }
+            .menuBarExtraStyle(.window)
+        MenuBarExtra(isInserted: inserted(shown.contains(.zai))) { panel } label: { label(.zai) }
+            .menuBarExtraStyle(.window)
+        // Keeps Headroom reachable when no provider has an item.
+        MenuBarExtra("Headroom", systemImage: "gauge.with.dots.needle.50percent", isInserted: inserted(shown.isEmpty)) { panel }
+            .menuBarExtraStyle(.window)
+    }
+
+    private var panel: some View { PanelView(model: model) }
+
+    private func label(_ id: ProviderID) -> some View {
+        MenuBarLabel(id: id, snapshot: model.state(id).snapshot, mode: model.menuBarMode)
+    }
+
+    /// Items follow the model; removing one by dragging it out of the menu bar is ignored.
+    private func inserted(_ value: Bool) -> Binding<Bool> {
+        Binding(get: { value }, set: { _ in })
     }
 }
 

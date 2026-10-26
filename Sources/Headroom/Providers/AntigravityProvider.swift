@@ -104,18 +104,7 @@ struct AntigravityProvider: UsageProvider {
             }
             return nil
         }
-        return KeychainToken(access: access, refresh: refresh, expiry: parseDate(first(src, ["expiry", "expires_at", "expiresAt"])))
-    }
-
-    private static func parseDate(_ s: String?) -> Date? {
-        guard let s else { return nil }
-        if let d = Dates.iso(s) { return d }
-        // Go emits up to nanosecond precision; trim the fraction to milliseconds.
-        if let r = s.range(of: #"\.\d+"#, options: .regularExpression) {
-            let frac = String(s[r].prefix(4))
-            return Dates.iso(s.replacingCharacters(in: r, with: frac))
-        }
-        return nil
+        return KeychainToken(access: access, refresh: refresh, expiry: Dates.iso(first(src, ["expiry", "expires_at", "expiresAt"])))
     }
 
     // MARK: Network

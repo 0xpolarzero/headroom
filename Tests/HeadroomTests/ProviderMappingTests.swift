@@ -115,3 +115,25 @@ final class FormatTests: XCTestCase {
         XCTAssertFalse(CodexProvider.isExpiring("not-a-jwt", now: now))
     }
 }
+
+final class ClaudeMappingTests: XCTestCase {
+    func testClaudeWindowsAndPlan() throws {
+        let root = try JSONSerialization.jsonObject(with: Data("""
+        {"five_hour":{"utilization":6.0,"resets_at":"2026-10-26T19:59:59.943648+00:00"},
+         "seven_day":{"utilization":35,"resets_at":"2026-10-30T10:00:00+00:00"},
+         "seven_day_opus":null,"seven_day_sonnet":{"utilization":12.5,"resets_at":null}}
+        """.utf8)) as! [String: Any]
+        let w = ClaudeProvider.windows(from: root)
+        XCTAssertEqual(w.map(\.label), ["Session", "Weekly", "Sonnet Weekly"])
+        XCTAssertEqual(w[0].usedPercent, 6)
+        XCTAssertEqual(w[0].resetsAt?.timeIntervalSince1970 ?? 0, 1_793_044_799.943, accuracy: 0.01)
+        XCTAssertNil(w[2].resetsAt)
+
+        XCTAssertEqual(ClaudeProvider.planName(type: "max", tier: "default_claude_max_20x"), "Max 20x")
+        XCTAssertEqual(ClaudeProvider.planName(type: "pro", tier: "default_claude_ai"), "Pro")
+        let creds = ClaudeProvider.credentials(from: #"{"claudeAiOauth":{"accessToken":"t","expiresAt":1793044799000,"subscriptionType":"max"}}"#)
+        XCTAssertEqual(creds?.accessToken, "t")
+        XCTAssertEqual(creds?.plan, "Max")
+        XCTAssertNil(ClaudeProvider.credentials(from: "{}"))
+    }
+}

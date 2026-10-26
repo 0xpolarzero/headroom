@@ -101,6 +101,11 @@ struct ProviderSection: View {
 
     private var header: some View {
         HStack(spacing: 6) {
+            Image(nsImage: Logos.image(id))
+                .renderingMode(.template)
+                .resizable()
+                .frame(width: 16, height: 16)
+                .foregroundStyle(.secondary)
             Text(id.displayName).font(.headline)
             if let plan = state.snapshot?.plan {
                 Text(plan)

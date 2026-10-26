@@ -11,10 +11,25 @@ struct ProviderState: Sendable {
     var isLoading = false
     var lastAttempt: Date?
     var lastSuccess: Date?
+    /// The provider has no login or key at all; its menu bar item is hidden.
+    var notConfigured = false
 
     func isStale(now: Date) -> Bool {
         guard let lastSuccess else { return false }
         return now.timeIntervalSince(lastSuccess) > AppModel.staleAfter
+    }
+}
+
+/// Which window the menu bar items show.
+enum MenuBarMode: String, CaseIterable, Identifiable {
+    case session, weekly, both
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .session: "Session"
+        case .weekly: "Weekly"
+        case .both: "Both"
+        }
     }
 }
 
@@ -45,6 +60,9 @@ final class AppModel {
             if notificationsOn { requestNotificationPermission() }
         }
     }
+    var menuBarMode: MenuBarMode {
+        didSet { defaults.set(menuBarMode.rawValue, forKey: "menuBarMode") }
+    }
     private(set) var launchAtLogin = false
     private(set) var launchAtLoginError: String?
     private(set) var hasZAIKey = false
@@ -55,7 +73,7 @@ final class AppModel {
     }
     private let defaults = UserDefaults.standard
     private let providers: [ProviderID: any UsageProvider] = [
-        .codex: CodexProvider(), .antigravity: AntigravityProvider(), .zai: ZAIProvider(),
+        .claude: ClaudeProvider(), .codex: CodexProvider(), .antigravity: AntigravityProvider(), .zai: ZAIProvider(),
     ]
     private var loop: Task<Void, Never>?
 
@@ -63,6 +81,7 @@ final class AppModel {
         let saved = (defaults.stringArray(forKey: "providerOrder") ?? []).compactMap(ProviderID.init)
         order = saved + ProviderID.allCases.filter { !saved.contains($0) }
         disabled = Set((defaults.stringArray(forKey: "disabledProviders") ?? []).compactMap(ProviderID.init))
+        menuBarMode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
         hasZAIKey = Keychain.readOwn(service: Self.zaiService, account: Self.zaiAccount) != nil
@@ -79,11 +98,12 @@ final class AppModel {
 
     var isRefreshing: Bool { enabledProviders.contains { states[$0]?.isLoading == true } }
 
-    /// The most-used Session window across enabled providers, for the menu bar.
-    var menuBarPercent: Double? {
-        enabledProviders.compactMap { id in
-            states[id]?.snapshot?.windows.first { $0.label == "Session" }?.usedPercent
-        }.max()
+    /// Enabled providers that get a menu bar item: all but those with nothing to show yet.
+    var menuBarProviders: [ProviderID] {
+        enabledProviders.filter { id in
+            let s = state(id)
+            return s.snapshot != nil || !s.notConfigured
+        }
     }
 
     // MARK: Refresh
@@ -138,10 +158,12 @@ final class AppModel {
             let snapshot = try await provider.fetch()
             states[id]?.snapshot = snapshot   // keep the last good data on failure
             states[id]?.error = nil
+            states[id]?.notConfigured = false
             states[id]?.lastSuccess = .now
             checkLimits(id, snapshot)
         } catch {
             states[id]?.error = error.localizedDescription
+            if case ProviderError.notConfigured = error { states[id]?.notConfigured = true }
         }
         states[id]?.isLoading = false
     }

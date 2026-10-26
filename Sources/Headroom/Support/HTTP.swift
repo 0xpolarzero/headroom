@@ -47,7 +47,10 @@ enum Dates {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let d = f.date(from: string) { return d }
         f.formatOptions = [.withInternetDateTime]
-        return f.date(from: string)
+        if let d = f.date(from: string) { return d }
+        // Go and Python emit up to nanosecond precision; trim the fraction to milliseconds.
+        guard let r = string.range(of: #"\.\d{4,}"#, options: .regularExpression) else { return nil }
+        return iso(string.replacingCharacters(in: r, with: String(string[r].prefix(4))))
     }
 
     /// Epoch seconds or milliseconds.

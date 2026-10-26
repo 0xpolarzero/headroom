@@ -12,17 +12,18 @@ struct UsageWindow: Hashable, Sendable, Codable {
 
 /// Everything a provider (or one account of a provider) reports in one refresh.
 struct UsageSnapshot: Hashable, Sendable, Codable {
-    var title: String           // "Codex", "Antigravity", "Z.ai"
+    var title: String           // "Claude", "Codex", "Antigravity", "Z.ai"
     var plan: String?           // "Max 5x", "Pro", "GLM Coding Max"
     var windows: [UsageWindow]
     var fetchedAt: Date = .now
 }
 
 enum ProviderID: String, CaseIterable, Codable, Sendable, Identifiable {
-    case codex, antigravity, zai
+    case claude, codex, antigravity, zai
     var id: String { rawValue }
     var displayName: String {
         switch self {
+        case .claude: "Claude"
         case .codex: "Codex"
         case .antigravity: "Antigravity"
         case .zai: "Z.ai"
@@ -31,7 +32,7 @@ enum ProviderID: String, CaseIterable, Codable, Sendable, Identifiable {
 }
 
 enum ProviderError: LocalizedError, Sendable {
-    case notConfigured(String)      // e.g. "Run `codex` to sign in."
+    case notConfigured(String)      // e.g. "Run `codex` to sign in."; hides the menu bar item
     case unauthorized(String)
     case http(Int)
     case invalidResponse
