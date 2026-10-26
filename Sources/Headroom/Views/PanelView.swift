@@ -120,7 +120,6 @@ struct ProviderSection: View {
                             VStack(spacing: 8) {
                                 ForEach(snapshot.keys, id: \.self) { KeyRow(key: $0) }
                             }
-                            .padding(.trailing, 8)   // room for the scroller
                         }
                     }
                 }
@@ -402,6 +401,9 @@ struct CappedScroll<Content: View>: View {
                 })
         }
         .scrollBounceBehavior(.basedOnSize)
+        // A legacy scrollbar (shown with a mouse attached) would take width and shift everything over
+        // whenever the content grows past the cap; the wheel and trackpad still scroll.
+        .scrollIndicators(.never)
         .frame(height: min(contentHeight, maxHeight))
         .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
     }
