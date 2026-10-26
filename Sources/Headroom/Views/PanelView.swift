@@ -169,7 +169,7 @@ struct ProviderSection: View {
             if let error = state.error, state.snapshot != nil {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                    .help(error)
+                    .hoverTip(error)
             }
         }
     }
@@ -188,7 +188,7 @@ struct ResetBadge: View {
                 Text("\(resets.count)").font(.caption2.weight(.medium)).monospacedDigit()
             }
             .foregroundStyle(.secondary)
-            .help(Self.tooltip(resets, now: now))
+            .hoverTip(Self.tooltip(resets, now: now))
             .accessibilityLabel(Self.tooltip(resets, now: now))
         }
     }
@@ -206,6 +206,39 @@ struct ResetBadge: View {
             text += (dates.count == 1 ? " Expires " : " Expire ") + list + "."
         }
         return text
+    }
+}
+
+extension View {
+    /// Shows `text` in a small popover while the pointer is over the view. `.help` tooltips don't
+    /// appear in the panel: it belongs to a menu bar app whose window is never the active one.
+    func hoverTip(_ text: String) -> some View { modifier(HoverTip(text: text)) }
+}
+
+private struct HoverTip: ViewModifier {
+    let text: String
+    @State private var shown = false
+    @State private var pending: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .onHover { inside in
+                pending?.cancel()
+                // A short delay, like a system tooltip, so passing over the badge doesn't flash it.
+                pending = Task { @MainActor in
+                    if inside { try? await Task.sleep(for: .milliseconds(350)) }
+                    guard !Task.isCancelled else { return }
+                    shown = inside
+                }
+            }
+            .popover(isPresented: $shown, arrowEdge: .bottom) {
+                Text(text)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 260, alignment: .leading)
+                    .padding(8)
+            }
     }
 }
 
