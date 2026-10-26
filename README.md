@@ -1,12 +1,24 @@
 # Headroom
 
-A small macOS menu bar app that shows how much of your coding-agent subscription limits you have used.
-It covers **Claude**, **Codex**, **Antigravity**, **Z.ai** and **OpenRouter**. It is inspired by [OpenUsage](https://github.com/robinebers/openusage) but does much less, on purpose.
+A small macOS menu bar app that shows how much of your coding-agent subscription limits you have used, and
+helps you **run Claude Code on several Claude accounts**. It covers **Claude**, **Codex**, **Antigravity**,
+**Z.ai** and **OpenRouter**. It is inspired by [OpenUsage](https://github.com/robinebers/openusage) but does
+much less, on purpose.
+
+**Several Claude accounts.** Got a Max plan and a $20 Pro, or a work and a personal account? Headroom gives
+each account its own Claude app window, signed in to that account, so its Code-tab sessions run entirely on
+it. It shows every account's limits side by side and marks the one to use for your next session, so you spend
+the cheap plan first and move on before it runs out. Settings, skills, hooks and plugins stay shared; only the
+sessions are per account. Nothing is proxied or rewritten: every window is the official app with a normal
+sign-in. See [Several Claude accounts](#several-claude-accounts).
 
 The menu bar item shows every provider side by side, in the order set in Settings: its logo with what is
-left of the Session, the Weekly, or both stacked (OpenRouter shows its credit balance). Providers that aren't
-set up are left out. Click it to open the panel: every limit window with a meter of what is left (blue, yellow
-from 20% left, red from 10% left) and when it resets. OpenRouter's section expands to show spend per key.
+left of the Session, the Weekly, or both stacked (OpenRouter shows its credit balance). With several Claude
+accounts, it shows each one's name and what is left, the one for new sessions in a filled tag. Providers that
+aren't set up are left out. Click it to open the panel: every limit window with a meter of what is left (blue,
+yellow from 20% left, red from 10% left) and when it resets, plus a small ↺ count of the limit resets an
+account can spend (Claude reset grants, Codex reset credits; hover for when they expire). OpenRouter's section
+expands to show spend per key.
 
 On a Mac with a notch, macOS hides a menu bar item that doesn't fit next to it. If Headroom is missing,
 ⌘-drag other items out of the way, or turn off providers you don't need in Settings.
@@ -77,7 +89,10 @@ sign-in. Headroom opens the copies, shows every account's limits and says which 
 - A provider shows **Outdated** after 10 minutes without a successful refresh.
 - Settings (gear icon): enable, disable and reorder providers, what the menu bar shows, Claude accounts,
   other accounts (Antigravity, Z.ai, OpenRouter), launch at login, and notifications.
-- Notifications: one alert when a Session or Weekly window reaches 100%, once per reset.
+- Notifications: one alert when a Session or Weekly window reaches 100%, once per reset, and one when new
+  Claude sessions should move to another account.
+- Limit resets: Claude's reset grants are checked at most once an hour per account; Codex's reset credits
+  with every refresh.
 
 ## License
 
