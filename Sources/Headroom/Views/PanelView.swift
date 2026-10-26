@@ -188,7 +188,7 @@ struct ResetBadge: View {
                 Text("\(resets.count)").font(.caption2.weight(.medium)).monospacedDigit()
             }
             .foregroundStyle(.secondary)
-            .hoverTip(Self.tooltip(resets, now: now))
+            .hoverTip { ResetDetail(resets: resets, now: now) }
             .accessibilityLabel(Self.tooltip(resets, now: now))
         }
     }
@@ -209,14 +209,70 @@ struct ResetBadge: View {
     }
 }
 
+/// The resets badge's hover card: how many, then when each expires.
+struct ResetDetail: View {
+    let resets: LimitResets
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.counterclockwise.circle.fill").foregroundStyle(.tint)
+                Text(resets.count == 1 ? "1 limit reset" : "\(resets.count) limit resets").font(.headline)
+            }
+            if groups.isEmpty {
+                Text("No expiry date given.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                Divider()
+                ForEach(groups, id: \.date) { group in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(group.count > 1 ? "\(group.count) expire in \(Format.duration(group.date.timeIntervalSince(now)))"
+                                             : "Expires in \(Format.duration(group.date.timeIntervalSince(now)))")
+                        Spacer(minLength: 12)
+                        Text(when(group.date)).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    .font(.callout)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 240)
+    }
+
+    /// "jeu. 21:42" within a week; past that a weekday alone is ambiguous, so the date ("7 nov. 01:32").
+    private func when(_ date: Date) -> String {
+        date.timeIntervalSince(now) < 6 * 86400 ? Format.clock(date, now: now)
+            : date.formatted(.dateTime.day().month(.abbreviated).hour().minute())
+    }
+
+    /// Resets that end at the same moment, counted once.
+    private var groups: [(date: Date, count: Int)] {
+        var out: [(date: Date, count: Int)] = []
+        for date in resets.expiries {
+            if out.last?.date == date { out[out.count - 1].count += 1 } else { out.append((date, 1)) }
+        }
+        return out
+    }
+}
+
 extension View {
     /// Shows `text` in a small popover while the pointer is over the view. `.help` tooltips don't
     /// appear in the panel: it belongs to a menu bar app whose window is never the active one.
-    func hoverTip(_ text: String) -> some View { modifier(HoverTip(text: text)) }
+    func hoverTip(_ text: String) -> some View {
+        hoverTip {
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 260, alignment: .leading)
+                .padding(12)
+        }
+    }
+
+    func hoverTip<Tip: View>(@ViewBuilder _ tip: @escaping () -> Tip) -> some View { modifier(HoverTip(tip: tip)) }
 }
 
-private struct HoverTip: ViewModifier {
-    let text: String
+private struct HoverTip<Tip: View>: ViewModifier {
+    let tip: () -> Tip
     @State private var shown = false
     @State private var pending: Task<Void, Never>?
 
@@ -232,13 +288,7 @@ private struct HoverTip: ViewModifier {
                     shown = inside
                 }
             }
-            .popover(isPresented: $shown, arrowEdge: .bottom) {
-                Text(text)
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 260, alignment: .leading)
-                    .padding(8)
-            }
+            .popover(isPresented: $shown, arrowEdge: .bottom) { tip() }
     }
 }
 
