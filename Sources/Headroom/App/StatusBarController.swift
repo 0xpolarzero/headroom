@@ -41,7 +41,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
         let labels = ids.map { id in
             MenuBarLabel(id: id, snapshot: id == .claude ? model.claudeMenuBarSnapshot : model.state(id).snapshot,
-                         mode: model.menuBarMode)
+                         mode: model.menuBarMode, badge: id == .claude ? model.claudeMenuBarBadge : nil)
         }
         let strip = HStack(spacing: 10) {
             ForEach(labels, id: \.id) { $0 }

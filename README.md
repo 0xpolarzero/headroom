@@ -81,7 +81,8 @@ sessions and settings stay as they are.
   in its menu in Settings.
 - **The panel** lists the accounts in order, with a dot on the one new sessions start on, how many sessions
   each one has, when a used-up one comes back, and the last switch. The menu bar shows the account new
-  sessions use. A notification says when new sessions change account and when a running session had to move.
+  sessions use, marked with its plan ("Pro", "Max") or its place in the order when plans repeat, and "Out"
+  when every account is out. A notification says when new sessions change account and when a running session had to move.
 - **Turning it off** blanks the keys (running sessions drop the proxy within seconds), removes them a minute
   later, and the relay stops by itself after 30 idle minutes. `Headroom --routing on|off` does the same from a
   terminal.

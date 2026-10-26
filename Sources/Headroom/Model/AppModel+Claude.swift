@@ -13,6 +13,8 @@ struct ClaudeAccountRow: Identifiable {
     var inUse: Bool
     /// Claude Code sessions on this account whose cache is still warm.
     var activeSessions: Int
+    /// Out of its limit (and not allowed into extra usage), or its sign-in ended.
+    var isOut: Bool
     var isMain: Bool { ref == .main }
     var allowOverage: Bool
     var id: String { ref.key }
@@ -29,17 +31,26 @@ extension AppModel {
     var claudeRows: [ClaudeAccountRow] {
         let inUse = relayState?.inUse
         let active = relayState?.activeSessions() ?? [:]
+        let now = Date()
+        func out(_ limits: AccountLimitState?, allowOverage: Bool) -> Bool {
+            guard let limits else { return false }
+            if limits.signInNeeded { return true }
+            guard let until = limits.limitedUntil, until > now else { return false }
+            return !(limits.overage && allowOverage)
+        }
         return claudeConfig.order.compactMap { ref in
             switch ref {
             case .main:
                 let key = mainUUID ?? "main"
                 let email = relayState?.mainEmail ?? (signedIn.cliUUID == mainUUID ? signedIn.cliEmail : nil)
+                let limits = relayState?.accounts[key]
+                let isOut = out(limits, allowOverage: claudeConfig.mainAllowOverage)
                 return ClaudeAccountRow(ref: .main, name: email ?? "Claude app account",
                                         plan: relayState?.mainPlan ?? state(.claude).snapshot?.plan,
                                         snapshot: state(.claude).snapshot, error: state(.claude).error,
-                                        limits: relayState?.accounts[key], inUse: claudeConfig.routing && inUse == "main",
+                                        limits: limits, inUse: claudeConfig.routing && inUse == "main" && !isOut,
                                         activeSessions: claudeConfig.routing ? active["main", default: 0] : 0,
-                                        allowOverage: claudeConfig.mainAllowOverage)
+                                        isOut: isOut, allowOverage: claudeConfig.mainAllowOverage)
             case .extra(let uuid):
                 guard let account = claudeConfig.account(uuid) else { return nil }
                 let s = claudeAccountStates[uuid]
@@ -47,9 +58,9 @@ extension AppModel {
                 return ClaudeAccountRow(ref: ref, name: account.email ?? "Account \(uuid.prefix(8))",
                                         plan: s?.snapshot?.plan ?? account.plan, snapshot: s?.snapshot,
                                         error: limits?.signInNeeded == true ? "Sign in again." : s?.error,
-                                        limits: limits, inUse: claudeConfig.routing && inUse == uuid,
+                                        limits: limits, inUse: claudeConfig.routing && inUse == uuid && !out(limits, allowOverage: account.allowOverage),
                                         activeSessions: claudeConfig.routing ? active[uuid, default: 0] : 0,
-                                        allowOverage: account.allowOverage)
+                                        isOut: out(limits, allowOverage: account.allowOverage), allowOverage: account.allowOverage)
             }
         }
     }
@@ -60,10 +71,28 @@ extension AppModel {
         return state(.claude).snapshot
     }
 
-    /// "Back to Pro at 17:40" when Claude Code is not on its first choice.
+    /// Which account the Claude menu bar item shows, when there is a choice: the plan ("Pro", "Max")
+    /// when that tells the accounts apart, else its place in the order ("1", "2"). "Out" when none has room.
+    var claudeMenuBarBadge: String? {
+        let rows = claudeRows
+        guard claudeConfig.routing, rows.count > 1 else { return nil }
+        guard let index = rows.firstIndex(where: \.inUse) else { return rows.allSatisfy(\.isOut) ? "Out" : nil }
+        let short = rows.map { $0.plan?.split(separator: " ").first.map(String.init) }
+        if let plan = short[index], short.filter({ $0 == plan }).count == 1 { return plan }
+        return String(index + 1)
+    }
+
+    /// "Back to Pro at 17:40" when Claude Code is not on its first choice; when every account is out,
+    /// which comes back first.
     var claudeReturnNote: String? {
         let rows = claudeRows
-        guard claudeConfig.routing, let used = rows.firstIndex(where: \.inUse), used > 0 else { return nil }
+        guard claudeConfig.routing else { return nil }
+        if !rows.isEmpty, rows.allSatisfy(\.isOut) {
+            let back = rows.compactMap { row in row.limits?.limitedUntil.map { (row.name, $0) } }.min { $0.1 < $1.1 }
+            return back.map { "Every account is out. \($0.0) is back first, at \(Format.clock($0.1))" }
+                ?? "Every account is out"
+        }
+        guard let used = rows.firstIndex(where: \.inUse), used > 0 else { return nil }
         let first = rows[0]
         guard let until = first.limits?.limitedUntil, until > .now else { return nil }
         return "Back to \(first.name) at \(Format.clock(until))"

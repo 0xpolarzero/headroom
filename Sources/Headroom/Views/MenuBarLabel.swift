@@ -7,6 +7,8 @@ struct MenuBarLabel: View {
     let id: ProviderID
     let snapshot: UsageSnapshot?
     let mode: MenuBarMode
+    /// Which account the numbers are for, when there are several ("Pro", "Max", "2").
+    var badge: String? = nil
 
     var body: some View {
         HStack(spacing: 4) {
@@ -14,6 +16,12 @@ struct MenuBarLabel: View {
                 .renderingMode(.template)
                 .resizable()
                 .frame(width: 15, height: 15)
+            if let badge {
+                Text(badge)
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 3)
+                    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(lineWidth: 1))
+            }
             if let text = snapshot?.menuBarText {
                 Text(text).font(.system(size: 13, weight: .medium))
             } else {

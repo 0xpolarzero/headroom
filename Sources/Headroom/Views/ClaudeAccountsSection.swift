@@ -87,13 +87,14 @@ private struct AccountBlock: View {
                         .help("The account the Claude app is signed in to. Claude Code's own sign-in is used for it.")
                 }
                 Spacer()
-                if let status {
-                    Text(status).font(.caption).foregroundStyle(.orange).lineLimit(1)
-                } else if row.activeSessions > 0 {
+                if row.activeSessions > 0 {
                     Text(row.activeSessions == 1 ? "1 session" : "\(row.activeSessions) sessions")
                         .font(.caption).foregroundStyle(.secondary)
                         .help("Claude Code sessions on this account. Each stays here while its cache is warm.")
                 }
+            }
+            if let status {
+                Text(status).font(.caption).foregroundStyle(.orange).padding(.top, -4)
             }
             if let snapshot = row.snapshot {
                 let windows = ProviderSection.split(snapshot.windows)
@@ -102,7 +103,7 @@ private struct AccountBlock: View {
                 if !windows.more.isEmpty {
                     Caret(isExpanded: showMore) { showMore.toggle() }.padding(.bottom, -4)
                 }
-            } else if let error = row.error {
+            } else if let error = row.error, row.limits?.signInNeeded != true {   // already the status line
                 Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Loading…").font(.caption).foregroundStyle(.secondary)
@@ -119,10 +120,10 @@ private struct AccountBlock: View {
         if limits.signInNeeded { return "Sign in again" }
         if let until = limits.limitedUntil, until > now {
             if limits.overage { return row.allowOverage ? "Extra usage" : "Skipped: extra usage" }
-            return "Out until \(Format.clock(until, now: now))"
+            return "\(Router.reason(limits)), back at \(Format.clock(until, now: now))"
         }
         if let scoped = limits.scoped.filter({ $0.value > now }).min(by: { $0.value < $1.value }) {
-            return "\(scoped.key.capitalized) out until \(Format.clock(scoped.value, now: now))"
+            return "\(scoped.key.capitalized) out until \(Format.clock(scoped.value, now: now)), other models still here"
         }
         return nil
     }
