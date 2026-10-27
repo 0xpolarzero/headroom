@@ -72,9 +72,13 @@ its sessions are its own.
   sessions (`claude plugin install headroom@headroom --scope user`, from a marketplace folder inside
   Headroom.app, so it updates with the app). Claude keeps using its built-in `Agent` tool as usual. When
   another of your accounts has room, the plugin answers that call itself and runs the subagent there:
-  - Claude sees exactly what a background built-in agent gives: "launched" at once with an `agentId`, then a
-    `<task-notification>` with the agent's report when it finishes. `SendMessage` to that `agentId` continues
-    it on the same account; a message sent while it works is read when it finishes.
+  - Claude sees exactly what a built-in agent gives. Claude Code checks the call and decides whether the
+    agent runs in the foreground or the background, as for any agent; the plugin takes it over only as it
+    starts. In the foreground the call waits and answers with the agent's report (ctrl+b, or **Run in
+    background** on its row, sends it to the background; interrupting stops it). In the background it
+    answers "launched" at once with an `agentId`, then a `<task-notification>` with the report when it
+    finishes. `SendMessage` to that `agentId` continues it on the same account; a message sent while it
+    works is read when it finishes.
   - It runs `claude -p` in the session's folder with the same parameters (`subagent_type`, `model`, `effort`,
     `isolation`), your MCP servers (from `~/.claude.json`, passed with `--mcp-config`) and the session's
     permission mode. "Ask each time" becomes auto mode, since nobody can be asked there.

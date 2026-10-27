@@ -29,6 +29,7 @@ enum AgentRun {
     }
 
     static func main() -> Never {
+        stopOnSignal()
         Task.detached {
             let input = FileHandle.standardInput.readDataToEndOfFile()
             guard let request = try? JSONDecoder().decode(Request.self, from: input) else {
@@ -40,6 +41,26 @@ enum AgentRun {
             exit(0)
         }
         dispatchMain()
+    }
+
+    private static var signalSources: [DispatchSourceSignal] = []
+
+    /// The plugin ends a run nobody waits for any more (the person interrupted a foreground agent) by ending
+    /// this process: the Claude Code it started ends with it.
+    private static func stopOnSignal() {
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler {
+                var children = [pid_t](repeating: 0, count: 64)
+                let count = proc_listchildpids(getpid(), &children, Int32(children.count * MemoryLayout<pid_t>.size))
+                for pid in children.prefix(Int(max(0, min(count, Int32(children.count))))) where pid > 0 { kill(pid, SIGTERM) }
+                AgentRegistry.setRunning(nil)
+                exit(1)
+            }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     /// `Headroom --agent-warm`: the plugin's heads-up when a prompt is sent, with the same request an Agent

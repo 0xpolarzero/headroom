@@ -11,8 +11,15 @@ The app copies below were also replaced. Each account is now only a Claude Code 
 = `~/.claude-accounts/<name>`). Headroom's Claude Code plugin (`ClaudePlugin/` in this repository, installed
 at user scope) hooks the built-in `Agent` tool: when another account has room (never the session's own, both
 usage thresholds respected, most room first), it starts `Headroom --agent-run`, which runs `claude -p` there,
-and answers the call as a background built-in agent does (`async_launched`, then a `<task-notification>`
-through `$.prompt.submit`). `SendMessage` to that agent resumes its session on the same account. With no
+and answers the call as a built-in agent does. The `tool.call` hook marks the call and lets the engine run
+it; at the engine's `agent.spawn` for that call (permissions and other hooks passed, `background` decided)
+the plugin starts the runner and denies the built-in spawn, then answers the call itself: in the
+background `async_launched`, then a `<task-notification>` through `$.prompt.submit`; in the foreground it
+waits and answers `completed` with the report (or the error), ctrl+b (`task:background`) switching it to
+`async_launched`, an interrupt ending the runner, which stops its `claude -p`. A probe (2026-10-27) showed a
+denied spawn leaves nothing behind (no worktree), `background` true in `claude -p` and false with
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, and a hook can keep reading a run another hook started for minutes.
+`SendMessage` to that agent resumes its session on the same account. With no
 account free the call goes to the built-in tool. A first version was an MCP server (`Headroom --mcp`) with
 look-alike tools; Claude had to be told to prefer them and couldn't run them in the background, so it was
 dropped. The README describes the current behaviour in full.
