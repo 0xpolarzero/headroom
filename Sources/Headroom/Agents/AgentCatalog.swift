@@ -110,7 +110,7 @@ struct AgentCatalog: Codable, Equatable, Sendable {
 
     /// What the plugin reads: the revision and the enabled agents as Claude Code registers them.
     func pluginJSON() -> [String: Any] {
-        ["revision": revision, "agents": enabled.map { agent in
+        ["revision": revision, "nativeTasks": true, "agents": enabled.map { agent in
             ["name": agent.name, "description": agent.description, "provider": agent.provider.rawValue,
              "summary": agent.summary, "prompt": agent.instructions]
         }]

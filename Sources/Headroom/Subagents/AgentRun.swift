@@ -30,9 +30,18 @@ enum AgentRun {
         var resume: String?
         /// An agent type from Headroom's list (`headroom:codex-deep`): it runs on its own provider, never elsewhere.
         var agent: String?
+        /// Claude Code's native task id, also used for Headroom's logs, stop and resume.
+        var id: String?
+
+        var validID: Bool {
+            guard let id else { return true }
+            return !id.isEmpty && id.count <= 100 && id.utf8.allSatisfy {
+                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95
+            }
+        }
     }
 
-    static func main() -> Never {
+    static func main(routeOnly: Bool = false) -> Never {
         stopOnSignal()
         Task.detached {
             let input = FileHandle.standardInput.readDataToEndOfFile()
@@ -40,7 +49,11 @@ enum AgentRun {
                 emit(["type": "result", "text": "Headroom couldn't read the subagent request.", "isError": true])
                 exit(1)
             }
-            await run(request)
+            guard request.validID else {
+                emit(["type": "error", "text": "Headroom received an invalid native agent id."])
+                exit(1)
+            }
+            if routeOnly { emit(await route(request)) } else { await run(request) }
             AgentRegistry.setRunning(nil)
             exit(0)
         }
@@ -56,6 +69,8 @@ enum AgentRun {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             source.setEventHandler {
+                // A ready process came from the app, so it is not necessarily this runner's child.
+                for pid in AgentRegistry.ownedProcesses() { SubagentRunner.terminate(pid) }
                 var children = [pid_t](repeating: 0, count: 64)
                 let count = proc_listchildpids(getpid(), &children, Int32(children.count * MemoryLayout<pid_t>.size))
                 for pid in children.prefix(Int(max(0, min(count, Int32(children.count))))) where pid > 0 { kill(pid, SIGTERM) }
@@ -101,6 +116,23 @@ enum AgentRun {
         FileHandle.standardOutput.write(data)
     }
 
+    /// Checks routing before the engine creates its native task. It starts no provider or model request.
+    static func route(_ request: Request) async -> [String: Any] {
+        if ProcessInfo.processInfo.environment[nestedMarker] != nil { return ["type": "no_room"] }
+        if let id = request.resume {
+            return ["type": AgentRegistry.lookup(id) == nil ? "no_room" : "routed"]
+        }
+        if let type = request.agent {
+            guard AgentCatalog.load().agent(type) != nil else {
+                return ["type": "error", "text": "No agent \(type) is enabled in Headroom (Settings → Agents)."]
+            }
+            return ["type": "routed"]
+        }
+        let config = ClaudeAccountsConfig.load()
+        let account = await pick(config.ordered, config: config, own: SubagentAccounts.ownAccountUUID(), excluding: [])
+        return ["type": account == nil ? "no_room" : "routed"]
+    }
+
     static func run(_ request: Request) async {
         let config = ClaudeAccountsConfig.load()
         let accounts = config.ordered
@@ -120,7 +152,7 @@ enum AgentRun {
                 emit(["type": "error", "text": "No agent \(type) is enabled in Headroom (Settings → Agents)."])
                 return
             }
-            return await runDefined(definition, request, agentID: UUID().uuidString.lowercased(), resume: nil, mcpConfig: mcpConfig)
+            return await runDefined(definition, request, agentID: request.id ?? UUID().uuidString.lowercased(), resume: nil, mcpConfig: mcpConfig)
         }
         if let agentID = request.resume {
             guard let entry = AgentRegistry.lookup(agentID), let account = accounts.first(where: { $0.id == entry.account }) else {
@@ -134,7 +166,8 @@ enum AgentRun {
                                              resume: true, mcpConfig: mcpConfig)
             let result = await SubagentRunner.run(req, on: account, in: entry.directory,
                                                   onProcess: { AgentRegistry.setProcess(agentID, claude: $0) },
-                                                  check: launch.check(subagentType: entry.subagentType, account: account.id) {
+                                                  check: launch.check(subagentType: entry.subagentType, account: account.id) { event in
+                AgentRegistry.remember(agentID, entry: entry, at: event["cwd"] as? String)
                 emit(["type": "started", "agentId": agentID, "account": account.id, "model": entry.model ?? "", "outputFile": logURL(agentID).path])
             }) { step(agentID, $0) } onItem: { item(agentID, $0) }
             if result.limitReached { await SubagentUsage.shared.markFull(account) }
@@ -146,7 +179,7 @@ enum AgentRun {
 
         if ProcessInfo.processInfo.environment[nestedMarker] != nil { emit(["type": "no_room"]); return }
         let own = SubagentAccounts.ownAccountUUID()
-        let agentID = UUID().uuidString.lowercased()
+        let agentID = request.id ?? UUID().uuidString.lowercased()
         let launch = Launch()
         var tried = Set<String>()
         while true {
@@ -162,7 +195,11 @@ enum AgentRun {
             if let m = model, AgentRegistry.lacksModel(account.id, m) { model = SubagentRunner.fallbackModel }
             AgentRegistry.setRunning(account.id)
             let firstModel = model
-            let check = launch.check(subagentType: request.subagentType, account: account.id) {
+            let check = launch.check(subagentType: request.subagentType, account: account.id) { event in
+                // A native stop can end the runner before `run` returns. Keep its session from init onward.
+                AgentRegistry.remember(agentID, entry: .init(account: account.id, directory: event["cwd"] as? String ?? request.cwd,
+                                                           sessionID: event["session_id"] as? String ?? "", model: event["model"] as? String ?? firstModel,
+                                                           subagentType: request.subagentType, effort: request.effort, at: Date()))
                 emit(["type": "started", "agentId": agentID, "account": account.id, "model": firstModel ?? "", "outputFile": logURL(agentID).path])
                 log(agentID, "Started on the \(account.id) account: \(request.description ?? "")")
             }
@@ -250,14 +287,14 @@ enum AgentRun {
         }
 
         /// The run's init check: a reason refuses it; otherwise `begin` runs, the first time only.
-        func check(subagentType: String?, account: String, begin: @escaping @Sendable () -> Void) -> @Sendable ([String: Any]) -> String? {
+        func check(subagentType: String?, account: String, begin: @escaping @Sendable ([String: Any]) -> Void) -> @Sendable ([String: Any]) -> String? {
             { [self] event in
                 if let reason = SubagentRunner.checkInit(event, subagentType: subagentType) { return "\(reason) on the \(account) account" }
                 lock.lock()
                 let first = !done
                 done = true
                 lock.unlock()
-                if first { begin() }
+                if first { begin(event) }
                 return nil
             }
         }
@@ -383,6 +420,7 @@ enum AgentRun {
             "type": "result", "text": result.text, "isError": result.isError, "limitReached": result.limitReached,
             "toolUses": result.toolUses, "durationMs": result.durationMs, "turns": result.turns,
             "inputTokens": result.inputTokens, "outputTokens": result.outputTokens, "permissionDenials": result.permissionDenials,
+            "cacheReadInputTokens": result.cacheReadInputTokens, "cacheCreationInputTokens": result.cacheCreationInputTokens,
         ]
         if let account { object["account"] = account }
         if let model = result.model { object["model"] = model }
@@ -476,6 +514,13 @@ enum AgentRegistry {
         withStore { store in
             guard let p = store.processes?[id], p.claude > 0, kill(p.runner, 0) == 0 else { return nil }
             return p.claude
+        }
+    }
+
+    /// Only processes handed to this runner, including ones claimed from the warm pool.
+    static func ownedProcesses() -> [Int32] {
+        withStore { store in
+            (store.processes ?? [:]).values.filter { $0.runner == getpid() && $0.claude > 0 }.map(\.claude)
         }
     }
 

@@ -38,6 +38,7 @@ final class AgentCatalogTests: XCTestCase {
     func testThePluginGetsEnabledAgentsWithWhereTheyRun() {
         let json = AgentCatalog(agents: [agent("codex-deep"), agent("off", enabled: false)], revision: 4).pluginJSON()
         XCTAssertEqual(json["revision"] as? Int, 4)
+        XCTAssertEqual(json["nativeTasks"] as? Bool, true)
         let agents = json["agents"] as? [[String: Any]] ?? []
         XCTAssertEqual(agents.map { $0["name"] as? String }, ["codex-deep"])
         XCTAssertEqual(agents.first?["summary"] as? String, "Codex · gpt-6.1-sol · high")

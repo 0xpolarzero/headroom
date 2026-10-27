@@ -6,6 +6,7 @@ enum Entry {
         if CommandLine.arguments.contains("--agent-key") { EndpointProfile.keyMain() }
         if CommandLine.arguments.contains("--print") { printUsage(); return }
         if CommandLine.arguments.contains("--agent-run") { AgentRun.main() }
+        if CommandLine.arguments.contains("--agent-route") { AgentRun.main(routeOnly: true) }
         if CommandLine.arguments.contains("--agent-warm") { AgentRun.warmMain() }
         if CommandLine.arguments.contains("--agent-open") { AgentRun.openMain() }
         if CommandLine.arguments.contains("--agent-stop") { AgentRun.stopMain() }

@@ -34,6 +34,8 @@ enum SubagentRunner {
         var durationMs = 0
         var inputTokens = 0
         var outputTokens = 0
+        var cacheReadInputTokens = 0
+        var cacheCreationInputTokens = 0
         var model: String?
         /// The session it ran as: a ready process comes with its own.
         var sessionID: String?
@@ -138,17 +140,19 @@ enum SubagentRunner {
         var earlyInit: [String: Any]?
         if let spec = warmSpec(request, on: account, in: directory, environment: base), let ready = claim(spec) {
             // Already started: switch it to this run's model and mode, then it only needs the prompt.
+            pid = ready.pid
+            onProcess(pid)   // TaskStop must work while the switches still wait for startup.
             var it = ready.output.bytes.lines.makeAsyncIterator()
             if await switched(ready.input, &it, model: request.model, permissionMode: request.permissionMode, initEvent: &earlyInit) {
                 sessionID = ready.sessionID
-                pid = ready.pid
                 ready.input.write(WarmPool.userMessage(request.prompt))
                 try? ready.input.close()
                 output = ready.output
                 errors = ready.errors
                 lines = it
             } else {
-                try? ready.input.close()   // no prompt: it exits by itself
+                try? ready.input.close()
+                terminate(ready.pid)
                 lines = nil
                 earlyInit = nil
                 onStep("Starting Claude Code: the ready one couldn't switch")
@@ -171,15 +175,15 @@ enum SubagentRunner {
             do { try started.run() } catch {
                 return Result(text: error.localizedDescription, isError: true, limitReached: false, turns: 0, permissionDenials: 0)
             }
+            pid = started.processIdentifier
+            onProcess(pid)
             stdin.fileHandleForWriting.write(Data(request.prompt.utf8))
             try? stdin.fileHandleForWriting.close()
             output = stdout.fileHandleForReading
             errors = stderr.fileHandleForReading
             lines = output.bytes.lines.makeAsyncIterator()
             process = started
-            pid = started.processIdentifier
         }
-        onProcess(pid)
         let errorHandle: FileHandle = errors
         let errText = Task.detached { String(decoding: errorHandle.readDataToEndOfFile(), as: UTF8.self) }
 
@@ -339,6 +343,8 @@ enum SubagentRunner {
                       inputTokens: Int((usage?.double("input_tokens") ?? 0) + (usage?.double("cache_read_input_tokens") ?? 0)
                                        + (usage?.double("cache_creation_input_tokens") ?? 0)),
                       outputTokens: Int(usage?.double("output_tokens") ?? 0),
+                      cacheReadInputTokens: Int(usage?.double("cache_read_input_tokens") ?? 0),
+                      cacheCreationInputTokens: Int(usage?.double("cache_creation_input_tokens") ?? 0),
                       model: root.dict("modelUsage")?.keys.sorted().first)
     }
 
