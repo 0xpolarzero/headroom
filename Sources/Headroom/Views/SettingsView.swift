@@ -5,16 +5,40 @@ struct SettingsView: View {
     @State private var openRouterKey = ""
     @State private var zaiKey = ""
     @State private var claudeName = ""
+    @State private var tab: Tab = .general
+
+    private enum Tab: String, CaseIterable {
+        case general = "General"
+        case agents = "Agents"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
+            HStack(spacing: 8) {
                 Text("Settings").font(.headline)
-                Spacer()
+                Spacer(minLength: 0)
+                Picker("Settings tab", selection: $tab) {
+                    ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 144)
                 Button("Done") { model.showingSettings = false }
                     .buttonStyle(.borderless)
             }
 
+            switch tab {
+            case .general: general
+            case .agents: AgentsSettings()
+            }
+        }
+        .toggleStyle(.checkbox)
+        .padding(14)
+    }
+
+    private var general: some View {
+        VStack(alignment: .leading, spacing: 16) {
             section("Providers") {
                 ForEach(Array(model.order.enumerated()), id: \.element) { index, id in
                     HStack {
@@ -51,10 +75,6 @@ struct SettingsView: View {
                 ClaudeAccountsSettings(model: model, name: $claudeName)
             }
 
-            section("Agents") {
-                AgentsSettings()
-            }
-
             section("Accounts") {
                 account(.antigravity) {
                     if model.antigravitySigningIn {
@@ -73,33 +93,33 @@ struct SettingsView: View {
                     }
                 }
                 account(.zai) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(model.zaiSignedIn ? "Signed in" : "Not signed in").foregroundStyle(.secondary)
-                            Spacer()
-                            if model.zaiSignedIn {
-                                Button("Sign out", action: model.signOutZAI)
-                            } else {
-                                Button("Sign in", action: model.signInZAI)
-                            }
-                        }
-                        HStack {
-                            if model.hasZAIKey {
-                                Text("Coding Plan API key saved").foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Remove key", role: .destructive, action: model.removeZAIKey)
-                            } else {
-                                SecureField("Coding Plan API key", text: $zaiKey)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit(saveZAI)
-                                Button("Save", action: saveZAI)
-                                    .disabled(zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            }
-                        }
-                        Text("Agents need a Coding Plan API key; website sign-in only reads usage.")
-                            .font(.caption).foregroundStyle(.secondary)
+                    Text(model.zaiSignedIn ? "Signed in" : "Not signed in").foregroundStyle(.secondary)
+                    Spacer()
+                    if model.zaiSignedIn {
+                        Button("Sign out", action: model.signOutZAI)
+                    } else {
+                        Button("Sign in", action: model.signInZAI)
                     }
                 }
+                HStack(spacing: 6) {
+                    if model.hasZAIKey {
+                        Text("Agent key saved").foregroundStyle(.secondary)
+                        SettingsInfo(text: "Agents need a Coding Plan API key; website sign-in only reads usage.")
+                        Spacer()
+                        Button("Remove", role: .destructive, action: model.removeZAIKey)
+                    } else {
+                        Text("Agent key").foregroundStyle(.secondary)
+                        SettingsInfo(text: "Agents need a Coding Plan API key; website sign-in only reads usage.")
+                        SecureField("API key", text: $zaiKey)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(saveZAI)
+                        Button("Save", action: saveZAI)
+                            .disabled(zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                // Match the content column after the logo, name and two 6 pt gaps.
+                .padding(.leading, 14 + 74 + 12)
+                .buttonStyle(.borderless)
                 account(.openrouter) {
                     if model.hasOpenRouterKey {
                         Text("API key saved").foregroundStyle(.secondary)
@@ -112,10 +132,7 @@ struct SettingsView: View {
                         Button("Save", action: saveOpenRouter)
                             .disabled(openRouterKey.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                }
-                if !model.hasOpenRouterKey {
-                    Text("A management key also lists the usage of every key.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    SettingsInfo(text: "A management key also lists usage for every key.")
                 }
                 if let error = model.accountError {
                     Text(error).font(.caption).foregroundStyle(.red)
@@ -135,8 +152,6 @@ struct SettingsView: View {
                 Toggle("Notify when a limit is reached", isOn: $model.notificationsOn)
             }
         }
-        .toggleStyle(.checkbox)
-        .padding(14)
     }
 
     private func saveZAI() {
@@ -166,8 +181,7 @@ struct SettingsView: View {
     }
 }
 
-/// The Claude accounts: their order, signing them in, adding and removing them, and the subagents that
-/// run on the ones with room.
+/// Claude accounts and subagent routing to accounts with room.
 struct ClaudeAccountsSettings: View {
     @Bindable var model: AppModel
     @Binding var name: String
@@ -208,15 +222,15 @@ struct ClaudeAccountsSettings: View {
                 .onSubmit(add)
             Button("Add account", action: add)
                 .disabled(ClaudeAccount.slug(name).isEmpty)
+            SettingsInfo(text: "Opens Terminal to sign in to Claude Code in a separate account folder with your shared settings.")
         }
         .buttonStyle(.borderless)
-        Text("Opens Terminal on Claude Code in the account's own folder (~/.claude-accounts/<name>), sharing your settings, skills, hooks and plugins. Sign in there with that account.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
-        Toggle("Run subagents on accounts with room", isOn: Binding(
-            get: { model.subagentsInstalled }, set: { model.setSubagentsInstalled($0) }))
-        Text("Installs Headroom's Claude Code plugin. When another of your accounts has room, a session's subagents run there, exactly like built-in ones; otherwise they run as usual.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 6) {
+            Toggle("Run subagents on accounts with room", isOn: Binding(
+                get: { model.subagentsInstalled }, set: { model.setSubagentsInstalled($0) }))
+            SettingsInfo(text: "Installs Headroom's Claude Code plugin to route subagents to accounts with room, falling back to normal routing.")
+        }
         threshold("Up to Session", \.sessionThreshold) { model.setThresholds(session: $0) }
         threshold("Up to Weekly", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
         if let error = model.claudeError {
@@ -240,5 +254,19 @@ struct ClaudeAccountsSettings: View {
     private func add() {
         model.addClaudeAccount(name: name)
         if model.claudeError == nil { name = "" }
+    }
+}
+
+/// Compact help that also works while the menu-bar panel is inactive.
+struct SettingsInfo: View {
+    let text: String
+
+    var body: some View {
+        Button {} label: { Image(systemName: "info.circle") }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(text)
+            .hoverTip(text)
+            .accessibilityLabel(text)
     }
 }

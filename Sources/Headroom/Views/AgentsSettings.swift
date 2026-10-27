@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// Settings → Agents: Headroom's own agent types, each on a provider and model of its own. Claude sees the
-/// enabled ones beside its built-in agents from its next turn on.
+/// Agent types and their provider, model and effort.
 struct AgentsSettings: View {
     @State private var catalog = AgentCatalog.load()
     /// The agent being added or edited; nil when none is.
@@ -9,24 +8,34 @@ struct AgentsSettings: View {
     @State private var error: String?
 
     var body: some View {
-        ForEach(catalog.agents) { agent in
-            if editing?.id == agent.id {
-                AgentEditor(agent: Binding(get: { editing ?? agent }, set: { editing = $0 }), error: error, save: save, cancel: cancel)
-            } else {
-                row(agent)
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(catalog.agents) { agent in
+                if editing?.id == agent.id {
+                    AgentEditor(agent: Binding(get: { editing ?? agent }, set: { editing = $0 }), error: error, save: save, cancel: cancel)
+                } else {
+                    row(agent)
+                }
+            }
+            if let new = editing, !catalog.agents.contains(where: { $0.id == new.id }) {
+                AgentEditor(agent: Binding(get: { editing ?? new }, set: { editing = $0 }), error: error, save: save, cancel: cancel)
+            } else if editing == nil {
+                HStack(spacing: 6) {
+                    if catalog.agents.isEmpty {
+                        Text("No agents yet.").foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    Button("Add agent") {
+                        error = nil
+                        editing = AgentDefinition(name: "", description: "", provider: .codex, model: "")
+                    }
+                    SettingsInfo(text: "Claude uses enabled agents as headroom:<name> types that always run on their provider.")
+                }
+                .buttonStyle(.borderless)
+                if let error {
+                    Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
-        if let new = editing, !catalog.agents.contains(where: { $0.id == new.id }) {
-            AgentEditor(agent: Binding(get: { editing ?? new }, set: { editing = $0 }), error: error, save: save, cancel: cancel)
-        } else if editing == nil {
-            Button("Add agent") {
-                error = nil
-                editing = AgentDefinition(name: "", description: "", provider: .codex, model: "")
-            }
-            .buttonStyle(.borderless)
-        }
-        Text("Claude sees each enabled agent as an agent type (headroom:<name>) with its description, and uses it like a built-in agent. It always runs on its provider: when that can't take it, the call fails and Claude says why.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 
     private func row(_ agent: AgentDefinition) -> some View {
@@ -105,9 +114,9 @@ private struct AgentEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextField("Name, e.g. codex-deep", text: $agent.name)
+            TextField("Name", text: $agent.name)
                 .textFieldStyle(.roundedBorder)
-            TextField("What it is for: Claude reads this to choose it", text: $agent.description, axis: .vertical)
+            TextField("Description", text: $agent.description, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...4)
             Picker("Provider", selection: $agent.provider) {
