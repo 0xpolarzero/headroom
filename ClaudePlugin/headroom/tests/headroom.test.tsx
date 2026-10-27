@@ -17,8 +17,9 @@ type Stubs = {
  * `background` is what the engine decides for the agent (its definition, settings), as `agent.spawn`
  * carries it, and `fork` whether the call forks this session. `gate`, when given, holds the runner's
  * output after its first line until it resolves. `outputs` answers other Headroom commands, by flag.
+ * `missingType` reproduces core dispatch's stale listing; `refusal` stands in for a permission denial.
  */
-type Options = { background?: boolean; fork?: boolean; gate?: Promise<void>; outputs?: Record<string, string> }
+type Options = { background?: boolean; fork?: boolean; gate?: Promise<void>; outputs?: Record<string, string>; missingType?: string; refusal?: string }
 
 type Body = Parameters<typeof test>[1] extends infer B ? (B extends (...args: infer A) => unknown ? A : never) : never
 
@@ -57,6 +58,10 @@ function engine([$test, on]: Body, runnerOutput: string, options: Options = {}):
   on('tool.call', async (_, e) => {
     stubs.reachedEngine.push(e.tool)
     if (e.tool === 'Agent') {
+      if (options.refusal) return { deny: options.refusal }
+      if (options.missingType && e.subagent_type === options.missingType) {
+        return { result: undefined, text: `Agent type '${e.subagent_type}' not found. Available agents: general-purpose`, isError: true }
+      }
       const spawn = await $test.agent.spawn({
         tool_use_id: e.tool_use_id, prompt: e.prompt, description: e.description, subagentType: e.subagent_type ?? 'general-purpose',
         parentModel: 'claude-fable-5-1', background: options.background ?? true, fork: options.fork ?? false,
@@ -433,4 +438,43 @@ test("a Headroom agent's edited description reaches Claude beside the Agent tool
   const described = await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: {} } as never)
   expect(described.description).toContain('Launch a new agent.')
   expect(described.description).toContain('- headroom:codex-deep: Reviews migrations. (Runs on Codex · gpt-6.1-sol, with Headroom.)')
+})
+
+test('a newly registered type runs when the current turn still has the earlier agent snapshot', async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  const stubs = engine([$, on], lines(CODEX_STARTED, { ...RESULT, account: 'Codex' }), {
+    background: false, outputs, missingType: 'headroom:codex-deep',
+  })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'new agent', prompt: 'x', subagent_type: 'headroom:codex-deep' })
+
+  expect(stubs.spawned).toEqual([])
+  expect((answer.result as { content: { text: string }[] } | undefined)?.content).toEqual([{ type: 'text', text: 'olleh' }])
+})
+
+
+test('a permission refusal is never recovered as a stale agent listing', async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  const stubs = engine([$, on], lines(CODEX_STARTED, RESULT), { outputs, refusal: 'Agent denied by a permission rule.' })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'denied agent', prompt: 'x', subagent_type: 'headroom:codex-deep' })
+
+  expect(answer.deny).toBe('Agent denied by a permission rule.')
+  expect(stubs.argvs.some(argv => argv[1] === '--agent-run')).toBe(false)
+})
+
+test('the Agent tool describes newly added types before the engine announces them', async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  engine([$, on], '', { outputs })
+  on('tool.describe', (_, e) => ({ description: e.description }))
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+
+  const described = await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: {} } as never)
+
+  expect(described.description).toContain('- headroom:codex-deep: Second opinion on hard bugs. (Runs on Codex · gpt-6.1-sol · high, with Headroom.)')
 })

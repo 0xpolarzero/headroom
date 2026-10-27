@@ -205,6 +205,7 @@ enum AgentRun {
     /// take it. Nothing stands in for it: no other provider, no built-in agent.
     static func runDefined(_ definition: AgentDefinition, _ request: Request, agentID: String, resume: AgentRegistry.Entry?,
                            mcpConfig: String?) async {
+        SubagentLog.write("\(agentID) \(resume == nil ? "start" : "continue") \(definition.type) on \(definition.summary)")
         let launch = Launch()
         let job = AgentJob(agentID: agentID, definition: definition, prompt: request.prompt, cwd: resume?.directory ?? request.cwd,
                            effort: resume?.effort ?? definition.effort ?? request.effort, permissionMode: request.permissionMode ?? "default",

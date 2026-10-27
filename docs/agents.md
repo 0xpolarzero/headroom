@@ -32,11 +32,15 @@ Headroom writes the list as a revisioned catalog in Application Support. Credent
 
 The mod API has what's needed (research A §3): `$.agent.register({name, description, prompt, model})`
 registers `headroom:<name>` for the session, and `agent.offer` hides disabled types. The plugin syncs the
-catalog on session start and before each prompt, so changes apply from the next turn.
+catalog on session start and before each prompt, so changes apply from the next turn. Claude Code 2.1.310
+snapshots its agent definitions before those prompt hooks: a newly registered type otherwise fails
+with `Agent type '…' not found` for one turn. The plugin recovers only that exact core error after
+permission checks, running the enabled definition through Headroom. Other errors stay errors.
 
-To check first: re-registering a type under the same name doesn't re-announce a changed description to
-Claude. If that holds, also put the current catalog in the Agent tool's description (`tool.describe`) and
-invalidate it on each revision. Fallback if the API is missing: generated files in `~/.claude/agents/headroom/`
+Verified live: re-registering a type under the same name doesn't re-announce a changed description to
+Claude. The plugin puts the current enabled catalog in the Agent tool's description (`tool.describe`) and
+invalidates it on each revision. This also exposes new types before the native listing catches up. See
+[the live verification](research/F-agent-registration-live.md). Fallback if the API is missing: generated files in `~/.claude/agents/headroom/`
 (watched every 2 s), but they run natively if the plugin is absent, so they can't guarantee routing alone.
 
 ## Routing rules

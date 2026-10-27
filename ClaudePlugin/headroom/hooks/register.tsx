@@ -47,8 +47,6 @@ type Defined = { name: string; description: string; provider: string; summary: s
 /** Headroom's enabled agents as last read, by type (`headroom:codex-deep`), and the list's revision. */
 let catalog = new Map<string, Defined>()
 let revision: number | undefined
-/** What each type registered in this session told Claude first: its listing isn't sent again when it changes. */
-const announced = new Map<string, string>()
 
 const TYPE_PREFIX = 'headroom:'
 
@@ -77,7 +75,6 @@ async function syncCatalog($: EngineInterface): Promise<void> {
     const before = catalog.get(type)
     if (before && listing(before) === listing(agent) && before.prompt === agent.prompt) continue
     await $.agent.register({ name: agent.name, description: listing(agent), prompt: agent.prompt })
-    if (!announced.has(type)) announced.set(type, listing(agent))
   }
   catalog = next
   revision = parsed.revision
@@ -481,12 +478,11 @@ export const register: Register = on => {
   // A type that left Headroom's list stays registered: it is no longer offered.
   on('agent.offer', ($, e, next) => (owns(e.agent) && !catalog.has(e.agent) ? { isOffered: false } : next(e)))
 
-  // Claude's list of agent types is sent once: a description edited since goes beside the Agent tool's own.
+  // Claude snapshots agent types before prompt hooks: new types and edited descriptions go here too.
   on('tool.describe', { tool: 'Agent' }, async ($, e, next) => {
     const answer = await next(e)
-    const changed = [...catalog].filter(([type, agent]) => announced.has(type) && announced.get(type) !== listing(agent))
-    if (changed.length === 0) return answer
-    const lines = changed.map(([type, agent]) => `- ${type}: ${listing(agent)}`)
+    if (catalog.size === 0) return answer
+    const lines = [...catalog].map(([type, agent]) => `- ${type}: ${listing(agent)}`)
     return { ...answer, description: [answer.description, '', "Headroom's agent types as they read now (this replaces their earlier lines):", ...lines].join('\n') }
   })
   on('classic.PostToolUse', ($, e, next) => {
@@ -538,7 +534,18 @@ export const register: Register = on => {
     claims.set(e.tool_use_id, claim)
     let answer: Awaited<ReturnType<typeof next>>
     try {
+      const missing = `Agent type '${e.subagent_type}' not found. Available agents:`
       answer = await next(e)
+      // Core checked permissions, but its turn-local agent list predates UserPromptSubmit. Only that
+      // exact rejection is recoverable: the catalog and runner still enforce ownership and enablement.
+      if (owned && !claim.started && answer.isError === true && answer.text?.startsWith(missing)) {
+        const begun = await start($, request)
+        if ('noRoom' in begun) return { deny: `Headroom found nowhere to run ${e.subagent_type}.` }
+        if ('error' in begun) return { deny: `Headroom couldn't run this agent (${e.subagent_type}): ${begun.error}` }
+        const background = e.run_in_background === true
+        await started($, begun.line, e.description, false, !background, e.tool_use_id)
+        claim.started = { ...begun, background }
+      }
     } finally {
       claims.delete(e.tool_use_id)
     }
