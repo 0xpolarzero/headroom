@@ -7,34 +7,39 @@ and the earlier designs, kept for reference; their code is in git history.
 
 ## Current design (2026-10-27): subagents on accounts with room
 
-The app copies below were also replaced. Each account is now only a Claude Code sign-in (`CLAUDE_CONFIG_DIR`
-= `~/.claude-accounts/<name>`). Headroom's Claude Code plugin (`ClaudePlugin/` in this repository, installed
-at user scope) hooks the built-in `Agent` tool: when another account has room (never the session's own, both
-usage thresholds respected, most room first), it starts `Headroom --agent-run`, which runs `claude -p` there,
-and answers the call as a built-in agent does. The `tool.call` hook marks the call and lets the engine run
-it; at the engine's `agent.spawn` for that call (permissions and other hooks passed, `background` decided)
-the plugin starts the runner and denies the built-in spawn, then answers the call itself: in the
-background `async_launched`, then a `<task-notification>` through `$.prompt.submit`; in the foreground it
-waits and answers `completed` with the report (or the error), ctrl+b (`task:background`) switching it to
-`async_launched`, an interrupt ending the runner, which stops its `claude -p`. A probe (2026-10-27) showed a
-denied spawn leaves nothing behind (no worktree), `background` true in `claude -p` and false with
-`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, and a hook can keep reading a run another hook started for minutes.
-`SendMessage` to that agent resumes its session on the same account, in the folder its init reported (the
-worktree with `--worktree`) and with the agent type and effort it started with: `--resume` alone restores
-neither. With no account free the call goes to the built-in tool, as do forks, teammates, workflow agents and
-remote ones. Everything else that goes wrong is the call's error: the runner sends `started` only once Claude
-Code's `system`/`init` event has the fields a run reads and lists the agent type, so an account missing a type
-(or a Claude Code that changed its events) fails the call instead of falling back. `TaskStop` runs
-`Headroom --agent-stop`, which ends the agent's Claude Code process (its pid, from the warm pool's handover or
-the runner's own child, is kept while the runner lives); `ListAgents` adds Headroom's agents to the engine's
-listing. `Headroom --agent-selftest` runs once per `claude --version`: a ready-process start with `--agent
-Explore` switched to Haiku, a resume, and a stop, each checked against what the runner reads. It passed on
-2.1.310 in 49 s. Live runs (2026-10-27) confirmed an Explore agent and its follow-up, TaskStop, a fork kept
-built-in, and a worktree agent whose follow-up ran in the same worktree. They also showed the engine passing
-`run_in_background`, which the 2.1.308 schema leaves out, and that `claude -p` exits on its last turn
-without waiting for a Headroom agent, unlike a built-in one. A first version was an MCP server (`Headroom --mcp`) with
-look-alike tools; Claude had to be told to prefer them and couldn't run them in the background, so it was
-dropped. The README describes the current behaviour in full.
+The app copies below were also replaced. Each account is now a Claude Code sign-in (`CLAUDE_CONFIG_DIR`
+= `~/.claude-accounts/<name>`). Headroom's plugin keeps Claude Code's built-in `Agent` tool and native
+subagents. When another account has room (never the session's own, both thresholds respected, most room
+first), `Headroom --agent-route` admits the call without starting a model or claiming a warm process.
+The engine still checks the call and creates its own task through `agent.spawn`'s `next(e)`. A separate
+`turn.step` hook runs `Headroom --agent-run` inside that native task and serves the remote report without
+calling the session's model client. Headroom-owned provider types (`headroom:<name>`) use the same adapter.
+
+Claude Code owns foreground/background transitions, ctrl+b, notifications, waiting before print-mode
+exit, `ListAgents`, `TaskStop` and `SendMessage`. There are no plugin replacements for those tools or
+notifications. A native follow-up arrives as a new turn at step 0; the plugin reads its new text through
+`$.session.messages({ agentId, as: 'api' })` and the pinned `agent.spawn.resume` prompt, then resumes the
+remote session under the same native id, account, folder, type and effort. Claude Code queues messages
+received during remote work and starts the next native turn with them. Routes persist through `$.store`
+so native resumes and worker reloads keep
+using the remote backend. `--resume` alone restores neither the remote agent type nor its effort; the
+runner still supplies both. Worktree isolation belongs to the remote worker, so the native task's shell
+creates no second, unused worktree.
+
+No-room calls remain built-in, as do ordinary forks, teammates, workflow agents, remote agents and calls
+from subagents. Other failures never fall back to the session's model: admission failures are Agent
+errors, and execution failures are explicit `Headroom agent failed: ...` reports with a failed pane entry.
+The native task may finish normally while carrying that failure report. If room disappears between
+admission and execution, the report explains the error instead of spending on the session's account.
+The runner validates Claude Code's init before announcing `started`, and checks that the native id is
+preserved. `Headroom --agent-selftest` retains the ready-process start, resume and stop checks once per
+Claude Code version. The pane, status line, warm pool and remote logs remain Headroom's.
+
+Earlier versions denied the native spawn, fabricated `async_launched` and submitted notifications through
+`$.prompt.submit`; print runs could exit before those reports arrived. Commit `2867474` then rejected all
+non-interactive hosts. That was incorrect for SDK hosts, including the desktop app, and `911d42a` reverts
+it. There is no routing decision based on `isInteractive`. The still earlier MCP look-alike tools also
+remain removed. See the [native task adapter](#native-task-adapter-2026-10-27) for the replacement's evidence.
 
 Startup: a cold `claude -p` on the Pro account took 11.2 s before doing anything (12.5 s with the MCP
 servers), the agent's own work 4 s. A process started with `--input-format stream-json` waits for its
@@ -54,6 +59,87 @@ Checked first: `claude -p --output-format json` returns `result`, `session_id`, 
 `api_error_status` and `permission_denials`; `--resume <session_id>` continues the same session; `--agent`
 accepts built-in types (Explore runs read-only) and custom ones; `--permission-mode auto`, `--effort`,
 `--model` and `--worktree` work headless.
+
+### Native task adapter (2026-10-27)
+
+Primary sources were the installed Claude Code 2.1.310 runtime and the bundled 2.1.308
+`plugin-authoring/types/claude-code.d.ts`, `reference.md` and examples. The initial claim that a native
+agent could not serve an external report was wrong: `turn.step` supports a complete synthetic response.
+The native task can own the lifecycle while its worker runs elsewhere. It does not need to replay remote
+tool calls or preserve a remote model request byte for byte.
+
+The disposable spike used a native agent, a two-second `$.process.spawn` wait and a one-line synthetic
+report. `agent.spawn`'s `next(e)` returned `{ model, agentId }` before the first step, for foreground and
+background alike. A separately registered `turn.step` hook received the same `agentId`; it was not skipped
+by the spawn hook's nesting. Plain `claude -p` stayed alive, and the main Haiku model consumed the report.
+`SendMessage` produced a new turn's step 0 on that id. `TaskStop` aborted `next.signal`, ended the waiting
+process and executed a command issued by the abort listener. The production binding also waits for native
+spawn replies that are still crossing the worker boundary, so an early step cannot slip through locally.
+
+Report delivery has two native forms in this build:
+
+- In auto mode, the native request includes a system reminder requiring `SubagentHandback`. Text plus
+  `end_turn` triggered three `[handback-send-enforce]` re-prompts, then an unsent-report notification.
+  The adapter instead yields a `tool` chunk naming `SubagentHandback`, an `input` chunk whose `message` is
+  exactly the remote final text, and a `stop` chunk with `tool_use`. Core executes the native handback.
+- In `acceptEdits`, that tool is absent. An unconditional handback call returned `No such tool available:
+  SubagentHandback`. The adapter yields text and `end_turn` there. It identifies handback by the explicit
+  instruction in `$.session.messages`, not by `$.tool.list()`, which lists the main loop's tools even when
+  called from a subagent hook. A regression also prevents an unknown handback from causing an endless
+  sequence of synthetic tool calls.
+
+Queued messages exposed another ordering detail: a queued `SendMessage` resumed the native agent with
+its exact text in `agent.spawn.prompt`, while the step's `$.session.messages` still contained only the
+previous turn. Reading that snapshot alone produced `The native agent resumed without a new text message`.
+The adapter now captures the pinned resume prompt before calling `next(e)` and runs once per native turn.
+It leaves queuing, resumption and notification scheduling to the engine; it does not intercept SendMessage.
+A regression reproduces the lagging snapshot.
+
+The catalog now advertises `nativeTasks: true`. An older app is rejected before the plugin invokes
+`--agent-route`, so an app that does not recognize that CLI mode cannot launch its GUI and leave the call
+waiting. The native route and remote session are saved when the remote init succeeds, so a native stop
+cannot erase the session needed by a later follow-up.
+
+The stop chunk carries the remote model and token usage, with cache reads and cache writes kept separate.
+The native transcript contains the report or handback, not the remote tool transcript. Remote progress
+and tool results stay in the existing pane and logs; native tool-use counters count native calls only.
+Auto mode can attach its own notice that the server-side safety classifier was unavailable for the
+synthetic handback. Headroom leaves that native review behavior intact and does not alter the report's
+payload to hide it.
+
+`next.signal` calls `Headroom --agent-stop <nativeId>` and the process stream's cancellation ends the
+runner. A runner's signal cleanup also stops processes handed to that runner by the warm pool, which are
+not necessarily its children. Testing exposed an older PID-registration gap during permission/model
+switches: a fake warm process observed `late` before the fix and `early` after it. The runner now registers
+a claimed PID before sending switches, and a cold PID before writing its prompt, so early stops can find
+it. It terminates a claimed process that cannot switch before starting a replacement.
+
+Validation and live evidence are recorded below. All probes used this worktree, `--plugin-dir` and its
+development binary; `/Applications/Headroom.app` was not replaced. Drivers used tiny prompts and Haiku.
+Main was at its weekly limit, so it could not be used as a real model driver for Pro:
+
+- A real Haiku driver on Pro exercised the enabled Codex-backed `headroom:sol` type for background,
+  foreground, SendMessage, TaskStop and ListAgents, both with plain input and stream-json input held open.
+  All ten runs passed. The final outputs handled the native reports; SendMessage reused the same native
+  id; ListAgents showed that native id while running; TaskStop executed the abort listener's stop command.
+  The remote provider used the existing agent's configured Codex model, not Haiku.
+- A synthetic main loop under Main's real config exercised actual Haiku workers on Pro, without making
+  main-account model requests or pretending Pro was a different account. These checks cover the same
+  native lifecycle but do not claim a real main model consumed the reports. Background and foreground
+  passed with plain and open stream-json input; SendMessage passed in both, resuming the same remote
+  session and reporting `ACCOUNT-REPORT-TWO`. TaskStop and ListAgents passed with plain and open input.
+  The open-input stop recorded its claimed Pro PID and the stop command succeeded; both the runner and
+  Claude process exited. A message sent while the first remote run was still busy also delivered its
+  second report in both input modes, after fixing the lagging native snapshot described above.
+
+Checks: `claude plugin validate .` passed with the existing author/icon warnings; `claude plugin test .`
+passed all 35 tests. `swift build` passed; `swift test` reported 94 tests, 5 skipped, no failures. No
+repository tsconfig exists; a supplementary source-only `tsc --noEmit` check passed against the supplied
+2.1.308 declarations. Plugin tests execute under the installed 2.1.310 host.
+
+The native desktop UI and its ctrl+b key handling were not operated live; the SDK-equivalent open-input
+runs exercise their task lifecycle. The plugin no longer overrides the native tool row or background
+button. Full remote transcripts remain in Headroom's pane rather than the native transcript.
 
 ## Earlier design: one app copy per account
 

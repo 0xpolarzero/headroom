@@ -71,15 +71,14 @@ its sessions are its own.
 - **Run subagents on accounts with room** (Settings) installs Headroom's Claude Code plugin for all your
   sessions (`claude plugin install headroom@headroom --scope user`, from a marketplace folder inside
   Headroom.app, so it updates with the app). Claude keeps using its built-in `Agent` tool as usual. When
-  another of your accounts has room, the plugin answers that call itself and runs the subagent there:
-  - Claude sees exactly what a built-in agent gives. Claude Code checks the call and decides whether the
-    agent runs in the foreground or the background, as for any agent; the plugin takes it over only as it
-    starts. In the foreground the call waits and answers with the agent's report (ctrl+b, or **Run in
-    background** on its row, sends it to the background; interrupting stops it). In the background it
-    answers "launched" at once with an `agentId`, then a `<task-notification>` with the report when it
-    finishes. `SendMessage` to that `agentId` continues it on the same account, folder (its worktree with
-    `isolation: "worktree"`) and agent type; a message sent while it works is read when it finishes.
-    `TaskStop` stops it, and `ListAgents` lists it beside the built-in agents.
+  another of your accounts has room, Claude Code creates a real native subagent and Headroom runs its work there:
+  - Claude Code owns the task, transcript row, foreground/background controls, report delivery and lifetime.
+    Headroom answers the agent's model step with its remote report, without a model request on the session's
+    account. Foreground calls wait normally; ctrl+b sends them to the background. Background reports keep
+    `claude -p` alive after its input ends and reach SDK hosts, including the desktop app. `SendMessage`,
+    `TaskStop` and `ListAgents` use the native agent's id and Claude Code's own handling. Follow-ups resume
+    the remote session on the same account, folder (its worktree with `isolation: "worktree"`) and agent
+    type. Claude Code queues messages received while it works and resumes it with them.
   - It runs `claude -p` in the session's folder with the same parameters (`subagent_type`, `model`, `effort`,
     `isolation`), your MCP servers (from `~/.claude.json`, passed with `--mcp-config`) and the session's
     permission mode. "Ask each time" becomes auto mode, since nobody can be asked there.
@@ -94,8 +93,10 @@ its sessions are its own.
   - The first session on a new Claude Code version runs a self-test on another account: it starts an
     agent the way a ready process starts it, continues it, and stops one (two one-line Haiku answers). If
     any step fails, the status line says what broke until a later version passes.
-  - Not yet: in a `claude -p` run that ends with its prompt, a background agent on another account is cut
-    off when the run exits; a built-in one keeps the run open until it reports.
+  - The native transcript keeps the remote final report. Remote steps and tool results stay in Headroom's
+    pane and logs; they are not replayed as native tool calls. The pane shows remote tool use;
+    Claude Code's counter counts native calls only. See the
+    [native task adapter](docs/claude-accounts.md#native-task-adapter-2026-10-27) for the API checks and live tests.
 - **Ready processes.** Claude Code takes about 11 s to start. So when you send a prompt, the plugin asks
   Headroom to start one on the account a subagent would use, in that folder, waiting for its prompt; an Agent
   call on that account and folder with the same agent type takes it over and skips the wait: Headroom switches

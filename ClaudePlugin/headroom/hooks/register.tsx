@@ -1,23 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, TurnStepChunk, TurnStepInput, TurnStepResult, TurnUsage } from 'claude-code'
 
 import type { RemoteAgent, TranscriptItem } from '../types'
 
-// Headroom runs a subagent on another of your Claude accounts when one has room, and answers the
-// built-in Agent tool with it exactly as a built-in agent answers. The engine checks the call and decides
-// whether the agent runs in the foreground or the background, then raises `agent.spawn`, where Headroom
-// takes the agent over. In the foreground the call waits for the report (ctrl+b sends it to the
-// background); in the background it answers "launched" at once and the report comes as a notification.
-// SendMessage continues it, TaskStop stops it, ListAgents lists it.
-//
-// Headroom's own agents (Settings → Agents) are agent types beside the built-in ones, `headroom:<name>`, each
-// on a provider and model of its own (Codex, Z.ai, OpenRouter, Antigravity, your Claude accounts). A call to
-// one always runs there: never as a built-in agent, and what keeps it from running is the call's error.
-//
-// Built-in on purpose, untouched: forks (they need this session's context and its cache), teammates and
-// named agents, workflow agents, remote ones, agents started inside a subagent, and any call when no account
-// has room. Anything else Headroom can't handle as expected (a field it doesn't know, a runner that fails,
-// Claude Code not starting as it should) is the call's error, so it gets fixed rather than hidden.
+// Claude Code owns each routed agent's task, transcript row, notifications and lifetime. Headroom
+// answers its `turn.step` with the other account or provider's report, without a local model request.
+// A separate `agent.spawn` hook calls the engine, so that hook's nesting never skips our step adapter.
+// Forks, teammates, workflow agents, remote agents and calls inside subagents stay built-in on purpose.
 
 /**
  * The Agent tool's arguments as of Claude Code 2.1.310, and the keys `tool.call` adds beside them.
@@ -51,6 +40,7 @@ let saveClaude = false
 
 const SAVING_CONTEXT = 'headroomSaveClaude'
 const SAVING_INSTRUCTION = "Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to Headroom's agents (headroom:*), picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no Headroom agent fits."
+let nativeTasks: boolean | undefined
 
 const TYPE_PREFIX = 'headroom:'
 
@@ -72,7 +62,8 @@ async function syncCatalog($: EngineInterface): Promise<void> {
   for await (const chunk of $.process.spawn({ argv: [await runner($), '--agent-catalog'] })) {
     if (chunk.stream === 'stdout') text += chunk.text
   }
-  const parsed = JSON.parse(text.trim() || '{}') as { revision?: number; agents?: Defined[]; saveClaude?: boolean }
+  const parsed = JSON.parse(text.trim() || '{}') as { revision?: number; agents?: Defined[]; saveClaude?: boolean; nativeTasks?: boolean }
+  nativeTasks = parsed.nativeTasks === true
   if (parsed.revision !== undefined && parsed.revision === revision) return
   const next = new Map((parsed.agents ?? []).map(agent => [`${TYPE_PREFIX}${agent.name}`, agent] as const))
   for (const [type, agent] of next) {
@@ -86,20 +77,12 @@ async function syncCatalog($: EngineInterface): Promise<void> {
   $.ui.invalidate('tool.describe')
 }
 
-/** Who ran it, as its notification and answers say it: "the Pro account", or a provider ("Codex"). */
-function place(agent: { account: string; provider?: string }): string {
-  return agent.provider && agent.provider !== 'claude' ? agent.account : `the ${agent.account} account`
-}
-
-/**
- * An Agent call Headroom may answer, by its tool_use_id: what its `tool.call` hook asks for, and once the
- * engine's `agent.spawn` for it found an account with room, the run there.
- */
-type Claim = { request: Record<string, unknown>; started?: { run: Run; line: Line; background: boolean } }
-const claims = new Map<string, Claim>()
-
-/** Sends a foreground agent to the background (its row's button, ctrl+b), by agent id. */
-const toBackground = new Map<string, () => void>()
+type Request = Record<string, unknown>
+type Route = { request: Request; description: string; toolUseId: string; ran: boolean; cursor: number; handback?: boolean; resumePrompt?: string; error?: string }
+const claims = new Map<string, Request>()
+const routes = new Map<string, Route>()
+/** A native step can arrive before its spawn's reply has crossed the worker boundary. */
+const spawning = new Set<Promise<void>>()
 
 /** Headroom's own binary: beside this plugin inside Headroom.app, else the usual install. */
 async function runner($: EngineInterface): Promise<string> {
@@ -159,36 +142,6 @@ async function start($: EngineInterface, request: Record<string, unknown>): Prom
   }
 }
 
-/** Stopped by TaskStop: their runs end without a report, which isn't a failure. */
-const stopping = new Set<string>()
-
-/**
- * Reads a background agent's run to its end; `first` is a line already asked for. A run that ends with
- * no result still reports, as a failure: a notification never comes otherwise.
- */
-async function follow($: EngineInterface, run: Run, id: string, first?: Promise<Line | null>): Promise<void> {
-  let failure = 'Headroom’s runner ended without the agent’s report.'
-  try {
-    for (let line = await (first ?? run.next()); line; line = await run.next()) {
-      const agent = await record($, id, line)
-      if (agent) {
-        if (line.stopped !== true) await deliver($, agent, line)
-        await afterResult($, agent)
-        return
-      }
-    }
-  } catch (error) {
-    failure = `Headroom’s runner failed: ${String(error)}`
-  }
-  const end = { type: 'result', text: failure, isError: true, stopped: stopping.has(id) }
-  try {
-    const agent = await record($, id, end)
-    if (agent && !end.stopped) await deliver($, agent, end)
-  } catch (error) {
-    $.ui.log(`headroom: agent ${id} ended unreported: ${failure} (${String(error)})`, { to: 'debug' })
-  }
-}
-
 /**
  * A prompt was sent, so an Agent call may follow: Headroom starts Claude Code on the account it would
  * pick, so the agent finds it ready instead of waiting for it to start. Nothing happens when one is ready.
@@ -201,7 +154,7 @@ async function warmUp($: EngineInterface): Promise<void> {
 }
 
 async function started($: EngineInterface, line: Line, description: string, resumed: boolean,
-                       foreground = false, toolUseId?: string): Promise<void> {
+                       toolUseId?: string): Promise<void> {
   const id = String(line.agentId)
   await update($, agents, list => {
     const known = list.find(a => a.id === id)
@@ -209,7 +162,7 @@ async function started($: EngineInterface, line: Line, description: string, resu
     const agent: RemoteAgent = {
       id, description, account: String(line.account), model: String(line.model ?? ''),
       provider: line.provider === undefined ? undefined : String(line.provider),
-      status: 'running', steps: [], items: [], startedAt: Date.now(), pending: [], foreground, toolUseId,
+      status: 'running', steps: [], items: [], startedAt: Date.now(), toolUseId,
     }
     return [...list, agent].slice(-50)
   })
@@ -236,15 +189,14 @@ async function record($: EngineInterface, id: string, line: Line): Promise<Remot
   }
   if (line.type !== 'result') return
   const failed = line.isError === true
-  const stopped = line.stopped === true || stopping.has(id)
-  stopping.delete(id)
+  const stopped = line.stopped === true
   let agent: RemoteAgent | undefined
   await update($, agents, list =>
     list.map(a => {
       if (a.id !== id) return a
       agent = { ...a, status: stopped ? 'stopped' : failed ? 'failed' : 'done', endedAt: Date.now(),
                 result: stopped ? 'Stopped' : String(line.text ?? ''),
-                account: String(line.account ?? a.account), model: String(line.model ?? a.model), foreground: false }
+                account: String(line.account ?? a.account), model: String(line.model ?? a.model) }
       return agent
     }),
   )
@@ -252,131 +204,126 @@ async function record($: EngineInterface, id: string, line: Line): Promise<Remot
   return agent
 }
 
-/** Messages sent while it ran: continue it with them now, as a built-in agent reads its inbox. */
-async function afterResult($: EngineInterface, agent: RemoteAgent): Promise<void> {
-  const pending = (await read($, agents)).find(a => a.id === agent.id)?.pending ?? []
-  const queued = agentPending.get(agent.id) ?? []
-  agentPending.delete(agent.id)
-  await update($, agents, list => list.map(a => (a.id === agent.id ? { ...a, pending: [] } : a)))
-  const messages = [...pending, ...queued]
-  if (messages.length === 0) return
-  const sent = await continueAgent($, agent, messages.join('\n\n'))
-  if ('error' in sent) {
-    await $.prompt.submit({ text: `Headroom could not give agent ${agent.id} the messages sent while it ran: ${sent.error}` })
-  }
-}
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-
-/** SendMessage text held for an agent that is still running. */
-const agentPending = new Map<string, string[]>()
-
-/** The report, as a background agent's completion notification reads. */
-async function deliver($: EngineInterface, agent: RemoteAgent, line: Line): Promise<void> {
-  const failed = line.isError === true
-  const seconds = Math.round(Number(line.durationMs ?? 0) / 1000)
-  const text = [
-    '<task-notification>',
-    `<task-id>${agent.id}</task-id>`,
-    `<status>${failed ? 'failed' : 'completed'}</status>`,
-    `<summary>Agent "${agent.description}" ${failed ? 'failed' : 'finished'} (ran on ${place(agent)} with Headroom)</summary>`,
-    `<result>${String(line.text ?? '')}</result>`,
-    `<usage>tool uses: ${line.toolUses ?? 0}, duration: ${seconds}s, model: ${agent.model}</usage>`,
-    '</task-notification>',
-    `Continue this agent with SendMessage to "${agent.id}".`,
-  ].join('\n')
-  await $.prompt.submit({ text })
-}
-
-/** What the Agent call answers for an agent left running: a built-in background agent's "launched". */
-function launched(e: { description: string; prompt: string }, line: Line) {
-  return {
-    result: {
-      status: 'async_launched' as const,
-      isAsync: true as const,
-      agentId: String(line.agentId),
-      description: e.description,
-      prompt: e.prompt,
-      outputFile: String(line.outputFile),
-      resolvedModel: String(line.model ?? '') || undefined,
-    },
-  }
-}
-
-/** What the Agent call answers for a finished foreground agent: a built-in one's report, or its error. */
-function completed(prompt: string, agent: RemoteAgent, line: Line) {
-  if (line.isError === true) return { deny: String(line.text ?? 'The subagent failed.') }
-  const input = Number(line.inputTokens ?? 0)
-  const output = Number(line.outputTokens ?? 0)
-  return {
-    result: {
-      status: 'completed' as const,
-      agentId: agent.id,
-      content: [{ type: 'text' as const, text: String(line.text ?? '') }],
-      prompt,
-      resolvedModel: agent.model || undefined,
-      totalToolUseCount: Number(line.toolUses ?? 0),
-      totalDurationMs: Number(line.durationMs ?? 0),
-      totalTokens: input + output,
-      usage: {
-        input_tokens: input, output_tokens: output, cache_creation_input_tokens: null, cache_read_input_tokens: null,
-        server_tool_use: null, service_tier: null, cache_creation: null,
-      },
-    },
-  }
-}
-
-/**
- * A foreground agent: the Agent call waits for its report, as for a built-in one. Sent to the background
- * it answers "launched" and the report comes as a notification; interrupted, the run is stopped.
- */
-async function foreground($: EngineInterface, e: { description: string; prompt: string }, signal: AbortSignal,
-                          run: Run, line: Line) {
-  const id = String(line.agentId)
-  const backgrounded = new Promise<'background'>(resolve => toBackground.set(id, () => resolve('background')))
-  const aborted = new Promise<'abort'>(resolve =>
-    signal.aborted ? resolve('abort') : signal.addEventListener('abort', () => resolve('abort'), { once: true }))
+/** Admission happens before native spawn; it never starts a remote model or claims a warm process. */
+async function admission($: EngineInterface, request: Request): Promise<'routed' | 'no_room'> {
+  if (nativeTasks === undefined) await syncCatalog($)
+  if (!nativeTasks) throw new Error('Update the Headroom app and plugin together: this app does not support native routed tasks.')
+  const stream = $.process.spawn({ argv: [await runner($), '--agent-route'], input: JSON.stringify(request) })
+  const run = new Run(stream[Symbol.asyncIterator]())
   try {
-    for (;;) {
-      const next = run.next()
-      const got = await Promise.race([next, backgrounded, aborted])
-      if (got === 'background') {
-        await update($, agents, list => list.map(a => (a.id === id ? { ...a, foreground: false } : a)))
-        void follow($, run, id, next)
-        return launched(e, line)
-      }
-      if (got === 'abort') {
-        run.stop()
-        await update($, agents, list => list.map(a =>
-          a.id === id ? { ...a, status: 'failed' as const, endedAt: Date.now(), result: 'Interrupted', foreground: false } : a))
-        await showStatus($)
-        return { deny: 'Interrupted by the user.' }
-      }
-      if (!got) {
-        const end = { type: 'result', text: 'The subagent stopped without an answer.', isError: true }
-        const agent = await record($, id, end)
-        return agent ? completed(e.prompt, agent, end) : { deny: String(end.text) }
-      }
-      const agent = await record($, id, got)
-      if (agent) {
-        void afterResult($, agent)
-        return completed(e.prompt, agent, got)
-      }
-    }
+    const line = await run.next()
+    if (line?.type === 'routed' || line?.type === 'no_room') return line.type
+    throw new Error(String(line?.text ?? 'Headroom’s routing check ended without an answer.'))
   } finally {
-    toBackground.delete(id)
+    run.stop()
   }
 }
 
-/** Continues an agent with a message on its account: its `started` line, or why it couldn't. */
-async function continueAgent($: EngineInterface, agent: RemoteAgent, message: string): Promise<Line | { error: string }> {
-  const begun = await start($, { prompt: message, resume: agent.id, cwd: await $.session.cwd(), permissionMode })
-  if ('noRoom' in begun) return { error: 'Headroom found no account for it.' }
-  // A follow-up's `started` names where it runs; an agent from an earlier session is known by it.
-  if ('error' in begun) return begun
-  await started($, begun.line, agent.description, true)
-  void follow($, begun.run, String(begun.line.agentId))
-  return begun.line
+async function stopRemote($: EngineInterface, id: string): Promise<void> {
+  const result = await $.process.run([await runner($), '--agent-stop', id])
+  if (result.exitCode !== 0) $.ui.log(`headroom: stop ${id}: ${result.stdout || result.stderr}`, { to: 'debug' })
+}
+
+/** New native inbox messages since the preceding remote run, without the engine's context reminders. */
+async function inbox($: EngineInterface, id: string, route: Route): Promise<string> {
+  const messages = await $.session.messages({ agentId: id, as: 'api' })
+  if (!Array.isArray(messages)) throw new Error(messages.deny)
+  // $.tool.list() lists the main loop's tools. The native request itself carries this instruction in auto mode.
+  route.handback = messages.some(m => m.role === 'user' && m.content.some(b => b.type === 'text'
+    && typeof b.text === 'string' && b.text.startsWith('<system-reminder>\nYour final report is delivered through SubagentHandback:')))
+  if (messages.length < route.cursor) throw new Error('The native agent’s transcript was compacted before Headroom read its messages.')
+  const text: string[] = []
+  for (const message of messages.slice(route.cursor)) {
+    if (message.role !== 'user') continue
+    const blocks = message.content.filter(b => b.type === 'text' && typeof b.text === 'string').map(b => String(b.text))
+    // A resumed turn can contain the coordinator's reminder and the same message as its own text block.
+    const plain = blocks.filter(t => !t.startsWith('<system-reminder>') && !t.startsWith('The coordinator sent a message while you were working:\n'))
+    for (const block of blocks) {
+      const prefix = 'The coordinator sent a message while you were working:\n'
+      const suffix = '\n\nAddress this before completing your current task.\n'
+      if (!block.startsWith(prefix)) continue
+      if (!block.endsWith(suffix)) throw new Error('Claude Code changed the native inbox message format.')
+      const message = block.slice(prefix.length, -suffix.length)
+      if (!plain.includes(message)) plain.push(message)
+    }
+    text.push(...plain)
+    if (message.content.some(b => b.type !== 'text' && b.type !== 'tool_result')) {
+      throw new Error('Headroom cannot forward a non-text message to the remote agent.')
+    }
+  }
+  route.cursor = messages.length
+  return text.join('\n\n')
+}
+
+/** Auto-mode native agents require handback; other modes deliver plain text at end_turn. */
+function* respond(e: TurnStepInput, text: string, usage: TurnUsage | null, handback: boolean): Generator<TurnStepChunk, TurnStepResult> {
+  if (handback && e.index === 0) {
+    yield { kind: 'tool', index: 0, id: `headroom_${e.turnId}_${e.index}`, name: 'SubagentHandback' }
+    yield { kind: 'input', index: 0, json: JSON.stringify({ message: text }) }
+    yield { kind: 'stop', stopReason: 'tool_use', usage }
+    return { turnId: e.turnId, index: e.index, answer: '',
+             toolUses: [{ name: 'SubagentHandback', input: { message: text } }], stopReason: 'tool_use', usage }
+  }
+  yield { kind: 'text', index: 0, text }
+  yield { kind: 'stop', stopReason: 'end_turn', usage }
+  return { turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: 'end_turn', usage }
+}
+
+function usageOf(line: Line, model: string): TurnUsage {
+  const cached = Number(line.cacheReadInputTokens ?? 0)
+  const created = Number(line.cacheCreationInputTokens ?? 0)
+  return { model: String(line.model ?? model), input_tokens: Math.max(0, Number(line.inputTokens ?? 0) - cached - created),
+           output_tokens: Number(line.outputTokens ?? 0), cache_read_input_tokens: cached, cache_creation_input_tokens: created }
+}
+
+/** One remote run per native turn; the engine schedules new turns for messages queued while it worked. */
+async function remoteTurn($: EngineInterface, e: TurnStepInput, route: Route, signal: AbortSignal): Promise<Line> {
+  const id = e.agentId!
+  if (route.error) throw new Error(route.error)
+  if (e.index !== 0) throw new Error('Claude Code requested another model step after Headroom’s handback.')
+  const previous = route.cursor
+  const message = await inbox($, id, route)
+  const nextPrompt = route.resumePrompt || message
+  route.resumePrompt = undefined
+  const prompt = route.ran ? nextPrompt : [String(route.request.prompt), previous > 0 ? nextPrompt : ''].filter(Boolean).join('\n\n')
+  if (route.ran && !prompt) throw new Error('The native agent resumed without a new text message.')
+  await $.store.set(`native-agent:${id}`, route)
+  let run: Run | undefined
+  const stop = () => {
+    void stopRemote($, id).catch(error => $.ui.log(`headroom: stop ${id} failed: ${String(error)}`, { to: 'debug' }))
+  }
+  signal.addEventListener('abort', stop, { once: true })
+  try {
+    if (signal.aborted) throw new Error('Stopped by Claude Code.')
+    const request = { ...route.request, prompt, id, resume: route.ran ? id : undefined }
+    const begun = await start($, request)
+    if ('noRoom' in begun) throw new Error('No other account has room after the native agent started. Headroom did not run it on the session’s account.')
+    if ('error' in begun) throw new Error(begun.error)
+    run = begun.run
+    if (String(begun.line.agentId) !== id) throw new Error('Headroom’s runner did not keep the native agent id. Update the Headroom app and plugin together.')
+    await started($, begun.line, route.description, route.ran, route.toolUseId)
+    route.ran = true
+    route.request.prompt = ''
+    await $.store.set(`native-agent:${id}`, route)
+    let result: Line | undefined
+    for (let line = await run.next(); line; line = await run.next()) {
+      await record($, id, line)
+      if (line.type === 'result' || line.type === 'error') { result = line; break }
+    }
+    run.stop()
+    run = undefined
+    if (!result) throw new Error('Headroom’s runner ended without the agent’s report.')
+    if (result.isError === true || result.type === 'error') throw new Error(String(result.text ?? 'The remote agent failed.'))
+    await inbox($, id, route)
+    await $.store.set(`native-agent:${id}`, route)
+    return result
+  } finally {
+    signal.removeEventListener('abort', stop)
+    run?.stop()
+    if (signal.aborted) {
+      await record($, id, { type: 'result', stopped: true, text: 'Stopped', isError: true })
+    }
+  }
 }
 
 /** What the self-test found broken on this Claude Code version, shown until a run passes. */
@@ -458,11 +405,6 @@ function agentBlock($: EngineInterface, e: Parameters<EngineInterface['ui']['res
         </Box>
       )}
       <Box flexDirection="row" gap={1} marginTop={unfolded ? 1 : 0}>
-        {agent.foreground && agent.status === 'running' && (
-          <Button key={`background-${agent.id}`} action="task:background" dimColor onPress={() => toBackground.get(agent.id)?.()}>
-            Run in background (ctrl+b)
-          </Button>
-        )}
         <Button key={`transcript-${agent.id}`} dimColor onPress={toggle}>{unfolded ? 'Hide transcript' : 'Show transcript'}</Button>
         <Button key={`terminal-${agent.id}`} dimColor onPress={() => openInTerminal($, agent.id)}>Open in Terminal</Button>
       </Box>
@@ -524,148 +466,114 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    if (e.subagent_type === 'fork') return next(e)
     const owned = owns(e.subagent_type)
     if (owned) {
       if (!catalog.has(e.subagent_type)) await syncCatalog($)
       if (!catalog.has(e.subagent_type)) return { deny: `No agent ${e.subagent_type} is enabled in Headroom (Settings → Agents). Use another agent type.` }
-      const unsupported = e.agentId !== undefined ? 'from inside a subagent' : e.name !== undefined ? 'as a named teammate'
-        : e.isolation === 'remote' ? 'remotely' : undefined
-      if (unsupported) return { deny: `Headroom's agents (${e.subagent_type}) can't run ${unsupported}. Call it from the main session, unnamed, without remote isolation.` }
+      if (e.agentId !== undefined || e.isolation === 'remote' || e.name !== undefined) {
+        return { deny: `Headroom's agents (${e.subagent_type}) run only from the main session, unnamed, without remote isolation.` }
+      }
     }
-    // Kept built-in on purpose: agents started by subagents, remote agents and named agents (teammates).
-    else if (e.agentId !== undefined || e.isolation === 'remote' || e.name !== undefined) return next(e)
+    if (e.agentId !== undefined || e.isolation === 'remote' || e.name !== undefined) return next(e)
     const unknown = Object.keys(e).filter(key => !AGENT_KEYS.has(key))
     if (unknown.length > 0 || !ISOLATIONS.has(e.isolation)) {
       const what = unknown.length > 0 ? `field${unknown.length === 1 ? '' : 's'} ${unknown.map(k => `\`${k}\``).join(', ')}`
         : `isolation \`${String(e.isolation)}\``
       return { deny: `Headroom doesn't handle the Agent tool's ${what} yet, so it can't run this agent. Tell the user: Headroom's plugin needs updating for it.` }
     }
-    const request = {
+    const request: Request = {
       prompt: e.prompt, description: e.description, subagentType: e.subagent_type, model: e.model,
       effort: e.effort, isolation: e.isolation, cwd: await $.session.cwd(), permissionMode,
       parentModel: await $.session.model(), agent: owned ? e.subagent_type : undefined,
     }
-    // The engine checks the call (permissions, other hooks) and raises `agent.spawn`, where an account
-    // with room takes the agent; otherwise the built-in agent runs and this is its answer.
-    const claim: Claim = { request }
-    claims.set(e.tool_use_id, claim)
-    let answer: Awaited<ReturnType<typeof next>>
+    if (await admission($, request) === 'no_room') {
+      return owned ? { deny: `Headroom found nowhere to run ${String(e.subagent_type)}.` } : next(e)
+    }
+    claims.set(e.tool_use_id, request)
     try {
+      // Only the remote worker needs a worktree; the native task's shell executes no workspace tools.
+      const shell = e.isolation === 'worktree' ? { ...e, isolation: undefined } : e
+      const answer = await next(shell)
       const missing = `Agent type '${e.subagent_type}' not found. Available agents:`
-      answer = await next(e)
-      // Core checked permissions, but its turn-local agent list predates UserPromptSubmit. Only that
-      // exact rejection is recoverable: the catalog and runner still enforce ownership and enablement.
-      if (owned && !claim.started && answer.isError === true && answer.text?.startsWith(missing)) {
-        const begun = await start($, request)
-        if ('noRoom' in begun) return { deny: `Headroom found nowhere to run ${e.subagent_type}.` }
-        if ('error' in begun) return { deny: `Headroom couldn't run this agent (${e.subagent_type}): ${begun.error}` }
-        const background = e.run_in_background === true
-        await started($, begun.line, e.description, false, !background, e.tool_use_id)
-        claim.started = { ...begun, background }
+      if (owned && answer.isError === true && answer.text?.startsWith(missing)) {
+        // The turn's catalog snapshot can predate registration. The native shell still runs the owned provider.
+        return await next({ ...shell, subagent_type: 'general-purpose' })
       }
+      return answer
     } finally {
       claims.delete(e.tool_use_id)
     }
-    if (!claim.started) return answer
-    const { run, line, background } = claim.started
-    if (background) {
-      void follow($, run, String(line.agentId))
-      return launched(e, line)
-    }
-    return foreground($, e, next.signal, run, line)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
+  }).catch(($, e, next) => ({ deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
 
   on('agent.spawn', async ($, e, next) => {
+    const special = e.fork || e.isTeammate || e.workflow || e.parentAgentId !== undefined
+    if (!e.resume && owns(e.subagentType) && (special || !claims.has(e.tool_use_id))) {
+      return { deny: `Headroom's agents (${e.subagentType}) run only from the main session's Agent tool.` }
+    }
+    if (special && !e.resume) return next(e)
+    if (e.resume) {
+      const id = e.resume.agentId
+      const route = routes.get(id) ?? await $.store.get(`native-agent:${id}`) as Route | undefined
+      if (route) {
+        // Queued resumes can reach step 0 before their coordinator message appears in session.messages.
+        route.resumePrompt = e.prompt
+        if (e.permissionMode) route.request.permissionMode = e.permissionMode
+        routes.set(id, route)
+        await $.store.set(`native-agent:${id}`, route)
+      } else if (owns(e.subagentType)) {
+        return { deny: `Headroom has no saved route for native agent ${id}.` }
+      }
+      return next(e)
+    }
     const claim = claims.get(e.tool_use_id)
-    const owned = claim?.request.agent !== undefined || owns(e.subagentType)
-    const type = String(claim?.request.agent ?? e.subagentType)
-    const special = e.resume || e.fork || e.isTeammate || e.workflow || e.parentAgentId !== undefined
-    if (owned && (!claim || special)) {
-      return { deny: `Headroom's agents (${type}) run only from the main session's Agent tool, not as a fork, teammate, workflow agent or resume.` }
+    if (!claim) return next(e)
+    const request: Request = {
+      ...claim, subagentType: claim.agent ?? e.subagentType, model: e.model ?? claim.model,
+      cwd: e.cwd ?? claim.cwd, permissionMode: e.permissionMode ?? claim.permissionMode,
+      parentModel: e.parentModel, background: e.background,
     }
-    // Kept built-in on purpose: a fork runs on this session's context and cache, a teammate and a workflow
-    // agent belong to this session, a resume continues a built-in agent.
-    if (!claim || special) return next(e)
-    const request = {
-      ...claim.request, subagentType: e.subagentType, model: e.model ?? claim.request.model,
-      cwd: e.cwd ?? claim.request.cwd, permissionMode: e.permissionMode ?? claim.request.permissionMode,
-      parentModel: e.parentModel,
+    let ready = () => {}
+    const pending = new Promise<void>(resolve => { ready = resolve })
+    spawning.add(pending)
+    try {
+      const result = await next(e)
+      if (result.deny !== undefined || !result.agentId) return result
+      const route: Route = { request, description: e.description, toolUseId: e.tool_use_id, ran: false, cursor: 0,
+                             handback: e.permissionMode === 'auto' }
+      routes.set(result.agentId, route)
+      try { await $.store.set(`native-agent:${result.agentId}`, route) }
+      catch (error) { route.error = `Headroom could not save the native agent’s route: ${String(error)}` }
+      return result
+    } finally {
+      ready()
+      spawning.delete(pending)
     }
-    const begun = await start($, request)
-    if ('noRoom' in begun) return owned ? { deny: `Headroom found nowhere to run ${type}.` } : next(e)
-    if ('error' in begun) return { deny: `Headroom couldn't run this agent${owned ? ` (${type})` : ' on another account'}: ${begun.error}` }
-    await started($, begun.line, e.description, false, !e.background, e.tool_use_id)
-    claim.started = { ...begun, background: e.background }
-    return { deny: 'Headroom runs this agent.' }
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
+  }).catch(($, e, next) => ({ deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
 
-  on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {
-    const to = String(e.to)
-    const agent = (await read($, agents)).find(a => a.id === to)
-    // Headroom's agents have UUIDs; one from an earlier session is still known to Headroom.
-    if (!agent && !UUID.test(to)) return next(e)
-    if (agent?.status === 'running') {
-      agentPending.set(to, [...(agentPending.get(to) ?? []), e.message])
-      return { result: { success: true, message: `Queued for agent ${to}: it reads it when it finishes its current work.` } }
+  // Separate registration: a spawn nested in agent.spawn/tool.call still reaches this hook.
+  on('turn.step', async function* ($, e, next) {
+    if (!e.agentId) return yield* next(e)
+    if (spawning.size > 0) await Promise.all([...spawning])
+    const route = routes.get(e.agentId) ?? await $.store.get(`native-agent:${e.agentId}`) as Route | undefined
+    if (!route) return yield* next(e)
+    routes.set(e.agentId, route)
+    let result: Line
+    try {
+      result = await remoteTurn($, e, route, next.signal)
+    } catch (error) {
+      if (next.signal.aborted) return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: null, usage: null }
+      result = { type: 'result', isError: true, text: `Headroom agent failed: ${String(error)}` }
+      await record($, e.agentId, result)
+      $.ui.log(String(result.text), { to: 'debug' })
     }
-    const known: RemoteAgent = agent ?? {
-      id: to, description: e.summary ?? 'agent', account: '', model: '', status: 'done', steps: [], items: [], startedAt: Date.now(), pending: [],
-    }
-    const line = await continueAgent($, known, e.message)
-    if ('error' in line) return { deny: `Headroom could not continue agent ${to}: ${line.error}` }
-    return {
-      result: {
-        success: true,
-        message: `Message sent to agent ${to} on ${place({ account: String(line.account), provider: line.provider as string | undefined })}. Its reply arrives as a notification when it finishes.`,
-      },
-    }
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
-
-  on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
-    const id = String(e.task_id ?? e.shell_id ?? '')
-    const agent = (await read($, agents)).find(a => a.id === id)
-    if (!agent) return next(e)
-    if (agent.status !== 'running') return { deny: `Agent ${id} isn't running (it is ${agent.status}).` }
-    stopping.add(id)
-    let answer = null as Line | null
-    for await (const chunk of $.process.spawn({ argv: [await runner($), '--agent-stop', id] })) {
-      if (chunk.stream === 'stdout') answer = JSON.parse(chunk.text.trim().split('\n')[0] || '{}') as Line
-    }
-    if (answer?.type !== 'stopped') {
-      stopping.delete(id)
-      return { deny: `Headroom could not stop agent ${id}: ${String(answer?.text ?? 'its runner gave no answer')}` }
-    }
-    return {
-      result: {
-        message: `Stopped agent ${id} (${agent.description}) on ${place(agent)}.`,
-        task_id: id, task_type: 'local_agent', command: agent.description,
-      },
-    }
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
-
-  // The session's agents as ListAgents lists them, Headroom's beside the built-in ones.
-  on('tool.call', { tool: 'ListAgents' }, async ($, e, next) => {
-    const answer = await next(e)
-    const mine = (await read($, agents)).filter(a => a.status === 'running' || Date.now() - (a.endedAt ?? 0) < 3_600_000)
-    if (answer.deny !== undefined || mine.length === 0) return answer
-    const result = answer.result as { listing: string; sections?: { kind: string; total: number; rows: object[] }[]; notes?: object[] }
-    const rows = mine.map(a => ({ id: a.id, name: a.description, type: 'headroom', status: a.status }))
-    const listing = [
-      result.listing.trimEnd(),
-      '',
-      `Agents Headroom runs on your other accounts and providers (SendMessage or TaskStop them by id):`,
-      ...mine.map(a => `- ${a.id} · ${a.description} · ${a.status} · on ${a.account}${a.model ? ` · ${a.model}` : ''}`),
-    ].join('\n')
-    return { ...answer, result: { ...result, listing, sections: [...(result.sections ?? []), { kind: 'headroom', total: rows.length, rows }] } }
-  })
-
-  // The Agent call's row in the transcript: the remote agent, drawn like a built-in one.
-  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool !== 'Agent') return next(e)
-    const agent = (await read($, agents)).find(a => a.toolUseId === e.requestId)
-    if (!agent) return next(e)
-    const unfolded = (await read($, open)).includes(agent.id) || e.props.isExpanded === true
-    return agentBlock($, e, agent, unfolded)
+    const text = String(result.text ?? '')
+    const usage = usageOf(result, e.model)
+    return yield* respond(e, text, usage, route.handback === true)
+  }).catch(async function* ($, e, next) {
+    // A routing adapter must never fail open to a model request on the session's account.
+    const text = `Headroom agent failed: ${next.error.message ?? next.error.kind}`
+    return yield* respond(e, text, null, e.agentId !== undefined && routes.get(e.agentId)?.handback === true)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

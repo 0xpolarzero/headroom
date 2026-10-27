@@ -33,6 +33,29 @@ final class SubagentTests: XCTestCase {
 
     // MARK: Running Claude Code
 
+    func testNativeTaskIDsSurviveTheRunnerProtocol() throws {
+        func request(_ fields: String) throws -> AgentRun.Request {
+            try JSONDecoder().decode(AgentRun.Request.self, from: Data("{\"prompt\":\"x\",\"cwd\":\"/work\"\(fields)}".utf8))
+        }
+        let native = try request(",\"id\":\"a1234567890abcdef\",\"resume\":\"a1234567890abcdef\"")
+        XCTAssertEqual(native.id, native.resume)
+        XCTAssertTrue(native.validID)
+        XCTAssertTrue(try request("").validID)
+        for id in ["", "../another-agent", "a/b", String(repeating: "a", count: 101)] {
+            XCTAssertFalse(try request(",\"id\":\"\(id)\"").validID)
+        }
+    }
+
+    func testNativeUsageKeepsTheCacheCountsSeparate() {
+        let result = SubagentRunner.parse(["type": "result", "result": "report", "usage": [
+            "input_tokens": 30, "output_tokens": 10, "cache_read_input_tokens": 50, "cache_creation_input_tokens": 20,
+        ]])
+        XCTAssertEqual(result.inputTokens, 100)
+        XCTAssertEqual(result.outputTokens, 10)
+        XCTAssertEqual(result.cacheReadInputTokens, 50)
+        XCTAssertEqual(result.cacheCreationInputTokens, 20)
+    }
+
     func testArgumentsMirrorTheBuiltInParameters() {
         let args = SubagentRunner.arguments(.init(prompt: "x", subagentType: "Explore", model: "haiku", effort: "high", worktree: true,
                                                   permissionMode: "acceptEdits", sessionID: "s1", mcpConfig: "/m.json"))
@@ -122,6 +145,41 @@ final class SubagentTests: XCTestCase {
         XCTAssertEqual((model?["request"] as? [String: Any])?["subtype"] as? String, "set_model")
         XCTAssertEqual((model?["request"] as? [String: Any])?["model"] as? String, "haiku")
         XCTAssertEqual(WarmPool.switches(model: nil, permissionMode: "auto").map(\.id), ["mode"])
+    }
+
+    func testAClaimedProcessCanBeStoppedWhileItsSwitchesAreStillPending() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-warm-stop-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("registered")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-I", "-u", "-c", """
+        import json, pathlib, sys
+        early = None
+        for line in sys.stdin:
+            event = json.loads(line)
+            if event['type'] == 'control_request':
+                if early is None: early = pathlib.Path(sys.argv[1]).exists()
+                print(json.dumps({'type':'control_response', 'response':{'subtype':'success', 'request_id':event['request_id']}}), flush=True)
+            elif event['type'] == 'user':
+                print(json.dumps({'type':'result', 'result':'early' if early else 'late', 'is_error':False, 'num_turns':1}), flush=True)
+                break
+        """, marker.path]
+        let input = Pipe(), output = Pipe(), errors = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        let ready = WarmPool.Claimed(sessionID: "warm", pid: process.processIdentifier,
+                                    input: input.fileHandleForWriting, output: output.fileHandleForReading, errors: errors.fileHandleForReading)
+        let result = await SubagentRunner.run(.init(prompt: "x", model: "haiku", sessionID: ""), on: ClaudeAccount(id: "Pro"),
+                                             in: directory.path, claim: { _ in ready }, onProcess: { pid in
+            try? String(pid).write(to: marker, atomically: true, encoding: .utf8)
+        }, onStep: { _ in })
+        process.waitUntilExit()
+        XCTAssertEqual(result.text, "early", "TaskStop needs the pid before a ready process answers its control requests")
     }
 
     func testPipesTravelOverTheSocket() throws {

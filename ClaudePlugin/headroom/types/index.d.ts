@@ -24,10 +24,6 @@ export type RemoteAgent = {
   toolUseId?: string
   startedAt: number
   endedAt?: number
-  /** SendMessage text that arrived while it ran, sent once it finishes. */
-  pending: string[]
-  /** Its Agent call is waiting for its report, as for a built-in foreground agent. */
-  foreground?: boolean
 }
 
 declare module 'claude-code' {

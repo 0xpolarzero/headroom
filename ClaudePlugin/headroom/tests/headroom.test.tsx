@@ -1,485 +1,421 @@
 import { expect, test } from 'claude-code/testing'
 
-// Each test stands in for the engine beneath the plugin and for Headroom's runner: `process.spawn`
-// answers with the JSON lines `Headroom --agent-run` writes.
-
-const AGENT_ID = '122651c3-88a7-4bf2-b4b0-2c3b5ade7404'
-
-function lines(...objects: object[]): string {
-  return objects.map(o => JSON.stringify(o)).join('\n') + '\n'
-}
-
-type Stubs = {
-  requests: string[]; argvs: string[][]; submitted: string[]; reachedEngine: string[]; spawned: string[]; statuses: (string | undefined)[]; invalidated: string[]
-}
-
-/**
- * `background` is what the engine decides for the agent (its definition, settings), as `agent.spawn`
- * carries it, and `fork` whether the call forks this session. `gate`, when given, holds the runner's
- * output after its first line until it resolves. `outputs` answers other Headroom commands, by flag.
- * `missingType` reproduces core dispatch's stale listing; `refusal` stands in for a permission denial.
- */
-type Options = { background?: boolean; fork?: boolean; gate?: Promise<void>; outputs?: Record<string, string>; missingType?: string; refusal?: string }
-
+// The seam under test is a native spawn followed by its model step. Core tool results stay opaque;
+// the runner supplies JSON lines, and a model request beneath turn.step is counted as a routing failure.
+const ID = 'a1111111111111111'
+const NATIVE = { status: 'async_launched', agentId: ID, marker: 'core owns this answer' }
+const RESULT = { type: 'result', text: 'exact remote report\n', inputTokens: 100, outputTokens: 10,
+                 cacheReadInputTokens: 50, cacheCreationInputTokens: 20, model: 'claude-haiku-5-5' }
+const CATALOG = { revision: 3, agents: [
+  { name: 'codex-deep', description: 'Review hard bugs.', provider: 'codex', summary: 'Codex · gpt-6.1-sol', prompt: 'You are codex-deep.' },
+] }
+const HANDBACK = '<system-reminder>\nYour final report is delivered through SubagentHandback: when your work is complete, call SubagentHandback({message: <your full report>}). The call ends your run, so make it your last step. Only a SubagentHandback call reaches your caller as your result; plain text you write at the end is not delivered. Do not also send the report with SendMessage: your caller would get it twice.\n</system-reminder>'
 type Body = Parameters<typeof test>[1] extends infer B ? (B extends (...args: infer A) => unknown ? A : never) : never
+const lines = (...objects: object[]) => objects.map(o => JSON.stringify(o)).join('\n') + '\n'
+type Message = { role: 'user' | 'assistant'; content: { type: string; text?: string }[] }
+type Options = {
+  route?: object; background?: boolean; fork?: boolean; workflow?: boolean; refusal?: string; missingType?: boolean
+  outputs?: object[]; gate?: Promise<void>; wrongID?: boolean; noStart?: boolean; catalog?: typeof CATALOG; handback?: boolean
+  storeFailure?: boolean; selfTest?: object; nativeTasks?: boolean; liveCatalog?: () => object
+}
 
-function engine([$test, on]: Body, runnerOutput: string, options: Options = {}): Stubs {
-  const stubs: Stubs = { requests: [], argvs: [], submitted: [], reachedEngine: [], spawned: [], statuses: [], invalidated: [] }
+function engine([$test, on]: Body, options: Options = {}) {
+  const calls: { flag: string; request: Record<string, unknown> }[] = []
+  const spawned: object[] = []
+  const nativeCalls: string[] = []
+  const nativeInputs: Record<string, unknown>[] = []
+  const statuses: (string | undefined)[] = []
+  const registered: object[] = []
+  const invalidated: string[] = []
+  const store = new Map<string, unknown>()
+  const context = (value: Message[]) => options.handback === false ? value : value.map((m, i) =>
+    i === 0 ? { ...m, content: [...m.content, { type: 'text', text: HANDBACK }] } : m)
+  let messages: Message[] = context([{ role: 'user', content: [{ type: 'text', text: 'initial task' }] }])
+  let modelSteps = 0
+  let runCount = 0
   on('fs.exists', () => ({ value: true }))
   on('session.cwd', () => ({ value: '/work' }))
-  on('session.model', () => ({ value: 'claude-fable-5-1' }))
+  on('session.model', () => ({ value: 'claude-haiku-5-5' }))
+  on('session.messages', () => ({ value: messages }))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    if (options.storeFailure) return { deny: 'disk full' }
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.status', (_, e) => {
-    stubs.statuses.push(e.text)
-    return { value: undefined }
-  })
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', (_, e) => { statuses.push(e.text); return { value: undefined } })
   on('ui.log', () => ({ value: undefined }))
-  on('ui.invalidate', (_, e) => {
-    stubs.invalidated.push(e.event)
-    return { value: undefined }
-  })
-  on('prompt.submit', (_, e) => {
-    stubs.submitted.push(e.text)
-    return { text: e.text }
-  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.invalidate', (_, e) => { invalidated.push(e.event); return { value: undefined } })
+  on('agent.register', (_, e) => { registered.push(e); return { value: { agent: `headroom:${e.name}` } } })
+  on('agent.offer', () => ({ isOffered: true }))
+  on('command.register', (_, e) => ({ value: { command: `headroom:${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('classic.UserPromptSubmit', () => ({}))
+  on('prompt.submit', () => { throw new Error('Headroom must leave notifications to the engine') })
   on('process.spawn', async function* (_, e) {
-    stubs.argvs.push([...e.argv])
-    stubs.requests.push(e.input ?? '')
-    const other = options.outputs?.[e.argv[1] ?? '']
-    if (other !== undefined || e.argv[1] !== '--agent-run') {
-      if (other) yield { stream: 'stdout', text: other }
-    } else if (runnerOutput && options.gate) {
-      const newline = runnerOutput.indexOf('\n') + 1
-      yield { stream: 'stdout', text: runnerOutput.slice(0, newline) }
-      await options.gate
-      yield { stream: 'stdout', text: runnerOutput.slice(newline) }
-    } else if (runnerOutput) yield { stream: 'stdout', text: runnerOutput }
+    const flag = e.argv[1] ?? ''
+    const request = JSON.parse(e.input || '{}') as Record<string, unknown>
+    calls.push({ flag, request })
+    if (flag === '--agent-route') yield { stream: 'stdout', text: lines(options.route ?? { type: 'routed' }) }
+    else if (flag === '--agent-catalog') yield { stream: 'stdout', text: lines({ ...(options.liveCatalog?.() ?? options.catalog ?? { revision: 1, agents: [] }), nativeTasks: options.nativeTasks ?? true }) }
+    else if (flag === '--agent-selftest') yield { stream: 'stdout', text: lines(options.selfTest ?? { type: 'ok' }) }
+    else if (flag === '--agent-run') {
+      runCount++
+      if (!options.noStart) yield { stream: 'stdout', text: lines({ type: 'started', agentId: options.wrongID ? 'old-runner-id' : request.id, account: 'Pro', model: 'haiku' }) }
+      if (options.gate) await options.gate
+      yield { stream: 'stdout', text: lines(...(options.outputs ?? [RESULT])) }
+    }
     return { value: { code: 0, signal: null } }
   })
-  // The Agent tool as the engine runs it: it raises `agent.spawn`, whose deny is its error.
   on('tool.call', async (_, e) => {
-    stubs.reachedEngine.push(e.tool)
-    if (e.tool === 'Agent') {
-      if (options.refusal) return { deny: options.refusal }
-      if (options.missingType && e.subagent_type === options.missingType) {
-        return { result: undefined, text: `Agent type '${e.subagent_type}' not found. Available agents: general-purpose`, isError: true }
-      }
-      const spawn = await $test.agent.spawn({
-        tool_use_id: e.tool_use_id, prompt: e.prompt, description: e.description, subagentType: e.subagent_type ?? 'general-purpose',
-        parentModel: 'claude-fable-5-1', background: options.background ?? true, fork: options.fork ?? false,
-      } as never)
-      if ('deny' in spawn && spawn.deny) return { deny: `Subagent spawn denied by a plugin: ${spawn.deny}` }
+    nativeCalls.push(e.tool)
+    nativeInputs.push(e)
+    if (e.tool !== 'Agent') return { result: { marker: `native ${e.tool}` } }
+    if (options.refusal) return { deny: options.refusal }
+    if (options.missingType && e.subagent_type === 'headroom:codex-deep') {
+      return { result: undefined, text: "Agent type 'headroom:codex-deep' not found. Available agents: general-purpose", isError: true }
     }
-    if (e.tool === 'ListAgents') return { result: { listing: 'Background agents:\n- a1 · built-in task', sections: [] } }
-    return { result: { status: 'completed', agentId: 'built-in', content: [{ type: 'text', text: 'built-in ran' }] } }
+    const spawn = await $test.agent.spawn({ tool_use_id: e.tool_use_id, prompt: e.prompt, description: e.description,
+      subagentType: e.subagent_type ?? 'general-purpose', model: e.model, cwd: '/native', permissionMode: options.handback === false ? 'acceptEdits' : 'auto',
+      parentModel: 'claude-haiku-5-5', background: options.background ?? true, fork: options.fork ?? false,
+      workflow: options.workflow ? { runId: 'wf_x', agentIndex: 1 } : undefined } as never)
+    if (spawn.deny !== undefined) return { deny: spawn.deny }
+    return { result: NATIVE }
   })
-  on('agent.spawn', (_, e) => {
-    stubs.spawned.push(e.description)
-    return { model: 'claude-fable-5-1', agentId: 'built-in' }
+  on('agent.spawn', (_, e) => { spawned.push(e); return { model: 'claude-haiku-5-5', agentId: ID } })
+  on('turn.step', async function* (_, e) {
+    modelSteps++
+    yield { kind: 'text', index: 0, text: 'built-in response' }
+    yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: 'built-in response', toolUses: [], stopReason: 'end_turn', usage: null }
   })
-  return stubs
-}
-
-async function eventually(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 100 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 10))
-}
-
-const STARTED = { type: 'started', agentId: AGENT_ID, account: 'Pro', model: 'claude-fable-5-1', outputFile: '/tmp/a.log' }
-const RESULT = {
-  type: 'result', text: 'olleh', isError: false, account: 'Pro', model: 'claude-sonnet-5-5', toolUses: 1, durationMs: 11000,
-  inputTokens: 1200, outputTokens: 300,
-}
-
-test('a background agent runs on another account and reports like a built-in background agent', async ($, on) => {
-  const stubs = engine([$, on], lines(STARTED, { type: 'step', text: 'Read: note.txt' }, RESULT), { background: true })
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'reverse the note', prompt: 'Read note.txt' })
-
-  // The engine checked the call and decided; no built-in agent started.
-  expect(stubs.reachedEngine).toEqual(['Agent'])
-  expect(stubs.spawned).toEqual([])
-  expect((answer.result as { status: string }).status).toBe('async_launched')
-  expect((answer.result as { agentId: string }).agentId).toBe(AGENT_ID)
-  const request = JSON.parse(stubs.requests[0] ?? '{}')
-  expect(request.prompt).toBe('Read note.txt')
-  expect(request.parentModel).toBe('claude-fable-5-1')
-  expect(request.cwd).toBe('/work')
-
-  await eventually(() => stubs.submitted.length > 0)
-  expect(stubs.submitted[0]).toContain(`<task-id>${AGENT_ID}</task-id>`)
-  expect(stubs.submitted[0]).toContain('<result>olleh</result>')
-  expect(stubs.submitted[0]).toContain('ran on the Pro account')
-})
-
-test('a foreground agent runs on another account and answers like a built-in foreground agent', async ($, on) => {
-  const stubs = engine([$, on], lines(STARTED, { type: 'step', text: 'Read: note.txt' }, RESULT), { background: false })
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'reverse the note', prompt: 'Read note.txt' })
-
-  expect(stubs.spawned).toEqual([])
-  const result = answer.result as {
-    status: string; agentId: string; content: { type: string; text: string }[]; prompt: string
-    totalToolUseCount: number; totalDurationMs: number; totalTokens: number; usage: { input_tokens: number; output_tokens: number }
+  return { calls, spawned, nativeCalls, nativeInputs, statuses, registered, invalidated, store,
+    get modelSteps() { return modelSteps }, get runCount() { return runCount },
+    messages(value: Message[]) { messages = context(value) },
+    async launch(fields: object = {}) {
+      return $test.tool.call({ tool: 'Agent', tool_use_id: 'toolu_x', description: 'read a note', prompt: 'initial task', ...fields } as never)
+    },
   }
-  expect(result.status).toBe('completed')
-  expect(result.agentId).toBe(AGENT_ID)
-  expect(result.content).toEqual([{ type: 'text', text: 'olleh' }])
-  expect(result.prompt).toBe('Read note.txt')
-  expect(result.totalToolUseCount).toBe(1)
-  expect(result.totalDurationMs).toBe(11000)
-  expect(result.totalTokens).toBe(1500)
-  expect(result.usage.input_tokens).toBe(1200)
-  // The report was the call's answer: no notification follows.
-  await new Promise(resolve => setTimeout(resolve, 50))
-  expect(stubs.submitted).toEqual([])
+}
+
+async function step($: Body[0], turnId = 'turn-1', index = 0, agentId: string | undefined = ID) {
+  const stream = $.turn.step({ turnId, index, agentId, model: 'claude-haiku-5-5', messageCount: 1 })
+  const chunks = []
+  for await (const chunk of stream) chunks.push(chunk)
+  return chunks
+}
+async function resume($: Body[0], prompt: string) {
+  await $.agent.spawn({ tool_use_id: '', prompt, description: 'read a note', subagentType: 'general-purpose',
+    parentModel: 'haiku', permissionMode: 'auto', background: true, fork: false, resume: { agentId: ID } } as never)
+}
+function report(chunks: Awaited<ReturnType<typeof step>>): string {
+  return chunks.filter(c => c.kind === 'input' || c.kind === 'text').map(c => c.kind === 'input' ? JSON.parse(c.json).message : c.text).join('')
+}
+
+test('routing creates a real native task before running the remote agent, and preserves the native answer', async ($, on) => {
+  const e = engine([$, on])
+  const answer = await e.launch()
+  expect(answer.result).toEqual(NATIVE)
+  expect(e.spawned.length).toBe(1)
+  expect(e.runCount).toBe(0)
+  expect(e.calls.some(c => c.flag === '--agent-route')).toBe(true)
+  const chunks = await step($)
+  expect(report(chunks)).toBe(RESULT.text)
+  expect(chunks.find(c => c.kind === 'tool')?.name).toBe('SubagentHandback')
+  expect(e.modelSteps).toBe(0)
+  const request = e.calls.find(c => c.flag === '--agent-run')!.request
+  expect(request.id).toBe(ID)
+  expect(request.cwd).toBe('/native')
+  expect(request.permissionMode).toBe('auto')
+  expect(request.background).toBe(true)
 })
 
-test("a foreground agent's failure is the Agent call's error", async ($, on) => {
-  engine([$, on], lines(STARTED, { type: 'result', text: 'Pro is at its usage limit', isError: true, account: 'Pro' }), { background: false })
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
-
-  expect((answer as { deny?: string }).deny).toContain('Pro is at its usage limit')
+test('foreground routing uses the same native task and report adapter', async ($, on) => {
+  const e = engine([$, on], { background: false })
+  expect((await e.launch()).result).toEqual(NATIVE)
+  expect(report(await step($))).toBe(RESULT.text)
+  expect(e.calls.find(c => c.flag === '--agent-run')?.request.background).toBe(false)
+  expect(e.modelSteps).toBe(0)
 })
 
-test('a foreground agent sent to the background answers "launched", then reports as a notification', async ($, on) => {
+test('native agents without the handback instruction return plain text and end_turn', async ($, on) => {
+  const e = engine([$, on], { handback: false })
+  await e.launch()
+  const chunks = await step($)
+  expect(report(chunks)).toBe(RESULT.text)
+  expect(chunks.some(c => c.kind === 'tool')).toBe(false)
+  expect(chunks.find(c => c.kind === 'stop')?.stopReason).toBe('end_turn')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('no room leaves the native agent and its model calls untouched', async ($, on) => {
+  const e = engine([$, on], { route: { type: 'no_room' } })
+  expect((await e.launch()).result).toEqual(NATIVE)
+  expect((await step($))[0]).toEqual({ kind: 'text', index: 0, text: 'built-in response' })
+  expect(e.runCount).toBe(0)
+  expect(e.modelSteps).toBe(1)
+})
+
+test('SDK hosts retain background routing', async ($, on) => {
+  const e = engine([$, on])
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: false })
+  await e.launch()
+  expect(report(await step($))).toBe(RESULT.text)
+  expect(e.modelSteps).toBe(0)
+})
+
+test('native SendMessage follow-ups resume the remote id and only forward the new message', async ($, on) => {
+  const e = engine([$, on])
+  await e.launch()
+  await step($)
+  e.messages([{ role: 'user', content: [{ type: 'text', text: 'initial task' }] },
+    { role: 'assistant', content: [] },
+    { role: 'user', content: [
+      { type: 'text', text: 'The coordinator sent a message while you were working:\nnext task\n\nAddress this before completing your current task.\n' },
+      { type: 'text', text: 'next task' },
+    ] }])
+  expect(report(await step($, 'turn-2'))).toBe(RESULT.text)
+  const run = e.calls.filter(c => c.flag === '--agent-run').at(-1)!.request
+  expect(run.resume).toBe(ID)
+  expect(run.prompt).toBe('next task')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('a native agent restored from persistent routing state still resumes remotely', async ($, on) => {
+  const e = engine([$, on])
+  e.store.set(`native-agent:${ID}`, { request: { prompt: '', cwd: '/original', subagentType: 'Explore', effort: 'high' },
+    description: 'restored agent', toolUseId: 'toolu_old', ran: true, cursor: 1 })
+  e.messages([{ role: 'user', content: [{ type: 'text', text: 'old task' }] },
+    { role: 'user', content: [{ type: 'text', text: 'follow-up after resume' }] }])
+  expect(report(await step($))).toBe(RESULT.text)
+  const request = e.calls.find(c => c.flag === '--agent-run')!.request
+  expect(request.resume).toBe(ID)
+  expect(request.prompt).toBe('follow-up after resume')
+  expect(request.cwd).toBe('/original')
+  expect(request.subagentType).toBe('Explore')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('a coordinator-only inbox wrapper forwards its message instead of losing it', async ($, on) => {
+  const e = engine([$, on])
+  await e.launch()
+  await step($)
+  e.messages([{ role: 'user', content: [{ type: 'text', text: 'initial task' }] },
+    { role: 'user', content: [{ type: 'text', text: 'The coordinator sent a message while you were working:\nwrapped task\n\nAddress this before completing your current task.\n' }] }])
+  expect(report(await step($, 'turn-2'))).toBe(RESULT.text)
+  expect(e.calls.filter(c => c.flag === '--agent-run').at(-1)?.request.prompt).toBe('wrapped task')
+})
+
+test('a queued native resume forwards its pinned prompt before it appears in session.messages', async ($, on) => {
   let release = () => {}
-  const gate = new Promise<void>(resolve => (release = resolve))
-  const stubs = engine([$, on], lines(STARTED, RESULT), { background: false, gate })
-
-  const call = $.tool.call({ tool: 'Agent', description: 'reverse the note', prompt: 'Read note.txt', tool_use_id: 'toolu_fg' } as never)
-  await new Promise(resolve => setTimeout(resolve, 50))
-  const ui = await $.ui.mount({
-    plugin: 'headroom', component: 'ToolUse', requestId: 'toolu_fg', surface: 'terminal',
-    props: { tool_use_id: 'toolu_fg', tool: 'Agent', input: {}, isRunning: true, isErrored: false, isInterrupted: false },
-  })
-  await ui.press({ key: `background-${AGENT_ID}` })
-  const answer = await call
-  await ui.unmount()
-
-  expect((answer.result as { status: string }).status).toBe('async_launched')
-  expect(stubs.submitted).toEqual([])
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const e = engine([$, on], { gate })
+  await e.launch()
+  const working = step($)
+  for (let i = 0; i < 30 && e.runCount === 0; i++) await new Promise(resolve => setTimeout(resolve, 10))
   release()
-  await eventually(() => stubs.submitted.length > 0)
-  expect(stubs.submitted[0]).toContain('<result>olleh</result>')
+  expect(report(await working)).toBe(RESULT.text)
+  expect(e.runCount).toBe(1)
+  e.messages([{ role: 'user', content: [{ type: 'text', text: 'initial task' }] },
+    { role: 'assistant', content: [{ type: 'text', text: RESULT.text }] }])
+  await resume($, 'message while working')
+  expect(report(await step($, 'turn-2'))).toBe(RESULT.text)
+  expect(e.runCount).toBe(2)
+  expect(e.calls.filter(c => c.flag === '--agent-run')[1]?.request.prompt).toBe('message while working')
 })
 
-test('with no account free, the built-in subagent runs', async ($, on) => {
-  const stubs = engine([$, on], lines({ type: 'no_room' }), { background: false })
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
-
-  expect(stubs.spawned).toEqual(['x'])
-  expect((answer.result as { agentId: string }).agentId).toBe('built-in')
+test('TaskStop, ListAgents and SendMessage remain native calls with native results', async ($, on) => {
+  const e = engine([$, on])
+  await e.launch()
+  for (const name of ['TaskStop', 'ListAgents', 'SendMessage']) {
+    const answer = await $.tool.call({ tool: name, task_id: ID, to: ID, message: 'hi' } as never)
+    expect(answer.result).toEqual({ marker: `native ${name}` })
+  }
+  expect(e.calls.some(c => c.flag === '--agent-stop')).toBe(false)
+  expect(e.runCount).toBe(0)
 })
 
-test('a sent prompt has Headroom get a process ready', async ($, on) => {
-  const stubs = engine([$, on], '')
-  on('classic.UserPromptSubmit', () => ({}))
-
-  await $.classic.UserPromptSubmit({ prompt: 'hi', permission_mode: 'acceptEdits' } as never)
-  await eventually(() => stubs.argvs.some(argv => argv[1] === '--agent-warm'))
-
-  const request = JSON.parse(stubs.requests[stubs.argvs.findIndex(argv => argv[1] === '--agent-warm')] ?? '{}')
-  expect(request.permissionMode).toBe('acceptEdits')
-  expect(request.cwd).toBe('/work')
+test('remote token usage reaches the native stop chunk without counting cached tokens twice', async ($, on) => {
+  const e = engine([$, on])
+  await e.launch()
+  const stop = (await step($)).find(c => c.kind === 'stop')
+  expect(stop?.usage).toEqual({ model: 'claude-haiku-5-5', input_tokens: 30, output_tokens: 10,
+                              cache_read_input_tokens: 50, cache_creation_input_tokens: 20 })
 })
 
-test("SendMessage to a built-in agent isn't Headroom's", async ($, on) => {
-  const stubs = engine([$, on], lines({ type: 'no_room' }))
-
-  await $.tool.call({ tool: 'SendMessage', to: 'aeb08a749aaadf89c', message: 'hi' })
-
-  expect(stubs.reachedEngine).toEqual(['SendMessage'])
-  expect(stubs.requests).toEqual([])
+test('an admission failure refuses the native spawn instead of falling back', async ($, on) => {
+  const e = engine([$, on], { route: { type: 'error', text: 'routing is broken' } })
+  expect((await e.launch()).deny).toContain('routing is broken')
+  expect(e.spawned).toEqual([])
+  expect(e.runCount).toBe(0)
 })
 
-test('the pane shows a running agent and its steps', async ($, on) => {
-  engine([$, on], lines(
-    { type: 'started', agentId: AGENT_ID, account: 'Pro', model: 'claude-sonnet-5-5', outputFile: '/tmp/a.log' },
-    { type: 'step', text: 'Read: note.txt' },
-  ))
-  await $.tool.call({ tool: 'Agent', description: 'reverse the note', prompt: 'Read note.txt' })
-  await new Promise(resolve => setTimeout(resolve, 50))
+test('an older app is rejected before calling a CLI mode it does not recognize', async ($, on) => {
+  const e = engine([$, on], { nativeTasks: false })
+  expect((await e.launch()).deny).toContain('Update the Headroom app and plugin together')
+  expect(e.calls.some(c => c.flag === '--agent-route')).toBe(false)
+  expect(e.spawned).toEqual([])
+})
 
-  const ui = await $.ui.mount({
-    plugin: 'headroom', component: 'Pane', requestId: 'headroom-agents', surface: 'desktop',
-    props: { title: 'Agents on other accounts', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
+test('a runner error is an explicit native report and never a local model request', async ($, on) => {
+  const e = engine([$, on], { noStart: true, outputs: [{ type: 'error', text: 'missing agent type on Pro' }] })
+  await e.launch()
+  expect(report(await step($))).toContain('Headroom agent failed: Error: missing agent type on Pro')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('a runner that ends without a report produces an explicit native failure report', async ($, on) => {
+  const e = engine([$, on], { outputs: [{ type: 'step', text: 'Read: note.txt' }] })
+  await e.launch()
+  expect(report(await step($))).toContain('without the agent’s report')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('loss of room after native spawn is an error, not execution on the session account', async ($, on) => {
+  const e = engine([$, on], { noStart: true, outputs: [{ type: 'no_room' }] })
+  await e.launch()
+  expect(report(await step($))).toContain('No other account has room after the native agent started')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('an older runner that changes ids fails visibly', async ($, on) => {
+  const e = engine([$, on], { wrongID: true })
+  await e.launch()
+  expect(report(await step($))).toContain('did not keep the native agent id')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('a second model step after handback never falls back to the session account', async ($, on) => {
+  const e = engine([$, on])
+  await e.launch()
+  await step($)
+  const chunks = await step($, 'turn-1', 1)
+  expect(report(chunks)).toContain('another model step')
+  expect(chunks.some(c => c.kind === 'tool')).toBe(false)
+  expect(e.modelSteps).toBe(0)
+})
+
+test('failure to persist a route produces an error report, never a local request', async ($, on) => {
+  const e = engine([$, on], { storeFailure: true })
+  await e.launch()
+  expect(report(await step($))).toContain('could not save the native agent’s route')
+  expect(e.runCount).toBe(0)
+  expect(e.modelSteps).toBe(0)
+})
+
+test('only the remote worker creates a routed worktree', async ($, on) => {
+  const e = engine([$, on])
+  await e.launch({ isolation: 'worktree' })
+  expect(e.nativeInputs[0]?.isolation).toBeUndefined()
+  await step($)
+  expect(e.calls.find(c => c.flag === '--agent-run')?.request.isolation).toBe('worktree')
+})
+
+test('a built-in worktree call retains its isolation when no other account has room', async ($, on) => {
+  const e = engine([$, on], { route: { type: 'no_room' } })
+  await e.launch({ isolation: 'worktree' })
+  expect(e.nativeInputs[0]?.isolation).toBe('worktree')
+  expect(e.runCount).toBe(0)
+})
+
+test('prompt hooks still warm a process with the session folder and model', async ($, on) => {
+  const e = engine([$, on])
+  await $.classic.UserPromptSubmit({ prompt: 'hi', permission_mode: 'plan' } as never)
+  for (let i = 0; i < 30 && !e.calls.some(c => c.flag === '--agent-warm'); i++) await new Promise(resolve => setTimeout(resolve, 10))
+  const request = e.calls.find(c => c.flag === '--agent-warm')?.request
+  expect(request?.cwd).toBe('/work')
+  expect(request?.parentModel).toBe('claude-haiku-5-5')
+  expect(request?.permissionMode).toBe('plan')
+})
+
+test('a failed version self-test remains visible in the status line', async ($, on) => {
+  const e = engine([$, on], { selfTest: { type: 'failed', version: '2.2.0', step: 'resume', text: 'missing session' } })
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: false })
+  for (let i = 0; i < 30 && !e.statuses.some(t => t?.includes('broken')); i++) await new Promise(resolve => setTimeout(resolve, 10))
+  expect(e.statuses.at(-1)).toContain('broken on Claude Code 2.2.0 (resume: missing session)')
+})
+
+test('unrelated native subagents and the main loop retain their model steps', async ($, on) => {
+  const e = engine([$, on])
+  await step($, 'native', 0, 'a-unrouted')
+  await step($, 'main', 0, undefined)
+  expect(e.modelSteps).toBe(2)
+  expect(e.runCount).toBe(0)
+})
+
+for (const options of [{ fork: true }, { workflow: true }]) {
+  test(`special native spawn ${JSON.stringify(options)} stays built-in`, async ($, on) => {
+    const e = engine([$, on], options)
+    await e.launch()
+    await step($)
+    expect(e.runCount).toBe(0)
+    expect(e.modelSteps).toBe(1)
   })
-  expect((await ui.find({ type: 'Text', text: /reverse the note/ }))?.text).toContain('reverse the note')
-  expect((await ui.find({ type: 'Text', text: /Read: note.txt/ }))?.text).toContain('Read: note.txt')
-  await ui.unmount()
+}
+
+for (const fields of [{ agentId: 'parent-agent' }, { name: 'teammate' }, { isolation: 'remote' }]) {
+  test(`special Agent call ${JSON.stringify(fields)} stays built-in`, async ($, on) => {
+    const e = engine([$, on])
+    await e.launch(fields)
+    await step($)
+    expect(e.calls.some(c => c.flag === '--agent-route')).toBe(false)
+    expect(e.modelSteps).toBe(1)
+  })
+}
+
+test('unknown Agent fields still fail explicitly', async ($, on) => {
+  const e = engine([$, on])
+  expect((await e.launch({ run_after: 'lunch' })).deny).toContain('`run_after`')
+  expect(e.nativeCalls).toEqual([])
 })
 
-test("the Agent call's row shows the remote agent and unfolds its transcript", async ($, on) => {
-  engine([$, on], lines(
-    { type: 'started', agentId: AGENT_ID, account: 'Pro', model: 'claude-sonnet-5-5', outputFile: '/tmp/a.log' },
-    { type: 'step', text: 'Read: note.txt' },
-    { type: 'item', kind: 'tool', id: 't1', summary: 'Read: note.txt', input: '{}' },
-    { type: 'item', kind: 'result', id: 't1', text: 'hello', isError: false },
-    { type: 'item', kind: 'text', text: 'The note says hello.' },
-  ))
-  await $.tool.call({ tool: 'Agent', description: 'read the note', prompt: 'Read note.txt', tool_use_id: 'toolu_1' } as never)
-  await new Promise(resolve => setTimeout(resolve, 50))
+test('permission refusal does not start a remote run', async ($, on) => {
+  const e = engine([$, on], { refusal: 'Permission denied' })
+  expect((await e.launch()).deny).toBe('Permission denied')
+  expect(e.runCount).toBe(0)
+})
 
+test('Headroom-owned provider agents use the same native adapter', async ($, on) => {
+  const e = engine([$, on], { catalog: CATALOG })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  await e.launch({ subagent_type: 'headroom:codex-deep' })
+  expect(e.spawned.length).toBe(1)
+  expect(report(await step($))).toBe(RESULT.text)
+  expect(e.calls.find(c => c.flag === '--agent-run')?.request.agent).toBe('headroom:codex-deep')
+  expect(e.modelSteps).toBe(0)
+})
+
+test('a stale owned-type listing recovers with a native shell and the same owned provider', async ($, on) => {
+  const e = engine([$, on], { catalog: CATALOG, missingType: true })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  expect((await e.launch({ subagent_type: 'headroom:codex-deep' })).result).toEqual(NATIVE)
+  expect(report(await step($))).toBe(RESULT.text)
+  expect(e.calls.find(c => c.flag === '--agent-run')?.request.agent).toBe('headroom:codex-deep')
+})
+
+test('disabled owned agents are errors and are not offered', async ($, on) => {
+  const e = engine([$, on])
+  expect((await e.launch({ subagent_type: 'headroom:gone' })).deny).toContain('No agent headroom:gone')
+  expect((await $.agent.offer({ agent: 'headroom:gone' } as never)).isOffered).toBe(false)
+  expect(e.spawned).toEqual([])
+})
+
+test('the pane keeps remote progress and its expandable transcript beside the native task', async ($, on) => {
+  const e = engine([$, on], { outputs: [
+    { type: 'step', text: 'Read: note.txt' }, { type: 'item', kind: 'text', text: 'The note says hello.' }, RESULT,
+  ] })
+  await e.launch()
+  await step($)
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({
-      plugin: 'headroom', component: 'ToolUse', requestId: 'toolu_1', surface,
-      props: { tool_use_id: 'toolu_1', tool: 'Agent', input: {}, isRunning: false, isErrored: false, isInterrupted: false },
-    })
-    expect((await ui.find({ type: 'Text', text: /read the note/ }))?.text).toContain('Agent')
+    const ui = await $.ui.mount({ plugin: 'headroom', component: 'Pane', requestId: 'headroom-agents', props: {}, surface })
     expect((await ui.find({ type: 'Text', text: /on Pro/ }))?.text).toContain('on Pro')
-    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
-    await ui.press({ key: `transcript-${AGENT_ID}` })
-    expect((await ui.find({ type: 'Markdown' }) as { text?: string } | undefined)?.text).toContain('The note says hello.')
-    expect((await ui.find({ type: 'Text', text: /hello$/ }))?.text).toContain('hello')
-    await ui.press({ key: `transcript-${AGENT_ID}` })
+    await ui.press({ key: `transcript-${ID}` })
+    expect((await ui.find({ type: 'Markdown' }) as { text?: string })?.text).toContain('The note says hello.')
+    await ui.press({ key: `transcript-${ID}` })
     await ui.unmount()
   }
-})
-
-test('a fork runs built-in, on this session’s own context', async ($, on) => {
-  const stubs = engine([$, on], lines(STARTED, RESULT), { fork: true })
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'fork it', prompt: 'carry on', subagent_type: 'fork' })
-
-  expect(stubs.spawned).toEqual(['fork it'])
-  expect(stubs.argvs.filter(a => a[1] === '--agent-run')).toEqual([])
-  expect((answer.result as { agentId: string }).agentId).toBe('built-in')
-})
-
-test("an Agent field Headroom doesn't know is the call's error, not a silent built-in run", async ($, on) => {
-  const stubs = engine([$, on], lines(STARTED, RESULT))
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y', run_after: 'lunch' } as never)
-
-  expect((answer as { deny?: string }).deny).toContain('`run_after`')
-  expect(stubs.reachedEngine).toEqual([])
-  expect(stubs.spawned).toEqual([])
-})
-
-test('run_in_background is a field Headroom knows: the engine decides and agent.spawn says', async ($, on) => {
-  const stubs = engine([$, on], lines(STARTED, RESULT), { background: true })
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y', run_in_background: true } as never)
-
-  expect((answer.result as { status: string }).status).toBe('async_launched')
-  await eventually(() => stubs.submitted.length > 0)
-})
-
-test("a runner that can't start the agent is the call's error", async ($, on) => {
-  const stubs = engine([$, on], lines({ type: 'error', text: 'the Reviewer agent type isn’t available on the Pro account' }))
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
-
-  expect((answer as { deny?: string }).deny).toContain('Reviewer agent type')
-  expect(stubs.spawned).toEqual([])
-})
-
-test("a runner that ends before the agent started is the call's error", async ($, on) => {
-  const stubs = engine([$, on], '')
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
-
-  expect((answer as { deny?: string }).deny).toContain('ended before the agent started')
-  expect(stubs.spawned).toEqual([])
-})
-
-test('a background agent whose runner dies still reports, as a failure', async ($, on) => {
-  const stubs = engine([$, on], lines(STARTED, { type: 'step', text: 'Read: note.txt' }), { background: true })
-
-  await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
-
-  await eventually(() => stubs.submitted.length > 0)
-  expect(stubs.submitted[0]).toContain('<status>failed</status>')
-  expect(stubs.submitted[0]).toContain('without the agent’s report')
-})
-
-test('TaskStop stops a Headroom agent on its account', async ($, on) => {
-  let release = () => {}
-  const gate = new Promise<void>(resolve => (release = resolve))
-  const stubs = engine([$, on], lines(STARTED, { type: 'result', text: 'Stopped.', isError: true, stopped: true }),
-                       { background: true, gate, outputs: { '--agent-stop': lines({ type: 'stopped' }) } })
-  await $.tool.call({ tool: 'Agent', description: 'long task', prompt: 'y' })
-
-  const answer = await $.tool.call({ tool: 'TaskStop', task_id: AGENT_ID })
-  release()
-
-  expect(stubs.argvs.find(a => a[1] === '--agent-stop')?.[2]).toBe(AGENT_ID)
-  expect((answer.result as { task_id: string }).task_id).toBe(AGENT_ID)
-  expect(stubs.reachedEngine).toEqual(['Agent'])
-  await new Promise(resolve => setTimeout(resolve, 50))
-  // Stopped is TaskStop's own answer: no failure notification follows.
-  expect(stubs.submitted).toEqual([])
-  const listed = await $.tool.call({ tool: 'ListAgents' })
-  expect((listed.result as { listing: string }).listing).toContain(`${AGENT_ID} · long task · stopped · on Pro`)
-})
-
-test('TaskStop for a built-in task goes to the engine', async ($, on) => {
-  const stubs = engine([$, on], '')
-
-  await $.tool.call({ tool: 'TaskStop', task_id: 'b2sp5yayl' })
-
-  expect(stubs.reachedEngine).toEqual(['TaskStop'])
-})
-
-test('ListAgents lists Headroom agents beside the built-in ones', async ($, on) => {
-  let release = () => {}
-  const gate = new Promise<void>(resolve => (release = resolve))
-  const stubs = engine([$, on], lines(STARTED, RESULT), { background: true, gate })
-  await $.tool.call({ tool: 'Agent', description: 'reverse the note', prompt: 'y' })
-
-  const answer = await $.tool.call({ tool: 'ListAgents' })
-  release()
-  await eventually(() => stubs.submitted.length > 0)
-
-  const result = answer.result as { listing: string; sections: { kind: string; rows: { id: string }[] }[] }
-  expect(result.listing).toContain('built-in task')
-  expect(result.listing).toContain(`${AGENT_ID} · reverse the note · running · on Pro`)
-  expect(result.sections.find(s => s.kind === 'headroom')?.rows[0]?.id).toBe(AGENT_ID)
-})
-
-test('a failed self-test stays in the status line', async ($, on) => {
-  const stubs = engine([$, on], '', { outputs: {
-    '--agent-selftest': lines({ type: 'failed', version: '2.2.0 (Claude Code)', step: 'continue', text: 'No conversation found' }),
-  } })
-  on('command.register', () => ({ value: undefined }))
-  on('session.start', (_, e) => e)
-
-  await $.session.start({ cwd: '/work' } as never)
-
-  await eventually(() => stubs.statuses.some(t => t?.includes('broken')))
-  expect(stubs.statuses.at(-1)).toContain('broken on Claude Code 2.2.0 (Claude Code) (continue: No conversation found)')
-})
-
-// Headroom's own agents: `--agent-catalog` lists them, the plugin registers them as agent types.
-
-const CATALOG = lines({ revision: 3, agents: [
-  { name: 'codex-deep', description: 'Second opinion on hard bugs.', provider: 'codex', summary: 'Codex · gpt-6.1-sol · high', prompt: 'You are codex-deep.' },
-] })
-const CODEX_STARTED = { ...STARTED, account: 'Codex', model: 'gpt-6.1-sol', provider: 'codex' }
-
-/** Stands in for registering agent types; `catalog` is what `--agent-catalog` answers, read on each call. */
-function withCatalog(registered: { name: string; description: string }[], catalog = () => CATALOG) {
-  return (on: Body[1]): Record<string, string> => {
-    on('agent.register', (_, e) => {
-      registered.push({ name: e.name, description: e.description })
-      return { value: { agent: `headroom:${e.name}` } }
-    })
-    on('agent.offer', () => ({ isOffered: true }))
-    on('classic.UserPromptSubmit', () => ({}))
-    return { get '--agent-catalog'() { return catalog() } }
-  }
-}
-
-test("a prompt registers Headroom's enabled agents as agent types, saying where each runs", async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  const outputs = withCatalog(registered)(on)
-  engine([$, on], '', { outputs })
-
-  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-  await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
-
-  // The same revision twice registers once.
-  expect(registered).toEqual([{ name: 'codex-deep', description: 'Second opinion on hard bugs. (Runs on Codex · gpt-6.1-sol · high, with Headroom.)' }])
-  expect((await $.agent.offer({ agent: 'headroom:codex-deep', description: '', source: 'plugin', provider: {} } as never)).isOffered).not.toBe(false)
-  expect((await $.agent.offer({ agent: 'headroom:gone', description: '', source: 'plugin', provider: {} } as never)).isOffered).toBe(false)
-})
-
-test("a Headroom agent runs on its provider, and the runner is told which agent it is", async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  const outputs = withCatalog(registered)(on)
-  const stubs = engine([$, on], lines(CODEX_STARTED, { ...RESULT, account: 'Codex', model: 'gpt-6.1-sol' }), { background: true, outputs })
-  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'hunt the bug', prompt: 'Why does it crash?', subagent_type: 'headroom:codex-deep' })
-
-  expect(stubs.spawned).toEqual([])
-  expect((answer.result as { status: string }).status).toBe('async_launched')
-  const run = stubs.argvs.findIndex(argv => argv[1] === '--agent-run')
-  expect(JSON.parse(stubs.requests[run] ?? '{}').agent).toBe('headroom:codex-deep')
-  await eventually(() => stubs.submitted.length > 0)
-  expect(stubs.submitted[0]).toContain('ran on Codex with Headroom')
-})
-
-test("a Headroom agent its provider can't take is the call's error, never a built-in agent", async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  const outputs = withCatalog(registered)(on)
-  const stubs = engine([$, on], lines({ type: 'no_room' }), { outputs })
-  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'hunt', prompt: 'x', subagent_type: 'headroom:codex-deep' })
-
-  expect(stubs.spawned).toEqual([])
-  expect(answer.deny).toContain('headroom:codex-deep')
-})
-
-test("a Headroom agent that isn't enabled is the call's error", async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  const outputs = withCatalog(registered)(on)
-  const stubs = engine([$, on], '', { outputs })
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'hunt', prompt: 'x', subagent_type: 'headroom:gone' })
-
-  expect(stubs.reachedEngine).toEqual([])
-  expect(answer.deny).toContain('No agent headroom:gone is enabled in Headroom')
-})
-
-test("a Headroom agent's edited description reaches Claude beside the Agent tool's", async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  let catalog = CATALOG
-  const outputs = withCatalog(registered, () => catalog)(on)
-  engine([$, on], '', { outputs })
-  on('tool.describe', (_, e) => ({ description: e.description }))
-  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-  catalog = lines({ revision: 4, agents: [
-    { name: 'codex-deep', description: 'Reviews migrations.', provider: 'codex', summary: 'Codex · gpt-6.1-sol', prompt: 'You are codex-deep.' },
-  ] })
-  await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
-
-  const described = await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: {} } as never)
-  expect(described.description).toContain('Launch a new agent.')
-  expect(described.description).toContain('- headroom:codex-deep: Reviews migrations. (Runs on Codex · gpt-6.1-sol, with Headroom.)')
-})
-
-test('a newly registered type runs when the current turn still has the earlier agent snapshot', async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  const outputs = withCatalog(registered)(on)
-  const stubs = engine([$, on], lines(CODEX_STARTED, { ...RESULT, account: 'Codex' }), {
-    background: false, outputs, missingType: 'headroom:codex-deep',
-  })
-  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'new agent', prompt: 'x', subagent_type: 'headroom:codex-deep' })
-
-  expect(stubs.spawned).toEqual([])
-  expect((answer.result as { content: { text: string }[] } | undefined)?.content).toEqual([{ type: 'text', text: 'olleh' }])
-})
-
-
-test('a permission refusal is never recovered as a stale agent listing', async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  const outputs = withCatalog(registered)(on)
-  const stubs = engine([$, on], lines(CODEX_STARTED, RESULT), { outputs, refusal: 'Agent denied by a permission rule.' })
-  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-
-  const answer = await $.tool.call({ tool: 'Agent', description: 'denied agent', prompt: 'x', subagent_type: 'headroom:codex-deep' })
-
-  expect(answer.deny).toBe('Agent denied by a permission rule.')
-  expect(stubs.argvs.some(argv => argv[1] === '--agent-run')).toBe(false)
-})
-
-test('the Agent tool describes newly added types before the engine announces them', async ($, on) => {
-  const registered: { name: string; description: string }[] = []
-  const outputs = withCatalog(registered)(on)
-  engine([$, on], '', { outputs })
-  on('tool.describe', (_, e) => ({ description: e.description }))
-  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-
-  const described = await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: {} } as never)
-
-  expect(described.description).toContain('- headroom:codex-deep: Second opinion on hard bugs. (Runs on Codex · gpt-6.1-sol · high, with Headroom.)')
 })
 
 function context(on: Body[1]) {
@@ -487,8 +423,7 @@ function context(on: Body[1]) {
 }
 
 test('saving Claude usage adds the generic standing instruction to context', async ($, on) => {
-  const outputs = withCatalog([], () => lines({ revision: 10, saveClaude: true, agents: [] }))(on)
-  engine([$, on], '', { outputs })
+  engine([$, on], { liveCatalog: () => ({ revision: 10, saveClaude: true, agents: [] }) })
   context(on)
   await $.classic.UserPromptSubmit({ prompt: 'Explore.' } as never)
   const blocks = [{ name: 'existing', text: 'Keep this context.' }]
@@ -502,8 +437,7 @@ test('saving Claude usage adds the generic standing instruction to context', asy
 
 test('turning saving off removes its context on the next prompt without changing other context', async ($, on) => {
   let catalog = { revision: 10, saveClaude: true, agents: [] }
-  const outputs = withCatalog([], () => lines(catalog))(on)
-  const stubs = engine([$, on], '', { outputs })
+  const stubs = engine([$, on], { liveCatalog: () => catalog })
   context(on)
   await $.classic.UserPromptSubmit({ prompt: 'Explore.' } as never)
   expect((await $.prompt.context({ blocks: [] })).blocks.length).toBe(1)
@@ -520,8 +454,7 @@ test('turning saving off removes its context on the next prompt without changing
 })
 
 test('older catalogs add no saving instruction', async ($, on) => {
-  const outputs = withCatalog([])(on)
-  engine([$, on], '', { outputs })
+  engine([$, on])
   context(on)
   await $.classic.UserPromptSubmit({ prompt: 'Explore.' } as never)
   expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
@@ -529,8 +462,7 @@ test('older catalogs add no saving instruction', async ($, on) => {
 
 test('the next context render reads edits before prompt-submit hooks run', async ($, on) => {
   let catalog = { revision: 10, saveClaude: true, agents: [] }
-  const outputs = withCatalog([], () => lines(catalog))(on)
-  const stubs = engine([$, on], '', { outputs })
+  const stubs = engine([$, on], { liveCatalog: () => catalog })
   context(on)
   expect((await $.prompt.context({ blocks: [] })).blocks.length).toBe(1)
   expect(stubs.invalidated.at(-1)).toBe('prompt.context')
