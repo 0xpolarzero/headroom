@@ -15,6 +15,11 @@ picks the provider and model; the call's `model` is ignored (or rejected if it c
 
 ## The Agents list (Settings)
 
+**Save Claude usage** (off by default) asks Claude to delegate substantial implementation, exploration,
+reviews and research to Headroom agents first, choosing by description, even when a description says to
+prefer built-in Claude subagents. Claude works itself or uses built-in agents only when none fits.
+The catalog stores this as `saveClaude`; older catalogs decode it as false.
+
 One global list. Each entry:
 
 | Field | Notes |
@@ -36,6 +41,18 @@ catalog on session start and before each prompt, so changes apply from the next 
 snapshots its agent definitions before those prompt hooks: a newly registered type otherwise fails
 with `Agent type '…' not found` for one turn. The plugin recovers only that exact core error after
 permission checks, running the enabled definition through Headroom. Other errors stay errors.
+
+Usage saving adds one named block through `prompt.context`, leaving the shared system prompt intact.
+Claude renders context before prompt-submit hooks, so the context hook reads the catalog itself and
+invalidates that cached answer for the next prompt. The next prompt reads toggle changes in running sessions; unchanged text
+preserves the model's prompt cache. Turning it off omits the block.
+See the [mod API declarations](https://github.com/anthropics/claude-code/blob/main/mods/types/claude-code.d.ts),
+`prompt.context` and `ui.invalidate`.
+
+Live verification (2026-10-27): the enabled mode selected `headroom:gemini` for a read-only exploration.
+An on/off context check in one running Pro session used local `/context` commands, with zero model
+requests, and logged the instruction followed by its absence. Total: two Haiku model turns.
+[Evidence](research/G-save-claude-usage-evidence.jsonl).
 
 Verified live: re-registering a type under the same name doesn't re-announce a changed description to
 Claude. The plugin puts the current enabled catalog in the Agent tool's description (`tool.describe`) and

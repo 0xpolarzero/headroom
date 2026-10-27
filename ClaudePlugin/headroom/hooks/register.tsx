@@ -47,6 +47,10 @@ type Defined = { name: string; description: string; provider: string; summary: s
 /** Headroom's enabled agents as last read, by type (`headroom:codex-deep`), and the list's revision. */
 let catalog = new Map<string, Defined>()
 let revision: number | undefined
+let saveClaude = false
+
+const SAVING_CONTEXT = 'headroomSaveClaude'
+const SAVING_INSTRUCTION = "Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to Headroom's agents (headroom:*), picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no Headroom agent fits."
 
 const TYPE_PREFIX = 'headroom:'
 
@@ -68,7 +72,7 @@ async function syncCatalog($: EngineInterface): Promise<void> {
   for await (const chunk of $.process.spawn({ argv: [await runner($), '--agent-catalog'] })) {
     if (chunk.stream === 'stdout') text += chunk.text
   }
-  const parsed = JSON.parse(text.trim() || '{}') as { revision?: number; agents?: Defined[] }
+  const parsed = JSON.parse(text.trim() || '{}') as { revision?: number; agents?: Defined[]; saveClaude?: boolean }
   if (parsed.revision !== undefined && parsed.revision === revision) return
   const next = new Map((parsed.agents ?? []).map(agent => [`${TYPE_PREFIX}${agent.name}`, agent] as const))
   for (const [type, agent] of next) {
@@ -78,6 +82,7 @@ async function syncCatalog($: EngineInterface): Promise<void> {
   }
   catalog = next
   revision = parsed.revision
+  saveClaude = parsed.saveClaude === true
   $.ui.invalidate('tool.describe')
 }
 
@@ -466,6 +471,18 @@ function agentBlock($: EngineInterface, e: Parameters<EngineInterface['ui']['res
 }
 
 export const register: Register = on => {
+  // Context leaves the shared system prompt intact. Claude renders it before UserPromptSubmit, so
+  // re-read the catalog here and invalidate this cached answer for the next prompt. Unchanged text
+  // keeps the model's prompt cache; section invalidation would also rebuild the shared system prompt.
+  on('prompt.context', async ($, e, next) => {
+    await syncCatalog($).catch(error => $.ui.log(`headroom: reading Headroom's agents failed: ${String(error)}`, { to: 'debug' }))
+    const answer = await next(e)
+    const blocks = answer.blocks.filter(block => block.name !== SAVING_CONTEXT)
+    $.ui.invalidate('prompt.context')
+    $.ui.log(`headroom: Save Claude usage context: ${saveClaude ? SAVING_INSTRUCTION : '(absent)'}`, { to: 'debug' })
+    return { ...answer, blocks: saveClaude ? [...blocks, { name: SAVING_CONTEXT, text: SAVING_INSTRUCTION }] : blocks }
+  })
+
   // The mode built-in subagents inherit; the classic hook events carry it.
   on('classic.UserPromptSubmit', async ($, e, next) => {
     if (e.permission_mode) permissionMode = e.permission_mode

@@ -49,4 +49,25 @@ final class AgentCatalogTests: XCTestCase {
         XCTAssertEqual(Array(args.suffix(2)), ["--append-system-prompt", "You are reviewer."])
         XCTAssertFalse(args.contains("--agent"))
     }
+
+    func testOlderCatalogsDefaultUsageSavingOff() throws {
+        let data = Data("""
+        {"revision":101,"agents":[{"id":"122651C3-88A7-4BF2-B4B0-2C3B5ADE7404","name":"worker",
+        "description":"Explore code.","provider":"codex","model":"gpt-6-luna","enabled":true}]}
+        """.utf8)
+        let catalog = try JSONDecoder.headroom.decode(AgentCatalog.self, from: data)
+        XCTAssertFalse(catalog.saveClaude)
+    }
+
+    func testUsageSavingPersistsAndReachesThePlugin() throws {
+        let worker = agent("worker")
+        let catalog = AgentCatalog(agents: [worker, agent("off", enabled: false)], revision: 4, saveClaude: true)
+        let data = try JSONEncoder.headroom.encode(catalog)
+        XCTAssertEqual(try JSONDecoder.headroom.decode(AgentCatalog.self, from: data), catalog)
+        let json = catalog.pluginJSON()
+        XCTAssertEqual(json["saveClaude"] as? Bool, true)
+        let agents = try XCTUnwrap(json["agents"] as? [[String: Any]])
+        XCTAssertEqual(agents.count, 1)
+        XCTAssertEqual(AgentCatalog().pluginJSON()["saveClaude"] as? Bool, false)
+    }
 }

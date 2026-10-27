@@ -123,6 +123,10 @@ Z.ai, OpenRouter, Antigravity, or your other Claude accounts. Each has a name, a
 for: Claude reads it to choose), a provider, a model from that provider's list, and an effort, either fixed
 or decided by Claude on each call. Turn one off to hide it.
 
+Turn on **Save Claude usage** to ask Claude to delegate substantial implementation, exploration, reviews
+and research to Headroom agents first, choosing by their descriptions. Claude works itself or uses built-in
+subagents when no Headroom agent fits. Off by default; changes apply from the next prompt.
+
 - Claude sees the enabled ones beside its built-in agent types, as `headroom:<name>` with their description
   and where they run, and calls them with its built-in `Agent` tool. The plugin reads the list on every
   prompt, so edits apply from the next turn of every session.

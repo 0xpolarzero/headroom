@@ -78,6 +78,10 @@ struct AgentCatalog: Codable, Equatable, Sendable {
     var agents: [AgentDefinition] = []
     /// Bumped on every save, so the plugin knows when to register again.
     var revision = 0
+    /// Ask Claude to delegate substantial work to these agents before doing it itself.
+    var saveClaude = false
+
+    private enum CodingKeys: String, CodingKey { case agents, revision, saveClaude }
 
     var enabled: [AgentDefinition] { agents.filter(\.enabled) }
 
@@ -110,7 +114,7 @@ struct AgentCatalog: Codable, Equatable, Sendable {
 
     /// What the plugin reads: the revision and the enabled agents as Claude Code registers them.
     func pluginJSON() -> [String: Any] {
-        ["revision": revision, "agents": enabled.map { agent in
+        ["revision": revision, "saveClaude": saveClaude, "agents": enabled.map { agent in
             ["name": agent.name, "description": agent.description, "provider": agent.provider.rawValue,
              "summary": agent.summary, "prompt": agent.instructions]
         }]
@@ -121,5 +125,14 @@ struct AgentCatalog: Codable, Equatable, Sendable {
         let data = (try? JSONSerialization.data(withJSONObject: load().pluginJSON(), options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8)
         FileHandle.standardOutput.write(data + Data("\n".utf8))
         exit(0)
+    }
+}
+
+extension AgentCatalog {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        agents = try values.decode([AgentDefinition].self, forKey: .agents)
+        revision = try values.decode(Int.self, forKey: .revision)
+        saveClaude = try values.decodeIfPresent(Bool.self, forKey: .saveClaude) ?? false
     }
 }

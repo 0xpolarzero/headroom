@@ -9,6 +9,17 @@ struct AgentsSettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Toggle("Save Claude usage", isOn: Binding(get: { catalog.saveClaude }, set: { on in
+                    var next = catalog
+                    next.saveClaude = on
+                    _ = write(next)
+                }))
+                .fixedSize()
+                SettingsInfo(text: "When on, Claude delegates substantial work to Headroom's agents, picking by their descriptions, before doing it itself.")
+                Spacer()
+            }
+            .padding(.bottom, 4)
             ForEach(catalog.agents) { agent in
                 if editing?.id == agent.id {
                     AgentEditor(agent: Binding(get: { editing ?? agent }, set: { editing = $0 }), error: error, save: save, cancel: cancel)

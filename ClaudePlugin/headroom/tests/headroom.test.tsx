@@ -10,7 +10,7 @@ function lines(...objects: object[]): string {
 }
 
 type Stubs = {
-  requests: string[]; argvs: string[][]; submitted: string[]; reachedEngine: string[]; spawned: string[]; statuses: (string | undefined)[]
+  requests: string[]; argvs: string[][]; submitted: string[]; reachedEngine: string[]; spawned: string[]; statuses: (string | undefined)[]; invalidated: string[]
 }
 
 /**
@@ -24,7 +24,7 @@ type Options = { background?: boolean; fork?: boolean; gate?: Promise<void>; out
 type Body = Parameters<typeof test>[1] extends infer B ? (B extends (...args: infer A) => unknown ? A : never) : never
 
 function engine([$test, on]: Body, runnerOutput: string, options: Options = {}): Stubs {
-  const stubs: Stubs = { requests: [], argvs: [], submitted: [], reachedEngine: [], spawned: [], statuses: [] }
+  const stubs: Stubs = { requests: [], argvs: [], submitted: [], reachedEngine: [], spawned: [], statuses: [], invalidated: [] }
   on('fs.exists', () => ({ value: true }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.model', () => ({ value: 'claude-fable-5-1' }))
@@ -35,7 +35,10 @@ function engine([$test, on]: Body, runnerOutput: string, options: Options = {}):
   })
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
-  on('ui.invalidate', () => ({ value: undefined }))
+  on('ui.invalidate', (_, e) => {
+    stubs.invalidated.push(e.event)
+    return { value: undefined }
+  })
   on('prompt.submit', (_, e) => {
     stubs.submitted.push(e.text)
     return { text: e.text }
@@ -477,4 +480,62 @@ test('the Agent tool describes newly added types before the engine announces the
   const described = await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: {} } as never)
 
   expect(described.description).toContain('- headroom:codex-deep: Second opinion on hard bugs. (Runs on Codex · gpt-6.1-sol · high, with Headroom.)')
+})
+
+function context(on: Body[1]) {
+  on('prompt.context', (_, e) => ({ blocks: e.blocks, instructionFiles: e.instructionFiles }))
+}
+
+test('saving Claude usage adds the generic standing instruction to context', async ($, on) => {
+  const outputs = withCatalog([], () => lines({ revision: 10, saveClaude: true, agents: [] }))(on)
+  engine([$, on], '', { outputs })
+  context(on)
+  await $.classic.UserPromptSubmit({ prompt: 'Explore.' } as never)
+  const blocks = [{ name: 'existing', text: 'Keep this context.' }]
+
+  const answer = await $.prompt.context({ blocks })
+
+  expect(answer.blocks[0]).toEqual(blocks[0])
+  expect(answer.blocks.length).toBe(2)
+  expect(answer.blocks[1]?.text).toBe("Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to Headroom's agents (headroom:*), picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no Headroom agent fits.")
+})
+
+test('turning saving off removes its context on the next prompt without changing other context', async ($, on) => {
+  let catalog = { revision: 10, saveClaude: true, agents: [] }
+  const outputs = withCatalog([], () => lines(catalog))(on)
+  const stubs = engine([$, on], '', { outputs })
+  context(on)
+  await $.classic.UserPromptSubmit({ prompt: 'Explore.' } as never)
+  expect((await $.prompt.context({ blocks: [] })).blocks.length).toBe(1)
+  catalog = { ...catalog, revision: 11, saveClaude: false }
+  await $.classic.UserPromptSubmit({ prompt: 'Again.' } as never)
+  const blocks = [{ name: 'existing', text: 'Keep this context.' }]
+  const prior = [...blocks, { name: 'headroomSaveClaude', text: 'Earlier saving instruction.' }]
+
+  expect((await $.prompt.context({ blocks: prior })).blocks).toEqual(blocks)
+  expect(stubs.invalidated.filter(event => event === 'prompt.context').length).toBe(2)
+  catalog = { ...catalog, revision: 12 }
+  await $.classic.UserPromptSubmit({ prompt: 'Unrelated edit.' } as never)
+  expect(stubs.invalidated.filter(event => event === 'prompt.context').length).toBe(2)
+})
+
+test('older catalogs add no saving instruction', async ($, on) => {
+  const outputs = withCatalog([])(on)
+  engine([$, on], '', { outputs })
+  context(on)
+  await $.classic.UserPromptSubmit({ prompt: 'Explore.' } as never)
+  expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
+})
+
+test('the next context render reads edits before prompt-submit hooks run', async ($, on) => {
+  let catalog = { revision: 10, saveClaude: true, agents: [] }
+  const outputs = withCatalog([], () => lines(catalog))(on)
+  const stubs = engine([$, on], '', { outputs })
+  context(on)
+  expect((await $.prompt.context({ blocks: [] })).blocks.length).toBe(1)
+  expect(stubs.invalidated.at(-1)).toBe('prompt.context')
+  catalog = { ...catalog, revision: 11, saveClaude: false }
+
+  // No UserPromptSubmit: the engine renders context before that event.
+  expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
 })
