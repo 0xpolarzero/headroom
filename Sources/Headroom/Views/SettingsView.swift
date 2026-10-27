@@ -1,24 +1,24 @@
 import SwiftUI
 
+/// The panel's settings pages; the footer's gear opens General, its agents icon Agents.
+enum SettingsTab: String, CaseIterable {
+    case general = "General"
+    case agents = "Agents"
+}
+
 struct SettingsView: View {
     @Bindable var model: AppModel
     @State private var openRouterKey = ""
     @State private var zaiKey = ""
     @State private var claudeName = ""
-    @State private var tab: Tab = .general
-
-    private enum Tab: String, CaseIterable {
-        case general = "General"
-        case agents = "Agents"
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 8) {
                 Text("Settings").font(.headline)
                 Spacer(minLength: 0)
-                Picker("Settings tab", selection: $tab) {
-                    ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                Picker("Settings tab", selection: $model.settingsTab) {
+                    ForEach(SettingsTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -28,7 +28,7 @@ struct SettingsView: View {
                     .buttonStyle(.borderless)
             }
 
-            switch tab {
+            switch model.settingsTab {
             case .general: general
             case .agents: AgentsSettings()
             }

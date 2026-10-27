@@ -47,22 +47,20 @@ struct PanelView: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                Text(updatedText(now: context.date))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
             Button(action: model.refreshAll) {
                 Image(systemName: "arrow.clockwise")
                     .symbolEffect(.rotate, isActive: model.isRefreshing)
             }
             .keyboardShortcut("r")
             .help("Refresh (⌘R)")
-            Button { model.showingSettings.toggle() } label: {
-                Image(systemName: model.showingSettings ? "gearshape.fill" : "gearshape")
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                Text(updatedText(now: context.date))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .help("Settings")
+            Spacer()
+            settingsButton(.agents, icon: "person.2", help: "Agents")
+            settingsButton(.general, icon: "gearshape", help: "Settings")
             Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
                 .keyboardShortcut("q")
                 .help("Quit Headroom")
@@ -70,6 +68,17 @@ struct PanelView: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    /// Opens Settings on `tab`, or closes it when that tab is already showing.
+    private func settingsButton(_ tab: SettingsTab, icon: String, help: String) -> some View {
+        let open = model.showingSettings && model.settingsTab == tab
+        return Button {
+            if open { model.showingSettings = false } else { model.settingsTab = tab; model.showingSettings = true }
+        } label: {
+            Image(systemName: open ? icon + ".fill" : icon)
+        }
+        .help(help)
     }
 
     private func updatedText(now: Date) -> String {

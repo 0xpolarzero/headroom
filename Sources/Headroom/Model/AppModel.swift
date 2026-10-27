@@ -52,6 +52,7 @@ final class AppModel {
 
     private(set) var states: [ProviderID: ProviderState] = [:]
     var showingSettings = false
+    var settingsTab = SettingsTab.general
     var order: [ProviderID] {
         didSet { defaults.set(order.map(\.rawValue), forKey: "providerOrder") }
     }
