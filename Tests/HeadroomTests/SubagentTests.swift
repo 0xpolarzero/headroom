@@ -33,6 +33,17 @@ final class SubagentTests: XCTestCase {
 
     // MARK: Running Claude Code
 
+    func testBackgroundAdmissionReadsThePluginProtocol() throws {
+        func request(_ fields: String) throws -> AgentRun.Request {
+            try JSONDecoder().decode(AgentRun.Request.self, from: Data("{\"prompt\":\"x\",\"cwd\":\"/work\"\(fields)}".utf8))
+        }
+        XCTAssertNotNil(try request(",\"background\":true,\"interactive\":false").backgroundError)
+        XCTAssertNotNil(try request(",\"background\":true").backgroundError)
+        XCTAssertNil(try request(",\"background\":true,\"interactive\":true").backgroundError)
+        XCTAssertNil(try request(",\"background\":false,\"interactive\":false").backgroundError)
+        XCTAssertNil(try request("").backgroundError)
+    }
+
     func testArgumentsMirrorTheBuiltInParameters() {
         let args = SubagentRunner.arguments(.init(prompt: "x", subagentType: "Explore", model: "haiku", effort: "high", worktree: true,
                                                   permissionMode: "acceptEdits", sessionID: "s1", mcpConfig: "/m.json"))

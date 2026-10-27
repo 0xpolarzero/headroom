@@ -32,7 +32,9 @@ Explore` switched to Haiku, a resume, and a stop, each checked against what the 
 2.1.310 in 49 s. Live runs (2026-10-27) confirmed an Explore agent and its follow-up, TaskStop, a fork kept
 built-in, and a worktree agent whose follow-up ran in the same worktree. They also showed the engine passing
 `run_in_background`, which the 2.1.308 schema leaves out, and that `claude -p` exits on its last turn
-without waiting for a Headroom agent, unlike a built-in one. A first version was an MCP server (`Headroom --mcp`) with
+without waiting for a Headroom agent, unlike a built-in one. Routed background work is now rejected in
+non-interactive sessions before it starts; see the [API investigation](#non-interactive-background-agents-2026-10-27).
+A first version was an MCP server (`Headroom --mcp`) with
 look-alike tools; Claude had to be told to prefer them and couldn't run them in the background, so it was
 dropped. The README describes the current behaviour in full.
 
@@ -54,6 +56,75 @@ Checked first: `claude -p --output-format json` returns `result`, `session_id`, 
 `api_error_status` and `permission_denials`; `--resume <session_id>` continues the same session; `--agent`
 accepts built-in types (Explore runs read-only) and custom ones; `--permission-mode auto`, `--effort`,
 `--model` and `--worktree` work headless.
+
+### Non-interactive background agents (2026-10-27)
+
+Decision: reject Headroom background work in a non-interactive host. This prevents a successful launch
+whose report never reaches the model. It does **not** make routed background agents keep `claude -p`
+alive. Foreground routing still works, and interactive sessions still receive background notifications.
+
+Primary sources: Claude Code 2.1.308's bundled `plugin-authoring/types/claude-code.d.ts`, its
+`reference.md` and examples, checked against the installed 2.1.310 CLI. The public
+[hooks reference](https://code.claude.com/docs/en/hooks#sessionend) confirms that SessionEnd cannot
+block termination. The repository initially had no generated plugin types or tsconfig.
+
+Investigated in preference order:
+
+1. `$.agent.spawn`, `agent.spawn`, `$.agent.list`, `$.agent.register`, `turn.start`, `turn.step`, and
+   `$.model.complete` / `$.model.fork`. Only calling the engine's spawn creates a native task; returning
+   an `agentId` from a hook creates none. `turn.step` can supply text, tool-call, and stop chunks, but
+   it is one model response, not an adapter for an external agent loop. Its input omits the complete
+   model request and system prompt; engine chunks are opaque, and synthetic thinking is not recorded.
+   Serving only the remote final answer would omit the remote tool transcript, while replaying its
+   tool calls would execute work twice. The model APIs use the session's own client and credentials.
+   No supported external-loop attachment preserves both the native transcript and the remote report.
+2. No `$.task`, background-task registration, pending-work handle, or input-EOF event appears in the
+   declared engine interface. `classic.Stop.background_tasks` only describes registered native work.
+   A Stop `block` inserts a re-prompt rather than a native task notification; repeatedly blocking also
+   has an engine limit. Waiting on a plugin promise is bounded by its hook budget. `turn.complete`
+   returns display text, not a continuation or pending-work registration. `session.end` only observes
+   exit, under a shared 1.5-second default bound; its return value cannot postpone it. `$.prompt.submit`
+   queues a new turn and resolves when that turn starts; it provides no keepalive before submission.
+3. `session.start.isInteractive` distinguishes REPL from print/SDK hosts. Neither it nor
+   `$.session.surface` says whether a stream-json sender will close its input. Keeping an input stream
+   open requires cooperation from that sender and cannot fix plain `claude -p "prompt"` transparently.
+   Therefore all non-interactive hosts get the same explicit error for routed background work,
+   including stream-json sessions whose input remains open. No polling, dummy task, or transcript
+   replacement was added.
+
+Implementation: the plugin passes `interactive` and the engine's final `agent.spawn.background` to
+`Headroom --agent-run`. The runner rejects before claiming a warm process or starting Claude on an
+eligible account. Account selection still runs first for ordinary agent types: `no_room` retains the
+intentional built-in path. Headroom-owned types and resumed agents reject before provider execution.
+The stale-type recovery path passes its background decision too. Headless `SendMessage` to a Headroom
+agent rejects before queuing or resuming, because replies always arrive asynchronously. Errors explain
+the remedy: use a foreground Agent call, remove `background: true` from a forcing definition, or use an
+interactive session. Forks, teammates, workflow agents, remote agents and subagent-originated calls retain
+their existing built-in paths.
+
+Regression coverage checks headless and interactive admission, engine-forced background execution,
+headless foreground completion, `no_room` staying built-in, stale-type recovery, headless `SendMessage`
+rejection and interactive follow-ups.
+
+Live checks on 2.1.310 used Haiku, a one-line report, the Pro sign-in for the driver, `--plugin-dir`, and
+the development binary in this worktree, without replacing `/Applications/Headroom.app`:
+
+- Without Headroom routing, plain `claude -p` launched a built-in background agent, answered `WAITING`,
+  stayed alive, then answered `HANDLED-P-GAP` with `REPORT-P-GAP` (17.8 s).
+- With the development plugin, Main was at 100% weekly usage, so an ordinary background call correctly
+  remained built-in. Both plain input and closed stream-json handled its report. The completed plain
+  run took 21.4 s; an earlier plain attempt was terminated by the test driver and is not counted.
+- Headroom-owned `headroom:sol` background calls in plain input (40.6 s) and closed stream-json (35.7 s)
+  returned the explicit non-interactive error, which the driver model quoted. No Codex run started.
+- A direct development-runner request, identifying Main as the caller and leaving Pro eligible,
+  returned the same error for an ordinary routed background agent, before any Claude run started.
+
+There is no live demonstration of routed background completion in print mode: that remains unsupported.
+Interactive routing and foreground routing have plugin regression coverage; they were not repeated live
+in this change. No repository tsconfig exists. A supplementary source-only `tsc --noEmit` check used the
+bundled 2.1.308 declarations; the full test file uses runtime timers omitted from those declarations.
+`claude plugin validate .` passed with the existing author/icon warnings, `claude plugin test .` passed
+all 34 tests, `swift build` passed, and `swift test` reported 92 tests, 5 skipped, no failures.
 
 ## Earlier design: one app copy per account
 

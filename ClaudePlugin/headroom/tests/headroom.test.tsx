@@ -88,6 +88,88 @@ const RESULT = {
   inputTokens: 1200, outputTokens: 300,
 }
 
+async function session([$test, on]: Body, isInteractive: boolean): Promise<void> {
+  on('command.register', (_, e) => ({ value: { command: `headroom:${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $test.session.start({ cwd: '/work', surface: isInteractive ? 'terminal' : null, isInteractive })
+}
+
+test('headless background admission uses the engine decision, including a background agent definition', async ($, on) => {
+  const stubs = engine([$, on], lines({ type: 'error', text: 'Headroom cannot run a background agent in a non-interactive session.' }), { background: true })
+  await session([$, on], false)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
+
+  const request = JSON.parse(stubs.requests[stubs.argvs.findIndex(a => a[1] === '--agent-run')] ?? '{}')
+  expect(request.interactive).toBe(false)
+  expect(request.background).toBe(true)
+  expect(answer.deny).toContain('non-interactive')
+  expect(stubs.spawned).toEqual([])
+  expect(stubs.submitted).toEqual([])
+})
+
+test('a headless background call still runs built-in when no other account has room', async ($, on) => {
+  const stubs = engine([$, on], lines({ type: 'no_room' }), { background: true })
+  await session([$, on], false)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y', run_in_background: true } as never)
+
+  expect((answer.result as { agentId: string }).agentId).toBe('built-in')
+  expect(stubs.spawned).toEqual(['x'])
+})
+
+test('a headless foreground agent returns its report even when the caller asked for background', async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, RESULT), { background: false })
+  await session([$, on], false)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y', run_in_background: true } as never)
+
+  const request = JSON.parse(stubs.requests[stubs.argvs.findIndex(a => a[1] === '--agent-run')] ?? '{}')
+  expect(request.background).toBe(false)
+  expect((answer.result as { content: { text: string }[] }).content[0]?.text).toBe('olleh')
+  expect(stubs.submitted).toEqual([])
+})
+
+test('an interactive background agent is admitted and delivers its notification', async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, RESULT), { background: true })
+  await session([$, on], true)
+
+  await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
+
+  const request = JSON.parse(stubs.requests[stubs.argvs.findIndex(a => a[1] === '--agent-run')] ?? '{}')
+  expect(request.interactive).toBe(true)
+  await eventually(() => stubs.submitted.length > 0)
+  expect(stubs.submitted[0]).toContain('<result>olleh</result>')
+})
+
+test('headless SendMessage to a Headroom agent fails before starting or queuing a reply', async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, RESULT))
+  await session([$, on], false)
+
+  const answer = await $.tool.call({ tool: 'SendMessage', to: AGENT_ID, message: 'hi' })
+
+  expect(answer.deny).toContain('foreground Agent')
+  expect(stubs.argvs.some(a => a[1] === '--agent-run')).toBe(false)
+  expect(stubs.submitted).toEqual([])
+})
+
+test('interactive SendMessage still resumes a Headroom agent and delivers its reply', async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, RESULT), { background: false })
+  await session([$, on], true)
+  await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
+
+  const answer = await $.tool.call({ tool: 'SendMessage', to: AGENT_ID, message: 'again' })
+
+  const run = stubs.argvs.findLastIndex(a => a[1] === '--agent-run')
+  const request = JSON.parse(stubs.requests[run] ?? '{}')
+  expect(request.resume).toBe(AGENT_ID)
+  expect(request.background).toBe(true)
+  expect(request.interactive).toBe(true)
+  expect((answer.result as { success: boolean }).success).toBe(true)
+  await eventually(() => stubs.submitted.length > 0)
+  expect(stubs.submitted[0]).toContain('<result>olleh</result>')
+})
+
 test('a background agent runs on another account and reports like a built-in background agent', async ($, on) => {
   const stubs = engine([$, on], lines(STARTED, { type: 'step', text: 'Read: note.txt' }, RESULT), { background: true })
 
@@ -341,7 +423,7 @@ test('a failed self-test stays in the status line', async ($, on) => {
   const stubs = engine([$, on], '', { outputs: {
     '--agent-selftest': lines({ type: 'failed', version: '2.2.0 (Claude Code)', step: 'continue', text: 'No conversation found' }),
   } })
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', (_, e) => ({ value: { command: `headroom:${e.name}` } }))
   on('session.start', (_, e) => e)
 
   await $.session.start({ cwd: '/work' } as never)
@@ -452,6 +534,24 @@ test('a newly registered type runs when the current turn still has the earlier a
 
   expect(stubs.spawned).toEqual([])
   expect((answer.result as { content: { text: string }[] } | undefined)?.content).toEqual([{ type: 'text', text: 'olleh' }])
+})
+
+test('stale-type recovery still requests headless background admission', async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  const stubs = engine([$, on], lines({ type: 'error', text: 'Headroom cannot run a background agent in a non-interactive session.' }), {
+    outputs, missingType: 'headroom:codex-deep',
+  })
+  await session([$, on], false)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'new agent', prompt: 'x', subagent_type: 'headroom:codex-deep', run_in_background: true } as never)
+
+  const request = JSON.parse(stubs.requests[stubs.argvs.findIndex(a => a[1] === '--agent-run')] ?? '{}')
+  expect(request.background).toBe(true)
+  expect(request.interactive).toBe(false)
+  expect(answer.deny).toContain('non-interactive')
+  expect(stubs.spawned).toEqual([])
+  expect(stubs.submitted).toEqual([])
 })
 
 
