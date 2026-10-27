@@ -58,7 +58,7 @@ function engine([$test, on]: Body, runnerOutput: string, options: Options = {}):
     stubs.reachedEngine.push(e.tool)
     if (e.tool === 'Agent') {
       const spawn = await $test.agent.spawn({
-        tool_use_id: e.tool_use_id, prompt: e.prompt, description: e.description, subagentType: 'general-purpose',
+        tool_use_id: e.tool_use_id, prompt: e.prompt, description: e.description, subagentType: e.subagent_type ?? 'general-purpose',
         parentModel: 'claude-fable-5-1', background: options.background ?? true, fork: options.fork ?? false,
       } as never)
       if ('deny' in spawn && spawn.deny) return { deny: `Subagent spawn denied by a plugin: ${spawn.deny}` }
@@ -171,10 +171,9 @@ test('a sent prompt has Headroom get a process ready', async ($, on) => {
   on('classic.UserPromptSubmit', () => ({}))
 
   await $.classic.UserPromptSubmit({ prompt: 'hi', permission_mode: 'acceptEdits' } as never)
-  await eventually(() => stubs.argvs.length > 0)
+  await eventually(() => stubs.argvs.some(argv => argv[1] === '--agent-warm'))
 
-  expect(stubs.argvs[0]?.[1]).toBe('--agent-warm')
-  const request = JSON.parse(stubs.requests[0] ?? '{}')
+  const request = JSON.parse(stubs.requests[stubs.argvs.findIndex(argv => argv[1] === '--agent-warm')] ?? '{}')
   expect(request.permissionMode).toBe('acceptEdits')
   expect(request.cwd).toBe('/work')
 })
@@ -344,4 +343,94 @@ test('a failed self-test stays in the status line', async ($, on) => {
 
   await eventually(() => stubs.statuses.some(t => t?.includes('broken')))
   expect(stubs.statuses.at(-1)).toContain('broken on Claude Code 2.2.0 (Claude Code) (continue: No conversation found)')
+})
+
+// Headroom's own agents: `--agent-catalog` lists them, the plugin registers them as agent types.
+
+const CATALOG = lines({ revision: 3, agents: [
+  { name: 'codex-deep', description: 'Second opinion on hard bugs.', provider: 'codex', summary: 'Codex · gpt-6.1-sol · high', prompt: 'You are codex-deep.' },
+] })
+const CODEX_STARTED = { ...STARTED, account: 'Codex', model: 'gpt-6.1-sol', provider: 'codex' }
+
+/** Stands in for registering agent types; `catalog` is what `--agent-catalog` answers, read on each call. */
+function withCatalog(registered: { name: string; description: string }[], catalog = () => CATALOG) {
+  return (on: Body[1]): Record<string, string> => {
+    on('agent.register', (_, e) => {
+      registered.push({ name: e.name, description: e.description })
+      return { value: { agent: `headroom:${e.name}` } }
+    })
+    on('agent.offer', () => ({ isOffered: true }))
+    on('classic.UserPromptSubmit', () => ({}))
+    return { get '--agent-catalog'() { return catalog() } }
+  }
+}
+
+test("a prompt registers Headroom's enabled agents as agent types, saying where each runs", async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  engine([$, on], '', { outputs })
+
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
+
+  // The same revision twice registers once.
+  expect(registered).toEqual([{ name: 'codex-deep', description: 'Second opinion on hard bugs. (Runs on Codex · gpt-6.1-sol · high, with Headroom.)' }])
+  expect((await $.agent.offer({ agent: 'headroom:codex-deep', description: '', source: 'plugin', provider: {} } as never)).isOffered).not.toBe(false)
+  expect((await $.agent.offer({ agent: 'headroom:gone', description: '', source: 'plugin', provider: {} } as never)).isOffered).toBe(false)
+})
+
+test("a Headroom agent runs on its provider, and the runner is told which agent it is", async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  const stubs = engine([$, on], lines(CODEX_STARTED, { ...RESULT, account: 'Codex', model: 'gpt-6.1-sol' }), { background: true, outputs })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'hunt the bug', prompt: 'Why does it crash?', subagent_type: 'headroom:codex-deep' })
+
+  expect(stubs.spawned).toEqual([])
+  expect((answer.result as { status: string }).status).toBe('async_launched')
+  const run = stubs.argvs.findIndex(argv => argv[1] === '--agent-run')
+  expect(JSON.parse(stubs.requests[run] ?? '{}').agent).toBe('headroom:codex-deep')
+  await eventually(() => stubs.submitted.length > 0)
+  expect(stubs.submitted[0]).toContain('ran on Codex with Headroom')
+})
+
+test("a Headroom agent its provider can't take is the call's error, never a built-in agent", async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  const stubs = engine([$, on], lines({ type: 'no_room' }), { outputs })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'hunt', prompt: 'x', subagent_type: 'headroom:codex-deep' })
+
+  expect(stubs.spawned).toEqual([])
+  expect(answer.deny).toContain('headroom:codex-deep')
+})
+
+test("a Headroom agent that isn't enabled is the call's error", async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  const outputs = withCatalog(registered)(on)
+  const stubs = engine([$, on], '', { outputs })
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'hunt', prompt: 'x', subagent_type: 'headroom:gone' })
+
+  expect(stubs.reachedEngine).toEqual([])
+  expect(answer.deny).toContain('No agent headroom:gone is enabled in Headroom')
+})
+
+test("a Headroom agent's edited description reaches Claude beside the Agent tool's", async ($, on) => {
+  const registered: { name: string; description: string }[] = []
+  let catalog = CATALOG
+  const outputs = withCatalog(registered, () => catalog)(on)
+  engine([$, on], '', { outputs })
+  on('tool.describe', (_, e) => ({ description: e.description }))
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  catalog = lines({ revision: 4, agents: [
+    { name: 'codex-deep', description: 'Reviews migrations.', provider: 'codex', summary: 'Codex · gpt-6.1-sol', prompt: 'You are codex-deep.' },
+  ] })
+  await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
+
+  const described = await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: {} } as never)
+  expect(described.description).toContain('Launch a new agent.')
+  expect(described.description).toContain('- headroom:codex-deep: Reviews migrations. (Runs on Codex · gpt-6.1-sol, with Headroom.)')
 })

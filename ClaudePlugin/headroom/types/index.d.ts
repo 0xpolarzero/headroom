@@ -8,8 +8,11 @@ export type TranscriptItem =
 export type RemoteAgent = {
   id: string
   description: string
+  /** Where it runs: the account ("Pro"), or the provider for an agent of Headroom's list ("Codex"). */
   account: string
   model: string
+  /** The provider of an agent of Headroom's list (`codex`, `zai`, `claude`, ...); absent for one on another account. */
+  provider?: string
   status: 'running' | 'done' | 'failed' | 'stopped'
   /** The steps it took, newest last ("Read: note.txt"). */
   steps: string[]

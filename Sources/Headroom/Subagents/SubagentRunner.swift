@@ -15,6 +15,8 @@ enum SubagentRunner {
         var resume = false
         /// A `--mcp-config` file with the caller's own MCP servers.
         var mcpConfig: String?
+        /// Added to Claude Code's system prompt (`--append-system-prompt`): an agent's role from Headroom's list.
+        var systemPrompt: String?
     }
 
     struct Result: Equatable {
@@ -37,6 +39,8 @@ enum SubagentRunner {
         var directory: String?
         /// Refused before any work, by the caller's check of Claude Code's init (`check`).
         var refused = false
+        /// Where it ran as its row shows it: the account ("Pro"), or the provider for other backends.
+        var account: String?
     }
 
     /// What a run needs to know Claude Code is the one it expects, from its `system`/`init` event: nil when
@@ -65,6 +69,7 @@ enum SubagentRunner {
         if let effort = request.effort, !effort.isEmpty { args += ["--effort", effort] }
         if request.worktree { args.append("--worktree") }
         if let mcp = request.mcpConfig { args += ["--mcp-config", mcp] }
+        if let prompt = request.systemPrompt, !prompt.isEmpty { args += ["--append-system-prompt", prompt] }
         return args
     }
 

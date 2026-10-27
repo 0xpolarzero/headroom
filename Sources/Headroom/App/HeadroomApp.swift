@@ -9,6 +9,7 @@ enum Entry {
         if CommandLine.arguments.contains("--agent-open") { AgentRun.openMain() }
         if CommandLine.arguments.contains("--agent-stop") { AgentRun.stopMain() }
         if CommandLine.arguments.contains("--agent-selftest") { SelfTest.main() }
+        if CommandLine.arguments.contains("--agent-catalog") { AgentCatalog.printMain() }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

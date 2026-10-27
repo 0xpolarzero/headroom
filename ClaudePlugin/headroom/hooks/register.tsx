@@ -10,6 +10,10 @@ import type { RemoteAgent, TranscriptItem } from '../types'
 // background); in the background it answers "launched" at once and the report comes as a notification.
 // SendMessage continues it, TaskStop stops it, ListAgents lists it.
 //
+// Headroom's own agents (Settings → Agents) are agent types beside the built-in ones, `headroom:<name>`, each
+// on a provider and model of its own (Codex, Z.ai, OpenRouter, Antigravity, your Claude accounts). A call to
+// one always runs there: never as a built-in agent, and what keeps it from running is the call's error.
+//
 // Built-in on purpose, untouched: forks (they need this session's context and its cache), teammates and
 // named agents, workflow agents, remote ones, agents started inside a subagent, and any call when no account
 // has room. Anything else Headroom can't handle as expected (a field it doesn't know, a runner that fails,
@@ -36,6 +40,54 @@ const open = atom({ plugin: 'headroom', key: 'open' } as const, [] as string[])
 let permissionMode: string | undefined
 
 type Line = { type: string; [key: string]: unknown }
+
+/** An agent of Headroom's list, as `Headroom --agent-catalog` gives it. */
+type Defined = { name: string; description: string; provider: string; summary: string; prompt: string }
+
+/** Headroom's enabled agents as last read, by type (`headroom:codex-deep`), and the list's revision. */
+let catalog = new Map<string, Defined>()
+let revision: number | undefined
+/** What each type registered in this session told Claude first: its listing isn't sent again when it changes. */
+const announced = new Map<string, string>()
+
+const TYPE_PREFIX = 'headroom:'
+
+function owns(type: unknown): type is string {
+  return typeof type === 'string' && type.startsWith(TYPE_PREFIX)
+}
+
+/** Its line in Claude's list of agent types: what it is for, and where it runs. */
+function listing(agent: Defined): string {
+  return `${agent.description.trim()} (Runs on ${agent.summary}, with Headroom.)`
+}
+
+/**
+ * Reads Headroom's list and registers its enabled agents as agent types, from the next turn on. A type that
+ * left the list stays registered (a session can't drop one), so `agent.offer` hides it and a call is an error.
+ */
+async function syncCatalog($: EngineInterface): Promise<void> {
+  let text = ''
+  for await (const chunk of $.process.spawn({ argv: [await runner($), '--agent-catalog'] })) {
+    if (chunk.stream === 'stdout') text += chunk.text
+  }
+  const parsed = JSON.parse(text.trim() || '{}') as { revision?: number; agents?: Defined[] }
+  if (parsed.revision !== undefined && parsed.revision === revision) return
+  const next = new Map((parsed.agents ?? []).map(agent => [`${TYPE_PREFIX}${agent.name}`, agent] as const))
+  for (const [type, agent] of next) {
+    const before = catalog.get(type)
+    if (before && listing(before) === listing(agent) && before.prompt === agent.prompt) continue
+    await $.agent.register({ name: agent.name, description: listing(agent), prompt: agent.prompt })
+    if (!announced.has(type)) announced.set(type, listing(agent))
+  }
+  catalog = next
+  revision = parsed.revision
+  $.ui.invalidate('tool.describe')
+}
+
+/** Who ran it, as its notification and answers say it: "the Pro account", or a provider ("Codex"). */
+function place(agent: { account: string; provider?: string }): string {
+  return agent.provider && agent.provider !== 'claude' ? agent.account : `the ${agent.account} account`
+}
 
 /**
  * An Agent call Headroom may answer, by its tool_use_id: what its `tool.call` hook asks for, and once the
@@ -154,6 +206,7 @@ async function started($: EngineInterface, line: Line, description: string, resu
     if (known) return list.map(a => (a.id === id ? { ...a, status: 'running' as const, endedAt: undefined } : a))
     const agent: RemoteAgent = {
       id, description, account: String(line.account), model: String(line.model ?? ''),
+      provider: line.provider === undefined ? undefined : String(line.provider),
       status: 'running', steps: [], items: [], startedAt: Date.now(), pending: [], foreground, toolUseId,
     }
     return [...list, agent].slice(-50)
@@ -224,7 +277,7 @@ async function deliver($: EngineInterface, agent: RemoteAgent, line: Line): Prom
     '<task-notification>',
     `<task-id>${agent.id}</task-id>`,
     `<status>${failed ? 'failed' : 'completed'}</status>`,
-    `<summary>Agent "${agent.description}" ${failed ? 'failed' : 'finished'} (ran on the ${agent.account} account with Headroom)</summary>`,
+    `<summary>Agent "${agent.description}" ${failed ? 'failed' : 'finished'} (ran on ${place(agent)} with Headroom)</summary>`,
     `<result>${String(line.text ?? '')}</result>`,
     `<usage>tool uses: ${line.toolUses ?? 0}, duration: ${seconds}s, model: ${agent.model}</usage>`,
     '</task-notification>',
@@ -317,6 +370,7 @@ async function foreground($: EngineInterface, e: { description: string; prompt: 
 async function continueAgent($: EngineInterface, agent: RemoteAgent, message: string): Promise<Line | { error: string }> {
   const begun = await start($, { prompt: message, resume: agent.id, cwd: await $.session.cwd(), permissionMode })
   if ('noRoom' in begun) return { error: 'Headroom found no account for it.' }
+  // A follow-up's `started` names where it runs; an agent from an earlier session is known by it.
   if ('error' in begun) return begun
   await started($, begun.line, agent.description, true)
   void follow($, begun.run, String(begun.line.agentId))
@@ -416,18 +470,33 @@ function agentBlock($: EngineInterface, e: Parameters<EngineInterface['ui']['res
 
 export const register: Register = on => {
   // The mode built-in subagents inherit; the classic hook events carry it.
-  on('classic.UserPromptSubmit', ($, e, next) => {
+  on('classic.UserPromptSubmit', async ($, e, next) => {
     if (e.permission_mode) permissionMode = e.permission_mode
     void warmUp($).catch(error => $.ui.log(`headroom: warm-up failed: ${String(error)}`, { to: 'debug' }))
+    // Edits to Headroom's list apply from this turn's next model call on.
+    await syncCatalog($).catch(error => $.ui.log(`headroom: reading Headroom's agents failed: ${String(error)}`, { to: 'debug' }))
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // A type that left Headroom's list stays registered: it is no longer offered.
+  on('agent.offer', ($, e, next) => (owns(e.agent) && !catalog.has(e.agent) ? { isOffered: false } : next(e)))
+
+  // Claude's list of agent types is sent once: a description edited since goes beside the Agent tool's own.
+  on('tool.describe', { tool: 'Agent' }, async ($, e, next) => {
+    const answer = await next(e)
+    const changed = [...catalog].filter(([type, agent]) => announced.has(type) && announced.get(type) !== listing(agent))
+    if (changed.length === 0) return answer
+    const lines = changed.map(([type, agent]) => `- ${type}: ${listing(agent)}`)
+    return { ...answer, description: [answer.description, '', "Headroom's agent types as they read now (this replaces their earlier lines):", ...lines].join('\n') }
+  })
   on('classic.PostToolUse', ($, e, next) => {
     if (e.permission_mode) permissionMode = e.permission_mode
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'agents-elsewhere', description: 'Show the subagents running on your other Claude accounts' })
+    await $.command.register({ name: 'agents-elsewhere', description: 'Show the subagents Headroom runs on your other accounts and providers' })
+    await syncCatalog($).catch(error => $.ui.log(`headroom: reading Headroom's agents failed: ${String(error)}`, { to: 'debug' }))
     void selfTest($).catch(error => {
       broken = `Headroom: its self-test could not run (${String(error)})`
       $.ui.log(broken, { to: 'debug' })
@@ -442,8 +511,16 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    const owned = owns(e.subagent_type)
+    if (owned) {
+      if (!catalog.has(e.subagent_type)) await syncCatalog($)
+      if (!catalog.has(e.subagent_type)) return { deny: `No agent ${e.subagent_type} is enabled in Headroom (Settings → Agents). Use another agent type.` }
+      const unsupported = e.agentId !== undefined ? 'from inside a subagent' : e.name !== undefined ? 'as a named teammate'
+        : e.isolation === 'remote' ? 'remotely' : undefined
+      if (unsupported) return { deny: `Headroom's agents (${e.subagent_type}) can't run ${unsupported}. Call it from the main session, unnamed, without remote isolation.` }
+    }
     // Kept built-in on purpose: agents started by subagents, remote agents and named agents (teammates).
-    if (e.agentId !== undefined || e.isolation === 'remote' || e.name !== undefined) return next(e)
+    else if (e.agentId !== undefined || e.isolation === 'remote' || e.name !== undefined) return next(e)
     const unknown = Object.keys(e).filter(key => !AGENT_KEYS.has(key))
     if (unknown.length > 0 || !ISOLATIONS.has(e.isolation)) {
       const what = unknown.length > 0 ? `field${unknown.length === 1 ? '' : 's'} ${unknown.map(k => `\`${k}\``).join(', ')}`
@@ -453,7 +530,7 @@ export const register: Register = on => {
     const request = {
       prompt: e.prompt, description: e.description, subagentType: e.subagent_type, model: e.model,
       effort: e.effort, isolation: e.isolation, cwd: await $.session.cwd(), permissionMode,
-      parentModel: await $.session.model(),
+      parentModel: await $.session.model(), agent: owned ? e.subagent_type : undefined,
     }
     // The engine checks the call (permissions, other hooks) and raises `agent.spawn`, where an account
     // with room takes the agent; otherwise the built-in agent runs and this is its answer.
@@ -476,20 +553,26 @@ export const register: Register = on => {
 
   on('agent.spawn', async ($, e, next) => {
     const claim = claims.get(e.tool_use_id)
+    const owned = claim?.request.agent !== undefined || owns(e.subagentType)
+    const type = String(claim?.request.agent ?? e.subagentType)
+    const special = e.resume || e.fork || e.isTeammate || e.workflow || e.parentAgentId !== undefined
+    if (owned && (!claim || special)) {
+      return { deny: `Headroom's agents (${type}) run only from the main session's Agent tool, not as a fork, teammate, workflow agent or resume.` }
+    }
     // Kept built-in on purpose: a fork runs on this session's context and cache, a teammate and a workflow
     // agent belong to this session, a resume continues a built-in agent.
-    if (!claim || e.resume || e.fork || e.isTeammate || e.workflow || e.parentAgentId !== undefined) return next(e)
+    if (!claim || special) return next(e)
     const request = {
       ...claim.request, subagentType: e.subagentType, model: e.model ?? claim.request.model,
       cwd: e.cwd ?? claim.request.cwd, permissionMode: e.permissionMode ?? claim.request.permissionMode,
       parentModel: e.parentModel,
     }
     const begun = await start($, request)
-    if ('noRoom' in begun) return next(e)
-    if ('error' in begun) return { deny: `Headroom couldn't run this agent on another account: ${begun.error}` }
+    if ('noRoom' in begun) return owned ? { deny: `Headroom found nowhere to run ${type}.` } : next(e)
+    if ('error' in begun) return { deny: `Headroom couldn't run this agent${owned ? ` (${type})` : ' on another account'}: ${begun.error}` }
     await started($, begun.line, e.description, false, !e.background, e.tool_use_id)
     claim.started = { ...begun, background: e.background }
-    return { deny: 'Headroom runs this agent on another Claude account.' }
+    return { deny: 'Headroom runs this agent.' }
   }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
 
   on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {
@@ -509,7 +592,7 @@ export const register: Register = on => {
     return {
       result: {
         success: true,
-        message: `Message sent to agent ${to} on the ${String(line.account)} account. Its reply arrives as a notification when it finishes.`,
+        message: `Message sent to agent ${to} on ${place({ account: String(line.account), provider: line.provider as string | undefined })}. Its reply arrives as a notification when it finishes.`,
       },
     }
   }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
@@ -530,7 +613,7 @@ export const register: Register = on => {
     }
     return {
       result: {
-        message: `Stopped agent ${id} (${agent.description}) on the ${agent.account} account.`,
+        message: `Stopped agent ${id} (${agent.description}) on ${place(agent)}.`,
         task_id: id, task_type: 'local_agent', command: agent.description,
       },
     }
@@ -546,8 +629,8 @@ export const register: Register = on => {
     const listing = [
       result.listing.trimEnd(),
       '',
-      `Agents on your other Claude accounts (Headroom; SendMessage or TaskStop them by id):`,
-      ...mine.map(a => `- ${a.id} · ${a.description} · ${a.status} · on ${a.account}`),
+      `Agents Headroom runs on your other accounts and providers (SendMessage or TaskStop them by id):`,
+      ...mine.map(a => `- ${a.id} · ${a.description} · ${a.status} · on ${a.account}${a.model ? ` · ${a.model}` : ''}`),
     ].join('\n')
     return { ...answer, result: { ...result, listing, sections: [...(result.sections ?? []), { kind: 'headroom', total: rows.length, rows }] } }
   })

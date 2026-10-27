@@ -50,6 +50,10 @@ struct SettingsView: View {
                 ClaudeAccountsSettings(model: model, name: $claudeName)
             }
 
+            section("Agents") {
+                AgentsSettings()
+            }
+
             section("Accounts") {
                 account(.antigravity) {
                     if model.antigravitySigningIn {

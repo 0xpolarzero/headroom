@@ -28,6 +28,8 @@ enum AgentRun {
         var parentModel: String?
         /// An agent this runner started earlier: continue it (SendMessage) on its account.
         var resume: String?
+        /// An agent type from Headroom's list (`headroom:codex-deep`): it runs on its own provider, never elsewhere.
+        var agent: String?
     }
 
     static func main() -> Never {
@@ -106,6 +108,20 @@ enum AgentRun {
         let permissionMode = mappedPermissionMode(request.permissionMode)
 
         // A follow-up goes back to the account, session, folder and agent type the agent ran with.
+        if let agentID = request.resume, let entry = AgentRegistry.lookup(agentID), let definition = entry.definition {
+            return await runDefined(definition, request, agentID: agentID, resume: entry, mcpConfig: mcpConfig)
+        }
+        if let type = request.agent {
+            guard ProcessInfo.processInfo.environment[nestedMarker] == nil else {
+                emit(["type": "error", "text": "An agent Headroom runs can't start Headroom's agents (\(type))."])
+                return
+            }
+            guard let definition = AgentCatalog.load().agent(type) else {
+                emit(["type": "error", "text": "No agent \(type) is enabled in Headroom (Settings → Agents)."])
+                return
+            }
+            return await runDefined(definition, request, agentID: UUID().uuidString.lowercased(), resume: nil, mcpConfig: mcpConfig)
+        }
         if let agentID = request.resume {
             guard let entry = AgentRegistry.lookup(agentID), let account = accounts.first(where: { $0.id == entry.account }) else {
                 emit(["type": "error", "text": "No agent \(agentID) was started by Headroom."])
@@ -185,6 +201,37 @@ enum AgentRun {
         }
     }
 
+    /// Runs an agent from Headroom's list on its provider: its answer, or an error when the provider didn't
+    /// take it. Nothing stands in for it: no other provider, no built-in agent.
+    static func runDefined(_ definition: AgentDefinition, _ request: Request, agentID: String, resume: AgentRegistry.Entry?,
+                           mcpConfig: String?) async {
+        let launch = Launch()
+        let job = AgentJob(agentID: agentID, definition: definition, prompt: request.prompt, cwd: resume?.directory ?? request.cwd,
+                           effort: resume?.effort ?? definition.effort ?? request.effort, permissionMode: request.permissionMode ?? "default",
+                           worktree: request.isolation == "worktree", mcpConfig: mcpConfig, resume: resume)
+        let events = AgentEvents(
+            process: { AgentRegistry.setProcess(agentID, claude: $0) },
+            started: { place, model in
+                guard launch.begin() else { return }
+                emit(["type": "started", "agentId": agentID, "account": place, "model": model, "provider": definition.provider.rawValue,
+                      "outputFile": logURL(agentID).path])
+                log(agentID, "Started \(definition.name) on \(place) (\(model)): \(request.description ?? "")")
+            },
+            step: { step(agentID, $0) },
+            item: { item(agentID, $0) })
+        let result = await definition.provider.backend.run(job, events)
+        guard launch.started else { return fail(agentID, result) }
+        let entry = resume ?? AgentRegistry.Entry(account: result.account ?? definition.provider.displayName, directory: request.cwd,
+                                                   sessionID: "", model: definition.model, subagentType: definition.type,
+                                                   effort: job.effort, at: Date(), definition: definition)
+        if let session = result.sessionID, !session.isEmpty {
+            var updated = entry
+            updated.sessionID = session
+            AgentRegistry.remember(agentID, entry: updated, at: result.directory)
+        }
+        finish(agentID, result, account: result.account ?? definition.provider.displayName)
+    }
+
     /// What a run's callbacks share: whether `started` went out, which happens once Claude Code's init
     /// passed the check, on whichever account and attempt that was.
     final class Launch: @unchecked Sendable {
@@ -192,6 +239,14 @@ enum AgentRun {
         private var done = false
 
         var started: Bool { lock.lock(); defer { lock.unlock() }; return done }
+
+        /// Marks it started: true the first time only.
+        func begin() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if done { return false }
+            done = true
+            return true
+        }
 
         /// The run's init check: a reason refuses it; otherwise `begin` runs, the first time only.
         func check(subagentType: String?, account: String, begin: @escaping @Sendable () -> Void) -> @Sendable ([String: Any]) -> String? {
@@ -282,15 +337,10 @@ enum AgentRun {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--agent-open"), i + 1 < args.count,
               let entry = AgentRegistry.lookup(args[i + 1]),
-              let account = ClaudeAccountsConfig.load().accounts.first(where: { $0.id == entry.account }) else { exit(1) }
+              let lines = (entry.definition?.provider ?? .claude).backend.terminal(entry) else { exit(1) }
         let script = HeadroomPaths.agentsDir.appendingPathComponent("open-\(args[i + 1]).command")
         HeadroomPaths.ensure(HeadroomPaths.agentsDir)
-        let export = account.cliConfigDir.map { "export CLAUDE_CONFIG_DIR=\(ClaudeSignIn.shellQuote($0))\n" } ?? ""
-        let body = """
-        #!/bin/zsh -l
-        \(export)cd \(ClaudeSignIn.shellQuote(entry.directory)) || exit 1
-        exec claude --resume \(entry.sessionID)
-        """
+        let body = "#!/bin/zsh -l\n\(lines)\n"
         guard (try? body.write(to: script, atomically: true, encoding: .utf8)) != nil else { exit(1) }
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
         let open = Process()
@@ -377,6 +427,9 @@ enum AgentRegistry {
         var subagentType: String?
         var effort: String?
         var at: Date
+        /// For an agent from Headroom's list, the definition it started with: a follow-up runs with it even
+        /// after the list changed.
+        var definition: AgentDefinition?
     }
     /// A running agent's processes: its runner's and Claude Code's.
     struct Processes: Codable { var runner: Int32; var claude: Int32 }
