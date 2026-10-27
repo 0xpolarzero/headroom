@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var model: AppModel
     @State private var openRouterKey = ""
+    @State private var zaiKey = ""
     @State private var claudeName = ""
 
     var body: some View {
@@ -72,12 +73,31 @@ struct SettingsView: View {
                     }
                 }
                 account(.zai) {
-                    Text(model.zaiSignedIn ? "Signed in" : "Not signed in").foregroundStyle(.secondary)
-                    Spacer()
-                    if model.zaiSignedIn {
-                        Button("Sign out", action: model.signOutZAI)
-                    } else {
-                        Button("Sign in", action: model.signInZAI)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(model.zaiSignedIn ? "Signed in" : "Not signed in").foregroundStyle(.secondary)
+                            Spacer()
+                            if model.zaiSignedIn {
+                                Button("Sign out", action: model.signOutZAI)
+                            } else {
+                                Button("Sign in", action: model.signInZAI)
+                            }
+                        }
+                        HStack {
+                            if model.hasZAIKey {
+                                Text("Coding Plan API key saved").foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Remove key", role: .destructive, action: model.removeZAIKey)
+                            } else {
+                                SecureField("Coding Plan API key", text: $zaiKey)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit(saveZAI)
+                                Button("Save", action: saveZAI)
+                                    .disabled(zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
+                        }
+                        Text("Agents need a Coding Plan API key; website sign-in only reads usage.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 account(.openrouter) {
@@ -117,6 +137,11 @@ struct SettingsView: View {
         }
         .toggleStyle(.checkbox)
         .padding(14)
+    }
+
+    private func saveZAI() {
+        model.saveZAIKey(zaiKey)
+        zaiKey = ""
     }
 
     private func saveOpenRouter() {

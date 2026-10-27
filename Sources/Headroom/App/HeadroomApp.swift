@@ -3,6 +3,7 @@ import AppKit
 @main
 enum Entry {
     static func main() {
+        if CommandLine.arguments.contains("--agent-key") { EndpointProfile.keyMain() }
         if CommandLine.arguments.contains("--print") { printUsage(); return }
         if CommandLine.arguments.contains("--agent-run") { AgentRun.main() }
         if CommandLine.arguments.contains("--agent-warm") { AgentRun.warmMain() }

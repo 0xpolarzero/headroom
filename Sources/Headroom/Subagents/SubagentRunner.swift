@@ -17,6 +17,8 @@ enum SubagentRunner {
         var mcpConfig: String?
         /// Added to Claude Code's system prompt (`--append-system-prompt`): an agent's role from Headroom's list.
         var systemPrompt: String?
+        /// An isolated endpoint profile; these runs never claim an account's ready process.
+        var endpoint: EndpointProfile?
     }
 
     struct Result: Equatable {
@@ -70,13 +72,14 @@ enum SubagentRunner {
         if request.worktree { args.append("--worktree") }
         if let mcp = request.mcpConfig { args += ["--mcp-config", mcp] }
         if let prompt = request.systemPrompt, !prompt.isEmpty { args += ["--append-system-prompt", prompt] }
+        if let endpoint = request.endpoint { args += endpoint.arguments }
         return args
     }
 
     /// What a ready process must have been started with to take this run; nil for a follow-up.
     static func warmSpec(_ request: Request, on account: ClaudeAccount, in directory: String,
                          environment base: [String: String]) -> WarmPool.Spec? {
-        guard !request.resume else { return nil }
+        guard !request.resume, request.endpoint == nil else { return nil }
         var args = arguments(request)
         if let i = args.firstIndex(of: "--session-id") { args.removeSubrange(i...i + 1) }
         return WarmPool.Spec(account: account.id, directory: directory, arguments: args,
@@ -84,12 +87,17 @@ enum SubagentRunner {
     }
 
     /// The calling session's environment, minus everything that ties it to that session and account.
-    static func environment(for account: ClaudeAccount, from base: [String: String]) -> [String: String] {
+    static func environment(for account: ClaudeAccount, from base: [String: String], endpoint: EndpointProfile? = nil) -> [String: String] {
         var env = base.filter { key, _ in
             !(key.hasPrefix("CLAUDE_CODE_") || key.hasPrefix("CLAUDE_AGENT_") || key == "CLAUDECODE"
-              || key == "CLAUDE_CONFIG_DIR" || key == "CLAUDE_EFFORT" || key == "CLAUDE_PID" || key == "ANTHROPIC_BASE_URL")
+              || key == "CLAUDE_CONFIG_DIR" || key == "CLAUDE_EFFORT" || key == "CLAUDE_PID"
+              || key.hasPrefix("ANTHROPIC_") || key == "MAX_THINKING_TOKENS")
         }
         if let dir = account.cliConfigDir { env["CLAUDE_CONFIG_DIR"] = dir }
+        if let endpoint {
+            env["CLAUDE_CONFIG_DIR"] = endpoint.directory
+            env.merge(endpoint.environment) { _, new in new }
+        }
         env[AgentRun.nestedMarker] = "1"
         return env
     }
@@ -154,7 +162,7 @@ enum SubagentRunner {
             let started = Process()
             started.executableURL = URL(fileURLWithPath: claude)
             started.arguments = arguments(request)
-            started.environment = environment(for: account, from: base)
+            started.environment = environment(for: account, from: base, endpoint: request.endpoint)
             started.currentDirectoryURL = URL(fileURLWithPath: directory)
             let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
             started.standardInput = stdin
@@ -221,11 +229,18 @@ enum SubagentRunner {
         }
         guard let final else {
             let message = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Result(text: message.isEmpty ? "The subagent stopped without an answer." : String(message.suffix(2000)),
-                          isError: true, limitReached: mentionsLimit(message), turns: 0, permissionDenials: 0, sessionID: sessionID,
-                          directory: ranIn)
+            guard let endpoint = request.endpoint else {
+                return Result(text: message.isEmpty ? "The subagent stopped without an answer." : String(message.suffix(2000)),
+                              isError: true, limitReached: mentionsLimit(message), turns: 0, permissionDenials: 0,
+                              sessionID: sessionID, directory: ranIn)
+            }
+            var result = parse(["is_error": true, "result": message.isEmpty ? "The subagent stopped without an answer." : String(message.suffix(2000))],
+                               provider: endpoint.provider)
+            result.sessionID = sessionID
+            result.directory = ranIn
+            return result
         }
-        var result = parse(final)
+        var result = parse(final, provider: request.endpoint?.provider)
         result.toolUses = toolUses
         result.sessionID = sessionID
         result.directory = ranIn
@@ -293,15 +308,30 @@ enum SubagentRunner {
     }
 
     /// Claude Code's result event (`--output-format json`, or the last stream-json line).
-    static func parse(_ root: [String: Any]) -> Result {
-        let text = root.string("result") ?? ""
+    static func parse(_ root: [String: Any], provider: AgentProvider? = nil) -> Result {
+        var text = root.string("result") ?? ""
         let isError = root["is_error"] as? Bool ?? false
         let status = root.double("api_error_status").map(Int.init)
         let modelUnavailable = isError && Self.modelUnavailable(text)
+        let limit: Bool
+        if let provider, provider == .zai || provider == .openrouter {
+            let errors = (root["errors"] as? [String] ?? []).joined(separator: "\n")
+            if !errors.isEmpty { text += (text.isEmpty ? "" : "\n") + errors }
+            limit = isError && endpointLimit(text, status: status, provider: provider)
+            if isError, status == 401 || hasCode(401, in: text) {
+                text = "\(provider.displayName) authentication failed. " + EndpointProfile.missingKey(provider) + "\n" + text
+            } else if limit, provider == .openrouter {
+                text = "OpenRouter credits exhausted. Add credits or raise this key's budget.\n" + text
+            } else if isError, provider == .openrouter, text.lowercased().contains("management") {
+                text = "OpenRouter management keys can't run models. Add a regular API key in Headroom's Settings.\n" + text
+            }
+        } else {
+            limit = isError && !modelUnavailable
+                && (status == 429 || root.string("api_error") == "usage_limit_reached" || mentionsLimit(text))
+        }
         let usage = root.dict("usage")
         return Result(text: text, isError: isError,
-                      limitReached: isError && !modelUnavailable
-                          && (status == 429 || root.string("api_error") == "usage_limit_reached" || mentionsLimit(text)),
+                      limitReached: limit,
                       modelUnavailable: modelUnavailable,
                       turns: Int(root.double("num_turns") ?? 0),
                       permissionDenials: (root["permission_denials"] as? [Any])?.count ?? 0,
@@ -310,6 +340,20 @@ enum SubagentRunner {
                                        + (usage?.double("cache_creation_input_tokens") ?? 0)),
                       outputTokens: Int(usage?.double("output_tokens") ?? 0),
                       model: root.dict("modelUsage")?.keys.sorted().first)
+    }
+
+    /// Provider business codes survive Claude Code's flattened "API Error" strings.
+    static func hasCode(_ code: Int, in text: String) -> Bool {
+        text.range(of: "(?<![0-9])\(code)(?![0-9])", options: .regularExpression) != nil
+    }
+
+    static func endpointLimit(_ text: String, status: Int?, provider: AgentProvider) -> Bool {
+        if provider == .zai {
+            if [1302, 1305].contains(where: { hasCode($0, in: text) }) { return false }
+            return ([1308, 1310] + Array(1316...1321)).contains { hasCode($0, in: text) }
+        }
+        let t = text.lowercased()
+        return status == 402 || hasCode(402, in: text) || t.contains("billing_error") || t.contains("payment_required")
     }
 
     static func mentionsLimit(_ text: String) -> Bool {

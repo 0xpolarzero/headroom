@@ -97,7 +97,7 @@ struct ZAIProvider: UsageProvider {
         return nil
     }
 
-    private static func apiKey() -> String? {
+    static func apiKey() -> String? {
         if let k = Keychain.readOwn(service: service, account: keyAccount), !k.isEmpty { return k }
         if let k = keyFromFile() { return k }
         for name in ["ZAI_API_KEY", "GLM_API_KEY"] {
