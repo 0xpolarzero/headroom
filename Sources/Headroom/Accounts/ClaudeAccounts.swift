@@ -14,6 +14,9 @@ enum HeadroomPaths {
     static let usage = support.appendingPathComponent("usage.json")
     /// For trying the plugin on one account: while this file exists, a session's own account takes its subagents too.
     static let allowOwnAccount = support.appendingPathComponent("allow-own-account")
+    /// The Claude Code version the subagent self-test last passed on.
+    static let selfTest = support.appendingPathComponent("selftest.json")
+    static let selfTestLock = support.appendingPathComponent("selftest.lock")
 
     /// Creates `dir` readable by the user only.
     static func ensure(_ dir: URL) {

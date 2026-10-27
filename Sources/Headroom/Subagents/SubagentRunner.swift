@@ -33,6 +33,22 @@ enum SubagentRunner {
         var model: String?
         /// The session it ran as: a ready process comes with its own.
         var sessionID: String?
+        /// Where it ran, as Claude Code reported it: a worktree's folder with `--worktree`.
+        var directory: String?
+        /// Refused before any work, by the caller's check of Claude Code's init (`check`).
+        var refused = false
+    }
+
+    /// What a run needs to know Claude Code is the one it expects, from its `system`/`init` event: nil when
+    /// it is, else why not. Every field read here is one a run relies on.
+    static func checkInit(_ event: [String: Any], subagentType: String?) -> String? {
+        for key in ["session_id", "cwd", "model", "agents"] where event[key] == nil {
+            return "Claude Code's init event has no `\(key)`"
+        }
+        if let type = subagentType, !type.isEmpty, !(event["agents"] as? [String] ?? []).contains(type) {
+            return "the \(type) agent type isn't available"
+        }
+        return nil
     }
 
     /// What a subagent falls back to when the account's plan lacks the model asked for: every paid plan has it.
@@ -91,8 +107,13 @@ enum SubagentRunner {
         return servers.isEmpty ? nil : ["mcpServers": servers]
     }
 
-    /// Runs to completion, calling `onStep` for each step the agent takes ("Read: note.txt").
+    /// Runs to completion, calling `onStep` for each step the agent takes ("Read: note.txt"). `onProcess`
+    /// gets Claude Code's pid, `check` its init event (a reason given stops the run, refused); `claim` is
+    /// where a ready process comes from.
     static func run(_ request: Request, on account: ClaudeAccount, in directory: String,
+                    claim: (WarmPool.Spec) -> WarmPool.Claimed? = WarmPool.claim,
+                    onProcess: @escaping @Sendable (Int32) -> Void = { _ in },
+                    check: @escaping @Sendable ([String: Any]) -> String? = { _ in nil },
                     onStep: @escaping @Sendable (String) -> Void,
                     onItem: @escaping @Sendable ([String: Any]) -> Void = { _ in }) async -> Result {
         let base = ProcessInfo.processInfo.environment
@@ -100,11 +121,14 @@ enum SubagentRunner {
         var lines: AsyncLineSequence<FileHandle.AsyncBytes>.AsyncIterator!
         var process: Process?
         var sessionID = request.sessionID
-        if let spec = warmSpec(request, on: account, in: directory, environment: base), let ready = WarmPool.claim(spec) {
+        var pid: Int32 = 0
+        var earlyInit: [String: Any]?
+        if let spec = warmSpec(request, on: account, in: directory, environment: base), let ready = claim(spec) {
             // Already started: switch it to this run's model and mode, then it only needs the prompt.
             var it = ready.output.bytes.lines.makeAsyncIterator()
-            if await switched(ready.input, &it, model: request.model, permissionMode: request.permissionMode) {
+            if await switched(ready.input, &it, model: request.model, permissionMode: request.permissionMode, initEvent: &earlyInit) {
                 sessionID = ready.sessionID
+                pid = ready.pid
                 ready.input.write(WarmPool.userMessage(request.prompt))
                 try? ready.input.close()
                 output = ready.output
@@ -112,6 +136,8 @@ enum SubagentRunner {
                 lines = it
             } else {
                 try? ready.input.close()   // no prompt: it exits by itself
+                lines = nil
+                earlyInit = nil
                 onStep("Starting Claude Code: the ready one couldn't switch")
             }
         }
@@ -138,16 +164,31 @@ enum SubagentRunner {
             errors = stderr.fileHandleForReading
             lines = output.bytes.lines.makeAsyncIterator()
             process = started
+            pid = started.processIdentifier
         }
+        onProcess(pid)
         let errorHandle: FileHandle = errors
         let errText = Task.detached { String(decoding: errorHandle.readDataToEndOfFile(), as: UTF8.self) }
 
         var final: [String: Any]?
         var toolUses = 0
+        var ranIn: String?
+        var refusal: String?
+        /// Its first init: true when the check refused it, the process stopped.
+        func refuses(_ event: [String: Any]) -> Bool {
+            guard ranIn == nil else { return false }
+            ranIn = event.string("cwd") ?? directory
+            refusal = check(event)
+            if refusal != nil { terminate(pid) }
+            return refusal != nil
+        }
         do {
-            while let line = try await lines.next() {
+            if let earlyInit, refuses(earlyInit) { lines = nil }
+            reading: while let line = try await lines?.next() {
                 guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { continue }
                 switch event.string("type") {
+                case "system" where event.string("subtype") == "init":
+                    if refuses(event) { break reading }
                 case "assistant":
                     for block in event.dict("message")?.array("content") ?? [] {
                         if block.string("type") == "tool_use" {
@@ -169,28 +210,45 @@ enum SubagentRunner {
         } catch {}
         process?.waitUntilExit()
         let stderrText = await errText.value
+        if let refusal {
+            return Result(text: refusal, isError: true, limitReached: false, turns: 0, permissionDenials: 0, sessionID: sessionID,
+                          directory: ranIn, refused: true)
+        }
         guard let final else {
             let message = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             return Result(text: message.isEmpty ? "The subagent stopped without an answer." : String(message.suffix(2000)),
-                          isError: true, limitReached: mentionsLimit(message), turns: 0, permissionDenials: 0, sessionID: sessionID)
+                          isError: true, limitReached: mentionsLimit(message), turns: 0, permissionDenials: 0, sessionID: sessionID,
+                          directory: ranIn)
         }
         var result = parse(final)
         result.toolUses = toolUses
         result.sessionID = sessionID
+        result.directory = ranIn
         return result
     }
 
+    /// Stops a Claude Code process: asked to end, then made to after 5 s.
+    static func terminate(_ pid: Int32) {
+        guard pid > 0, kill(pid, SIGTERM) == 0 else { return }
+        for _ in 0..<50 {
+            if kill(pid, 0) != 0 { return }
+            usleep(100_000)
+        }
+        kill(pid, SIGKILL)
+    }
+
     /// Sends a taken-over process its switches and reads its output until each is answered: true when all
-    /// succeeded. Lines before the answers (its init) carry nothing a run needs.
+    /// succeeded. An init event among the lines before the answers is kept for the run's check.
     static func switched(_ input: FileHandle, _ lines: inout AsyncLineSequence<FileHandle.AsyncBytes>.AsyncIterator,
-                         model: String?, permissionMode: String) async -> Bool {
+                         model: String?, permissionMode: String, initEvent: inout [String: Any]?) async -> Bool {
         let switches = WarmPool.switches(model: model, permissionMode: permissionMode)
         var waiting = Set(switches.map(\.id))
         do {
             for s in switches { try input.write(contentsOf: s.data) }
             while !waiting.isEmpty, let line = try await lines.next() {
-                guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
-                      event.string("type") == "control_response", let response = event.dict("response"),
+                guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { continue }
+                if event.string("type") == "system", event.string("subtype") == "init" { initEvent = event }
+                guard event.string("type") == "control_response", let response = event.dict("response"),
                       let id = response.string("request_id"), waiting.contains(id) else { continue }
                 if response.string("subtype") != "success" {
                     SubagentLog.write("warm: a ready process refused \(id): \(response.string("error") ?? "")")
@@ -237,7 +295,8 @@ enum SubagentRunner {
         let modelUnavailable = isError && Self.modelUnavailable(text)
         let usage = root.dict("usage")
         return Result(text: text, isError: isError,
-                      limitReached: isError && !modelUnavailable && (status == 429 || mentionsLimit(text)),
+                      limitReached: isError && !modelUnavailable
+                          && (status == 429 || root.string("api_error") == "usage_limit_reached" || mentionsLimit(text)),
                       modelUnavailable: modelUnavailable,
                       turns: Int(root.double("num_turns") ?? 0),
                       permissionDenials: (root["permission_denials"] as? [Any])?.count ?? 0,

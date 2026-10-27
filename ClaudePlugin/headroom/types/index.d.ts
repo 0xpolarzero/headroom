@@ -10,7 +10,7 @@ export type RemoteAgent = {
   description: string
   account: string
   model: string
-  status: 'running' | 'done' | 'failed'
+  status: 'running' | 'done' | 'failed' | 'stopped'
   /** The steps it took, newest last ("Read: note.txt"). */
   steps: string[]
   /** Its transcript so far, newest last, long texts cut. */

@@ -162,5 +162,34 @@ final class SubagentTests: XCTestCase {
         XCTAssertNil(SubagentRunner.transcriptItem(["type": "thinking", "thinking": "…"]))
         XCTAssertEqual((SubagentRunner.transcriptItem(["type": "text", "text": String(repeating: "x", count: 5000)])?["text"] as? String)?.count, 4001)
     }
-}
 
+    func testAFollowUpKeepsTheAgentTypeAndEffort() {
+        let args = SubagentRunner.arguments(.init(prompt: "x", subagentType: "Explore", effort: "high", sessionID: "s1", resume: true))
+        XCTAssertEqual(Array(args[6...]), ["--resume", "s1", "--agent", "Explore", "--effort", "high"])
+    }
+
+    func testClaudeCodesInitIsCheckedBeforeTheAgentCountsAsStarted() {
+        let init_: [String: Any] = ["type": "system", "subtype": "init", "session_id": "s", "cwd": "/w/.claude/worktrees/a",
+                                    "model": "claude-haiku-5-5", "agents": ["general-purpose", "Explore", "Plan"]]
+        XCTAssertNil(SubagentRunner.checkInit(init_, subagentType: "Explore"))
+        XCTAssertNil(SubagentRunner.checkInit(init_, subagentType: nil))
+        XCTAssertEqual(SubagentRunner.checkInit(init_, subagentType: "Reviewer"), "the Reviewer agent type isn't available")
+        var changed = init_
+        changed["agents"] = nil
+        XCTAssertEqual(SubagentRunner.checkInit(changed, subagentType: nil), "Claude Code's init event has no `agents`")
+    }
+
+    func testAUsageLimitReadsFromClaudeCodesApiError() {
+        let limit = SubagentRunner.parse(["is_error": true, "result": "You've hit your weekly limit", "api_error": "usage_limit_reached"])
+        XCTAssertTrue(limit.limitReached)
+    }
+
+    func testAgentsRecordedBeforeTheAgentTypeWasKeptStillLoad() throws {
+        let old = #"{"account":"Pro","directory":"/w","sessionID":"s","model":"haiku","at":1793098000}"#
+        let entry = try JSONDecoder.headroom.decode(AgentRegistry.Entry.self, from: Data(old.utf8))
+        XCTAssertEqual(entry.sessionID, "s")
+        XCTAssertNil(entry.subagentType)
+        let store = try JSONDecoder.headroom.decode(AgentRegistry.Store.self, from: Data(#"{"agents":{},"lacking":{},"fullUntil":{}}"#.utf8))
+        XCTAssertNil(store.processes)
+    }
+}

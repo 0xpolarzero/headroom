@@ -8,8 +8,23 @@ import type { RemoteAgent, TranscriptItem } from '../types'
 // whether the agent runs in the foreground or the background, then raises `agent.spawn`, where Headroom
 // takes the agent over. In the foreground the call waits for the report (ctrl+b sends it to the
 // background); in the background it answers "launched" at once and the report comes as a notification.
-// SendMessage continues it. With no account free, the spawn goes through untouched and a built-in
-// subagent runs.
+// SendMessage continues it, TaskStop stops it, ListAgents lists it.
+//
+// Built-in on purpose, untouched: forks (they need this session's context and its cache), teammates and
+// named agents, workflow agents, remote ones, agents started inside a subagent, and any call when no account
+// has room. Anything else Headroom can't handle as expected (a field it doesn't know, a runner that fails,
+// Claude Code not starting as it should) is the call's error, so it gets fixed rather than hidden.
+
+/**
+ * The Agent tool's arguments as of Claude Code 2.1.310, and the keys `tool.call` adds beside them.
+ * `run_in_background` is left out of some sessions' schema; the engine still reads it, and `agent.spawn`'s
+ * `background` carries what it decided.
+ */
+const AGENT_KEYS = new Set([
+  'description', 'prompt', 'subagent_type', 'model', 'effort', 'name', 'team_name', 'mode', 'isolation', 'run_in_background',
+  'tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta',
+])
+const ISOLATIONS = new Set([undefined, 'worktree', 'remote'])
 
 const PANE = 'headroom-agents'
 const agents = atom({ plugin: 'headroom', key: 'agents' } as const, [] as RemoteAgent[])
@@ -69,36 +84,54 @@ class Run {
   }
 }
 
+type Begun = { run: Run; line: Line } | { noRoom: true } | { error: string }
+
 /**
- * Starts `Headroom --agent-run` and reads it until the agent started. Resolves with the run and its
- * `started` line, or null when no account has room (or the runner couldn't start).
+ * Starts `Headroom --agent-run` and reads it until the agent started: the run and its `started` line,
+ * `noRoom` when no account has room, else the error that kept it from starting.
  */
-async function start($: EngineInterface, request: Record<string, unknown>): Promise<{ run: Run; line: Line } | null> {
+async function start($: EngineInterface, request: Record<string, unknown>): Promise<Begun> {
   try {
     const stream = $.process.spawn({ argv: [await runner($), '--agent-run'], input: JSON.stringify(request) })
     const run = new Run(stream[Symbol.asyncIterator]())
     for (let line = await run.next(); line; line = await run.next()) {
-      if (line.type === 'no_room') break
+      if (line.type === 'no_room') return { noRoom: true }
       if (line.type === 'started') return { run, line }
+      if (line.type === 'error' || line.type === 'result') return { error: String(line.text ?? 'Headroom could not start the agent.') }
     }
+    return { error: 'Headroom’s runner ended before the agent started.' }
   } catch (error) {
-    $.ui.log(`headroom: subagent runner failed: ${String(error)}`, { to: 'debug' })
+    return { error: `Headroom’s runner failed: ${String(error)}` }
   }
-  return null
 }
 
-/** Reads a background agent's run to its end; `first` is a line already asked for. */
+/** Stopped by TaskStop: their runs end without a report, which isn't a failure. */
+const stopping = new Set<string>()
+
+/**
+ * Reads a background agent's run to its end; `first` is a line already asked for. A run that ends with
+ * no result still reports, as a failure: a notification never comes otherwise.
+ */
 async function follow($: EngineInterface, run: Run, id: string, first?: Promise<Line | null>): Promise<void> {
+  let failure = 'Headroom’s runner ended without the agent’s report.'
   try {
     for (let line = await (first ?? run.next()); line; line = await run.next()) {
       const agent = await record($, id, line)
       if (agent) {
-        await deliver($, agent, line)
+        if (line.stopped !== true) await deliver($, agent, line)
         await afterResult($, agent)
+        return
       }
     }
   } catch (error) {
-    $.ui.log(`headroom: subagent runner failed: ${String(error)}`, { to: 'debug' })
+    failure = `Headroom’s runner failed: ${String(error)}`
+  }
+  const end = { type: 'result', text: failure, isError: true, stopped: stopping.has(id) }
+  try {
+    const agent = await record($, id, end)
+    if (agent && !end.stopped) await deliver($, agent, end)
+  } catch (error) {
+    $.ui.log(`headroom: agent ${id} ended unreported: ${failure} (${String(error)})`, { to: 'debug' })
   }
 }
 
@@ -148,11 +181,14 @@ async function record($: EngineInterface, id: string, line: Line): Promise<Remot
   }
   if (line.type !== 'result') return
   const failed = line.isError === true
+  const stopped = line.stopped === true || stopping.has(id)
+  stopping.delete(id)
   let agent: RemoteAgent | undefined
   await update($, agents, list =>
     list.map(a => {
       if (a.id !== id) return a
-      agent = { ...a, status: failed ? 'failed' : 'done', endedAt: Date.now(), result: String(line.text ?? ''),
+      agent = { ...a, status: stopped ? 'stopped' : failed ? 'failed' : 'done', endedAt: Date.now(),
+                result: stopped ? 'Stopped' : String(line.text ?? ''),
                 account: String(line.account ?? a.account), model: String(line.model ?? a.model), foreground: false }
       return agent
     }),
@@ -168,8 +204,14 @@ async function afterResult($: EngineInterface, agent: RemoteAgent): Promise<void
   agentPending.delete(agent.id)
   await update($, agents, list => list.map(a => (a.id === agent.id ? { ...a, pending: [] } : a)))
   const messages = [...pending, ...queued]
-  if (messages.length > 0) void continueAgent($, agent, messages.join('\n\n'))
+  if (messages.length === 0) return
+  const sent = await continueAgent($, agent, messages.join('\n\n'))
+  if ('error' in sent) {
+    await $.prompt.submit({ text: `Headroom could not give agent ${agent.id} the messages sent while it ran: ${sent.error}` })
+  }
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /** SendMessage text held for an agent that is still running. */
 const agentPending = new Map<string, string[]>()
@@ -271,19 +313,44 @@ async function foreground($: EngineInterface, e: { description: string; prompt: 
   }
 }
 
-async function continueAgent($: EngineInterface, agent: RemoteAgent, message: string): Promise<Line | null> {
-  const begun = await start($, { prompt: message, resume: agent.id, cwd: await $.session.cwd() })
-  if (!begun) return null
+/** Continues an agent with a message on its account: its `started` line, or why it couldn't. */
+async function continueAgent($: EngineInterface, agent: RemoteAgent, message: string): Promise<Line | { error: string }> {
+  const begun = await start($, { prompt: message, resume: agent.id, cwd: await $.session.cwd(), permissionMode })
+  if ('noRoom' in begun) return { error: 'Headroom found no account for it.' }
+  if ('error' in begun) return begun
   await started($, begun.line, agent.description, true)
   void follow($, begun.run, String(begun.line.agentId))
   return begun.line
 }
 
+/** What the self-test found broken on this Claude Code version, shown until a run passes. */
+let broken: string | undefined
+
+/**
+ * Checks, once per Claude Code version, that subagents on other accounts still work (`Headroom
+ * --agent-selftest`); what broke stays in the status line and the debug log.
+ */
+async function selfTest($: EngineInterface): Promise<void> {
+  let line: Line | undefined
+  for await (const chunk of $.process.spawn({ argv: [await runner($), '--agent-selftest'] })) {
+    if (chunk.stream === 'stdout' && chunk.text.trim()) line = JSON.parse(chunk.text.trim().split('\n')[0] ?? '{}') as Line
+  }
+  if (line?.type === 'failed') {
+    broken = `Headroom: subagents on other accounts are broken on Claude Code ${String(line.version)} (${String(line.step)}: ${String(line.text)})`
+    $.ui.log(broken, { to: 'debug' })
+    $.ui.toast(broken, { timeoutMs: 15_000 })
+  } else if (line?.type === 'ok') {
+    broken = undefined
+  }
+  await showStatus($)
+}
+
 async function showStatus($: EngineInterface): Promise<void> {
   const running = (await read($, agents)).filter(a => a.status === 'running')
-  if (running.length === 0) return $.ui.status(undefined)
   const where = [...new Set(running.map(a => a.account))].join(', ')
-  $.ui.status(`${running.length} agent${running.length === 1 ? '' : 's'} on ${where}`)
+  const text = [running.length > 0 ? `${running.length} agent${running.length === 1 ? '' : 's'} on ${where}` : undefined, broken]
+    .filter(Boolean).join(' · ')
+  $.ui.status(text || undefined)
 }
 
 function elapsed(agent: RemoteAgent, now: number): string {
@@ -310,12 +377,12 @@ function agentBlock($: EngineInterface, e: Parameters<EngineInterface['ui']['res
                     unfolded: boolean): JSX.Element {
   const { Box, Text, Button, Markdown } = $.ui.resolve(e)
   const tools = agent.items.filter(i => i.kind === 'tool').length || agent.steps.length
-  const state = agent.status === 'running' ? 'Running' : agent.status === 'done' ? 'Done' : 'Failed'
+  const state = { running: 'Running', done: 'Done', failed: 'Failed', stopped: 'Stopped' }[agent.status]
   const toggle = () => update($, open, list => (list.includes(agent.id) ? list.filter(i => i !== agent.id) : [...list, agent.id]))
   return (
     <Box flexDirection="column">
       <Text>
-        <Text bold>{agent.status === 'running' ? '● ' : agent.status === 'done' ? '✓ ' : '✗ '}Agent · {agent.description}</Text>
+        <Text bold>{{ running: '● ', done: '✓ ', failed: '✗ ', stopped: '■ ' }[agent.status]}Agent · {agent.description}</Text>
         <Text dimColor>  on {agent.account || 'another account'}{agent.model ? ` · ${agent.model}` : ''}</Text>
       </Text>
       <Text dimColor>  {state} {elapsed(agent, Date.now())} · {plural(tools, 'tool use')}</Text>
@@ -361,6 +428,11 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'agents-elsewhere', description: 'Show the subagents running on your other Claude accounts' })
+    void selfTest($).catch(error => {
+      broken = `Headroom: its self-test could not run (${String(error)})`
+      $.ui.log(broken, { to: 'debug' })
+      $.ui.toast(broken, { timeoutMs: 15_000 })
+    })
     return next(e)
   })
 
@@ -370,8 +442,14 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
-    // Kept built-in: agents started by subagents, remote agents and named teammates.
+    // Kept built-in on purpose: agents started by subagents, remote agents and named agents (teammates).
     if (e.agentId !== undefined || e.isolation === 'remote' || e.name !== undefined) return next(e)
+    const unknown = Object.keys(e).filter(key => !AGENT_KEYS.has(key))
+    if (unknown.length > 0 || !ISOLATIONS.has(e.isolation)) {
+      const what = unknown.length > 0 ? `field${unknown.length === 1 ? '' : 's'} ${unknown.map(k => `\`${k}\``).join(', ')}`
+        : `isolation \`${String(e.isolation)}\``
+      return { deny: `Headroom doesn't handle the Agent tool's ${what} yet, so it can't run this agent. Tell the user: Headroom's plugin needs updating for it.` }
+    }
     const request = {
       prompt: e.prompt, description: e.description, subagentType: e.subagent_type, model: e.model,
       effort: e.effort, isolation: e.isolation, cwd: await $.session.cwd(), permissionMode,
@@ -394,10 +472,12 @@ export const register: Register = on => {
       return launched(e, line)
     }
     return foreground($, e, next.signal, run, line)
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
 
   on('agent.spawn', async ($, e, next) => {
     const claim = claims.get(e.tool_use_id)
+    // Kept built-in on purpose: a fork runs on this session's context and cache, a teammate and a workflow
+    // agent belong to this session, a resume continues a built-in agent.
     if (!claim || e.resume || e.fork || e.isTeammate || e.workflow || e.parentAgentId !== undefined) return next(e)
     const request = {
       ...claim.request, subagentType: e.subagentType, model: e.model ?? claim.request.model,
@@ -405,17 +485,18 @@ export const register: Register = on => {
       parentModel: e.parentModel,
     }
     const begun = await start($, request)
-    if (!begun) return next(e)
+    if ('noRoom' in begun) return next(e)
+    if ('error' in begun) return { deny: `Headroom couldn't run this agent on another account: ${begun.error}` }
     await started($, begun.line, e.description, false, !e.background, e.tool_use_id)
     claim.started = { ...begun, background: e.background }
     return { deny: 'Headroom runs this agent on another Claude account.' }
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
 
   on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {
     const to = String(e.to)
     const agent = (await read($, agents)).find(a => a.id === to)
     // Headroom's agents have UUIDs; one from an earlier session is still known to Headroom.
-    if (!agent && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(to)) return next(e)
+    if (!agent && !UUID.test(to)) return next(e)
     if (agent?.status === 'running') {
       agentPending.set(to, [...(agentPending.get(to) ?? []), e.message])
       return { result: { success: true, message: `Queued for agent ${to}: it reads it when it finishes its current work.` } }
@@ -424,14 +505,52 @@ export const register: Register = on => {
       id: to, description: e.summary ?? 'agent', account: '', model: '', status: 'done', steps: [], items: [], startedAt: Date.now(), pending: [],
     }
     const line = await continueAgent($, known, e.message)
-    if (!line) return { result: { success: false, message: `Headroom could not continue agent ${to}.` } }
+    if ('error' in line) return { deny: `Headroom could not continue agent ${to}: ${line.error}` }
     return {
       result: {
         success: true,
         message: `Message sent to agent ${to} on the ${String(line.account)} account. Its reply arrives as a notification when it finishes.`,
       },
     }
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
+
+  on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
+    const id = String(e.task_id ?? e.shell_id ?? '')
+    const agent = (await read($, agents)).find(a => a.id === id)
+    if (!agent) return next(e)
+    if (agent.status !== 'running') return { deny: `Agent ${id} isn't running (it is ${agent.status}).` }
+    stopping.add(id)
+    let answer = null as Line | null
+    for await (const chunk of $.process.spawn({ argv: [await runner($), '--agent-stop', id] })) {
+      if (chunk.stream === 'stdout') answer = JSON.parse(chunk.text.trim().split('\n')[0] || '{}') as Line
+    }
+    if (answer?.type !== 'stopped') {
+      stopping.delete(id)
+      return { deny: `Headroom could not stop agent ${id}: ${String(answer?.text ?? 'its runner gave no answer')}` }
+    }
+    return {
+      result: {
+        message: `Stopped agent ${id} (${agent.description}) on the ${agent.account} account.`,
+        task_id: id, task_type: 'local_agent', command: agent.description,
+      },
+    }
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: `Headroom failed: ${next.error.message ?? next.error.kind}` }))
+
+  // The session's agents as ListAgents lists them, Headroom's beside the built-in ones.
+  on('tool.call', { tool: 'ListAgents' }, async ($, e, next) => {
+    const answer = await next(e)
+    const mine = (await read($, agents)).filter(a => a.status === 'running' || Date.now() - (a.endedAt ?? 0) < 3_600_000)
+    if (answer.deny !== undefined || mine.length === 0) return answer
+    const result = answer.result as { listing: string; sections?: { kind: string; total: number; rows: object[] }[]; notes?: object[] }
+    const rows = mine.map(a => ({ id: a.id, name: a.description, type: 'headroom', status: a.status }))
+    const listing = [
+      result.listing.trimEnd(),
+      '',
+      `Agents on your other Claude accounts (Headroom; SendMessage or TaskStop them by id):`,
+      ...mine.map(a => `- ${a.id} · ${a.description} · ${a.status} · on ${a.account}`),
+    ].join('\n')
+    return { ...answer, result: { ...result, listing, sections: [...(result.sections ?? []), { kind: 'headroom', total: rows.length, rows }] } }
+  })
 
   // The Agent call's row in the transcript: the remote agent, drawn like a built-in one.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {

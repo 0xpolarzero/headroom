@@ -77,15 +77,25 @@ its sessions are its own.
     starts. In the foreground the call waits and answers with the agent's report (ctrl+b, or **Run in
     background** on its row, sends it to the background; interrupting stops it). In the background it
     answers "launched" at once with an `agentId`, then a `<task-notification>` with the report when it
-    finishes. `SendMessage` to that `agentId` continues it on the same account; a message sent while it
-    works is read when it finishes.
+    finishes. `SendMessage` to that `agentId` continues it on the same account, folder (its worktree with
+    `isolation: "worktree"`) and agent type; a message sent while it works is read when it finishes.
+    `TaskStop` stops it, and `ListAgents` lists it beside the built-in agents.
   - It runs `claude -p` in the session's folder with the same parameters (`subagent_type`, `model`, `effort`,
     `isolation`), your MCP servers (from `~/.claude.json`, passed with `--mcp-config`) and the session's
     permission mode. "Ask each time" becomes auto mode, since nobody can be asked there.
   - The status line shows "1 agent on Pro"; a pane, **Agents on other accounts** (`/agents-elsewhere`), lists
     each agent's latest steps.
-  - Calls with no other account free, calls from subagents, named teammates and remote agents go to the
-    built-in tool untouched.
+  - Some calls go to the built-in tool untouched, on purpose: forks (they run on the session's own context
+    and its prompt cache), named teammates, workflow agents, remote agents, calls from subagents, and any
+    call when no other account has room.
+  - Anything else that doesn't work as expected is an error, never a quiet switch to the built-in agent: an
+    Agent field the plugin doesn't know yet, an agent type the other account lacks, a runner that fails or
+    ends without a report. Claude gets the error and tells you.
+  - The first session on a new Claude Code version runs a self-test on another account: it starts an
+    agent the way a ready process starts it, continues it, and stops one (two one-line Haiku answers). If
+    any step fails, the status line says what broke until a later version passes.
+  - Not yet: in a `claude -p` run that ends with its prompt, a background agent on another account is cut
+    off when the run exits; a built-in one keeps the run open until it reports.
 - **Ready processes.** Claude Code takes about 11 s to start. So when you send a prompt, the plugin asks
   Headroom to start one on the account a subagent would use, in that folder, waiting for its prompt; an Agent
   call on that account and folder with the same agent type takes it over and skips the wait: Headroom switches

@@ -9,23 +9,30 @@ function lines(...objects: object[]): string {
   return objects.map(o => JSON.stringify(o)).join('\n') + '\n'
 }
 
-type Stubs = { requests: string[]; argvs: string[][]; submitted: string[]; reachedEngine: string[]; spawned: string[] }
+type Stubs = {
+  requests: string[]; argvs: string[][]; submitted: string[]; reachedEngine: string[]; spawned: string[]; statuses: (string | undefined)[]
+}
 
 /**
  * `background` is what the engine decides for the agent (its definition, settings), as `agent.spawn`
- * carries it. `gate`, when given, holds the runner's output after its first line until it resolves.
+ * carries it, and `fork` whether the call forks this session. `gate`, when given, holds the runner's
+ * output after its first line until it resolves. `outputs` answers other Headroom commands, by flag.
  */
-type Options = { background?: boolean; gate?: Promise<void> }
+type Options = { background?: boolean; fork?: boolean; gate?: Promise<void>; outputs?: Record<string, string> }
 
 type Body = Parameters<typeof test>[1] extends infer B ? (B extends (...args: infer A) => unknown ? A : never) : never
 
 function engine([$test, on]: Body, runnerOutput: string, options: Options = {}): Stubs {
-  const stubs: Stubs = { requests: [], argvs: [], submitted: [], reachedEngine: [], spawned: [] }
+  const stubs: Stubs = { requests: [], argvs: [], submitted: [], reachedEngine: [], spawned: [], statuses: [] }
   on('fs.exists', () => ({ value: true }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.model', () => ({ value: 'claude-fable-5-1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', (_, e) => {
+    stubs.statuses.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.invalidate', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => {
@@ -35,7 +42,10 @@ function engine([$test, on]: Body, runnerOutput: string, options: Options = {}):
   on('process.spawn', async function* (_, e) {
     stubs.argvs.push([...e.argv])
     stubs.requests.push(e.input ?? '')
-    if (runnerOutput && options.gate) {
+    const other = options.outputs?.[e.argv[1] ?? '']
+    if (other !== undefined || e.argv[1] !== '--agent-run') {
+      if (other) yield { stream: 'stdout', text: other }
+    } else if (runnerOutput && options.gate) {
       const newline = runnerOutput.indexOf('\n') + 1
       yield { stream: 'stdout', text: runnerOutput.slice(0, newline) }
       await options.gate
@@ -49,10 +59,11 @@ function engine([$test, on]: Body, runnerOutput: string, options: Options = {}):
     if (e.tool === 'Agent') {
       const spawn = await $test.agent.spawn({
         tool_use_id: e.tool_use_id, prompt: e.prompt, description: e.description, subagentType: 'general-purpose',
-        parentModel: 'claude-fable-5-1', background: options.background ?? true, fork: false,
+        parentModel: 'claude-fable-5-1', background: options.background ?? true, fork: options.fork ?? false,
       } as never)
       if ('deny' in spawn && spawn.deny) return { deny: `Subagent spawn denied by a plugin: ${spawn.deny}` }
     }
+    if (e.tool === 'ListAgents') return { result: { listing: 'Background agents:\n- a1 · built-in task', sections: [] } }
     return { result: { status: 'completed', agentId: 'built-in', content: [{ type: 'text', text: 'built-in ran' }] } }
   })
   on('agent.spawn', (_, e) => {
@@ -221,3 +232,116 @@ test("the Agent call's row shows the remote agent and unfolds its transcript", a
   }
 })
 
+test('a fork runs built-in, on this session’s own context', async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, RESULT), { fork: true })
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'fork it', prompt: 'carry on', subagent_type: 'fork' })
+
+  expect(stubs.spawned).toEqual(['fork it'])
+  expect(stubs.argvs.filter(a => a[1] === '--agent-run')).toEqual([])
+  expect((answer.result as { agentId: string }).agentId).toBe('built-in')
+})
+
+test("an Agent field Headroom doesn't know is the call's error, not a silent built-in run", async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, RESULT))
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y', run_after: 'lunch' } as never)
+
+  expect((answer as { deny?: string }).deny).toContain('`run_after`')
+  expect(stubs.reachedEngine).toEqual([])
+  expect(stubs.spawned).toEqual([])
+})
+
+test('run_in_background is a field Headroom knows: the engine decides and agent.spawn says', async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, RESULT), { background: true })
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y', run_in_background: true } as never)
+
+  expect((answer.result as { status: string }).status).toBe('async_launched')
+  await eventually(() => stubs.submitted.length > 0)
+})
+
+test("a runner that can't start the agent is the call's error", async ($, on) => {
+  const stubs = engine([$, on], lines({ type: 'error', text: 'the Reviewer agent type isn’t available on the Pro account' }))
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
+
+  expect((answer as { deny?: string }).deny).toContain('Reviewer agent type')
+  expect(stubs.spawned).toEqual([])
+})
+
+test("a runner that ends before the agent started is the call's error", async ($, on) => {
+  const stubs = engine([$, on], '')
+
+  const answer = await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
+
+  expect((answer as { deny?: string }).deny).toContain('ended before the agent started')
+  expect(stubs.spawned).toEqual([])
+})
+
+test('a background agent whose runner dies still reports, as a failure', async ($, on) => {
+  const stubs = engine([$, on], lines(STARTED, { type: 'step', text: 'Read: note.txt' }), { background: true })
+
+  await $.tool.call({ tool: 'Agent', description: 'x', prompt: 'y' })
+
+  await eventually(() => stubs.submitted.length > 0)
+  expect(stubs.submitted[0]).toContain('<status>failed</status>')
+  expect(stubs.submitted[0]).toContain('without the agent’s report')
+})
+
+test('TaskStop stops a Headroom agent on its account', async ($, on) => {
+  let release = () => {}
+  const gate = new Promise<void>(resolve => (release = resolve))
+  const stubs = engine([$, on], lines(STARTED, { type: 'result', text: 'Stopped.', isError: true, stopped: true }),
+                       { background: true, gate, outputs: { '--agent-stop': lines({ type: 'stopped' }) } })
+  await $.tool.call({ tool: 'Agent', description: 'long task', prompt: 'y' })
+
+  const answer = await $.tool.call({ tool: 'TaskStop', task_id: AGENT_ID })
+  release()
+
+  expect(stubs.argvs.find(a => a[1] === '--agent-stop')?.[2]).toBe(AGENT_ID)
+  expect((answer.result as { task_id: string }).task_id).toBe(AGENT_ID)
+  expect(stubs.reachedEngine).toEqual(['Agent'])
+  await new Promise(resolve => setTimeout(resolve, 50))
+  // Stopped is TaskStop's own answer: no failure notification follows.
+  expect(stubs.submitted).toEqual([])
+  const listed = await $.tool.call({ tool: 'ListAgents' })
+  expect((listed.result as { listing: string }).listing).toContain(`${AGENT_ID} · long task · stopped · on Pro`)
+})
+
+test('TaskStop for a built-in task goes to the engine', async ($, on) => {
+  const stubs = engine([$, on], '')
+
+  await $.tool.call({ tool: 'TaskStop', task_id: 'b2sp5yayl' })
+
+  expect(stubs.reachedEngine).toEqual(['TaskStop'])
+})
+
+test('ListAgents lists Headroom agents beside the built-in ones', async ($, on) => {
+  let release = () => {}
+  const gate = new Promise<void>(resolve => (release = resolve))
+  const stubs = engine([$, on], lines(STARTED, RESULT), { background: true, gate })
+  await $.tool.call({ tool: 'Agent', description: 'reverse the note', prompt: 'y' })
+
+  const answer = await $.tool.call({ tool: 'ListAgents' })
+  release()
+  await eventually(() => stubs.submitted.length > 0)
+
+  const result = answer.result as { listing: string; sections: { kind: string; rows: { id: string }[] }[] }
+  expect(result.listing).toContain('built-in task')
+  expect(result.listing).toContain(`${AGENT_ID} · reverse the note · running · on Pro`)
+  expect(result.sections.find(s => s.kind === 'headroom')?.rows[0]?.id).toBe(AGENT_ID)
+})
+
+test('a failed self-test stays in the status line', async ($, on) => {
+  const stubs = engine([$, on], '', { outputs: {
+    '--agent-selftest': lines({ type: 'failed', version: '2.2.0 (Claude Code)', step: 'continue', text: 'No conversation found' }),
+  } })
+  on('command.register', () => ({ value: undefined }))
+  on('session.start', (_, e) => e)
+
+  await $.session.start({ cwd: '/work' } as never)
+
+  await eventually(() => stubs.statuses.some(t => t?.includes('broken')))
+  expect(stubs.statuses.at(-1)).toContain('broken on Claude Code 2.2.0 (Claude Code) (continue: No conversation found)')
+})

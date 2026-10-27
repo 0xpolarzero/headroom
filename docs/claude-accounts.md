@@ -19,8 +19,20 @@ waits and answers `completed` with the report (or the error), ctrl+b (`task:back
 `async_launched`, an interrupt ending the runner, which stops its `claude -p`. A probe (2026-10-27) showed a
 denied spawn leaves nothing behind (no worktree), `background` true in `claude -p` and false with
 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, and a hook can keep reading a run another hook started for minutes.
-`SendMessage` to that agent resumes its session on the same account. With no
-account free the call goes to the built-in tool. A first version was an MCP server (`Headroom --mcp`) with
+`SendMessage` to that agent resumes its session on the same account, in the folder its init reported (the
+worktree with `--worktree`) and with the agent type and effort it started with: `--resume` alone restores
+neither. With no account free the call goes to the built-in tool, as do forks, teammates, workflow agents and
+remote ones. Everything else that goes wrong is the call's error: the runner sends `started` only once Claude
+Code's `system`/`init` event has the fields a run reads and lists the agent type, so an account missing a type
+(or a Claude Code that changed its events) fails the call instead of falling back. `TaskStop` runs
+`Headroom --agent-stop`, which ends the agent's Claude Code process (its pid, from the warm pool's handover or
+the runner's own child, is kept while the runner lives); `ListAgents` adds Headroom's agents to the engine's
+listing. `Headroom --agent-selftest` runs once per `claude --version`: a ready-process start with `--agent
+Explore` switched to Haiku, a resume, and a stop, each checked against what the runner reads. It passed on
+2.1.310 in 49 s. Live runs (2026-10-27) confirmed an Explore agent and its follow-up, TaskStop, a fork kept
+built-in, and a worktree agent whose follow-up ran in the same worktree. They also showed the engine passing
+`run_in_background`, which the 2.1.308 schema leaves out, and that `claude -p` exits on its last turn
+without waiting for a Headroom agent, unlike a built-in one. A first version was an MCP server (`Headroom --mcp`) with
 look-alike tools; Claude had to be told to prefer them and couldn't run them in the background, so it was
 dropped. The README describes the current behaviour in full.
 

@@ -42,6 +42,8 @@ enum WarmPool {
     /// A claimed process: write the prompt to `input` as a stream-json user message, then close it.
     struct Claimed {
         var sessionID: String
+        /// Claude Code's own process, for stopping the run.
+        var pid: Int32
         var input: FileHandle
         var output: FileHandle
         var errors: FileHandle
@@ -86,13 +88,39 @@ enum WarmPool {
         defer { close(fd) }
         guard send(fd, Message(op: "claim", spec: spec)) else { return nil }
         var fds: [Int32] = []
-        guard let reply = receive(fd, fds: &fds), let sessionID = reply["sessionID"] as? String, fds.count == 3 else {
+        guard let reply = receive(fd, fds: &fds), let sessionID = reply["sessionID"] as? String,
+              let pid = (reply["pid"] as? NSNumber)?.int32Value, fds.count == 3 else {
             fds.forEach { close($0) }
             return nil
         }
-        return Claimed(sessionID: sessionID, input: FileHandle(fileDescriptor: fds[0], closeOnDealloc: true),
+        return Claimed(sessionID: sessionID, pid: pid, input: FileHandle(fileDescriptor: fds[0], closeOnDealloc: true),
                        output: FileHandle(fileDescriptor: fds[1], closeOnDealloc: true),
                        errors: FileHandle(fileDescriptor: fds[2], closeOnDealloc: true))
+    }
+
+    /// Starts a process as the app keeps one, handed straight to the caller: the self-test's ready process.
+    static func launch(_ spec: Spec) -> Claimed? {
+        guard let (process, sessionID, input, output, errors) = start(spec) else { return nil }
+        return Claimed(sessionID: sessionID, pid: process.processIdentifier, input: input.fileHandleForWriting,
+                       output: output.fileHandleForReading, errors: errors.fileHandleForReading)
+    }
+
+    /// `claude -p --input-format stream-json` with the spec's arguments, waiting for its prompt.
+    static func start(_ spec: Spec, onExit: (@Sendable (Process) -> Void)? = nil) -> (Process, String, Pipe, Pipe, Pipe)? {
+        guard let claude = SubagentRunner.executable(environment: spec.environment) else { return nil }
+        let sessionID = UUID().uuidString.lowercased()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: claude)
+        process.arguments = spec.arguments + ["--input-format", "stream-json", "--session-id", sessionID]
+        process.environment = spec.environment
+        process.currentDirectoryURL = URL(fileURLWithPath: spec.directory)
+        let input = Pipe(), output = Pipe(), errors = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errors
+        process.terminationHandler = onExit
+        do { try process.run() } catch { return nil }
+        return (process, sessionID, input, output, errors)
     }
 
     static func warm(_ spec: Spec) {
@@ -261,7 +289,7 @@ final class WarmPoolServer: @unchecked Sendable {
         switch message.op {
         case "claim":
             if let entry = take(message.spec) {
-                WarmPool.reply(client, ["sessionID": entry.sessionID], passing: [
+                WarmPool.reply(client, ["sessionID": entry.sessionID, "pid": entry.process.processIdentifier], passing: [
                     entry.input.fileHandleForWriting.fileDescriptor, entry.output.fileHandleForReading.fileDescriptor,
                     entry.errors.fileHandleForReading.fileDescriptor,
                 ])
@@ -304,24 +332,13 @@ final class WarmPoolServer: @unchecked Sendable {
     }
 
     private func spawn(_ spec: WarmPool.Spec) -> Entry? {
-        guard let claude = SubagentRunner.executable(environment: spec.environment) else { return nil }
-        let sessionID = UUID().uuidString.lowercased()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: claude)
-        process.arguments = spec.arguments + ["--input-format", "stream-json", "--session-id", sessionID]
-        process.environment = spec.environment
-        process.currentDirectoryURL = URL(fileURLWithPath: spec.directory)
-        let input = Pipe(), output = Pipe(), errors = Pipe()
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = errors
-        process.terminationHandler = { [weak self] done in
+        let started = WarmPool.start(spec) { [weak self] done in
             guard let self else { return }
             self.lock.lock()
             self.entries.removeAll { $0.process === done }
             self.lock.unlock()
         }
-        do { try process.run() } catch { return nil }
+        guard let (process, sessionID, input, output, errors) = started else { return nil }
         SubagentLog.write("warm: started a process on \(spec.account) in \(spec.directory)")
         return Entry(spec: spec, sessionID: sessionID, process: process, input: input, output: output, errors: errors, since: Date())
     }

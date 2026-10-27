@@ -5,10 +5,12 @@ import Foundation
 /// tool with it. Reads a JSON request on stdin and writes JSON lines on stdout:
 ///
 /// - `{"type":"no_room"}`: no other account has room; the plugin lets the built-in subagent run.
-/// - `{"type":"started","agentId","account","model","outputFile"}`: running, the agent's id fixed.
+/// - `{"type":"error","text"}`: it couldn't start, for a reason that needs fixing (no fallback hides it).
+/// - `{"type":"started","agentId","account","model","outputFile"}`: Claude Code started as expected and
+///   is running, the agent's id fixed.
 /// - `{"type":"step","text"}`: a step the agent took ("Read: note.txt").
 /// - `{"type":"moved","account","reason"}`: the account refused before any work; another took over.
-/// - `{"type":"result","text","isError",...}`: its final answer.
+/// - `{"type":"result","text","isError",...}`: its final answer; `stopped` when TaskStop ended it.
 enum AgentRun {
     /// Set in a subagent's environment: a subagent never starts subagents on yet another account.
     static let nestedMarker = "HEADROOM_SUBAGENT"
@@ -103,18 +105,25 @@ enum AgentRun {
         let mcpConfig = writeMCPConfig(directory: request.cwd)
         let permissionMode = mappedPermissionMode(request.permissionMode)
 
-        // A follow-up goes back to the account and session the agent ran in.
+        // A follow-up goes back to the account, session, folder and agent type the agent ran with.
         if let agentID = request.resume {
             guard let entry = AgentRegistry.lookup(agentID), let account = accounts.first(where: { $0.id == entry.account }) else {
-                emit(["type": "result", "text": "No agent \(agentID) was started by Headroom.", "isError": true])
+                emit(["type": "error", "text": "No agent \(agentID) was started by Headroom."])
                 return
             }
-            emit(["type": "started", "agentId": agentID, "account": account.id, "model": entry.model ?? "", "outputFile": logURL(agentID).path])
+            let launch = Launch()
             AgentRegistry.setRunning(account.id)
-            let req = SubagentRunner.Request(prompt: request.prompt, model: entry.model, permissionMode: permissionMode,
-                                             sessionID: entry.sessionID, resume: true, mcpConfig: mcpConfig)
-            let result = await SubagentRunner.run(req, on: account, in: entry.directory) { step(agentID, $0) } onItem: { item(agentID, $0) }
+            let req = SubagentRunner.Request(prompt: request.prompt, subagentType: entry.subagentType, model: entry.model,
+                                             effort: entry.effort, permissionMode: permissionMode, sessionID: entry.sessionID,
+                                             resume: true, mcpConfig: mcpConfig)
+            let result = await SubagentRunner.run(req, on: account, in: entry.directory,
+                                                  onProcess: { AgentRegistry.setProcess(agentID, claude: $0) },
+                                                  check: launch.check(subagentType: entry.subagentType, account: account.id) {
+                emit(["type": "started", "agentId": agentID, "account": account.id, "model": entry.model ?? "", "outputFile": logURL(agentID).path])
+            }) { step(agentID, $0) } onItem: { item(agentID, $0) }
             if result.limitReached { await SubagentUsage.shared.markFull(account) }
+            guard launch.started else { return fail(agentID, result) }
+            AgentRegistry.remember(agentID, entry: entry, at: result.directory)
             finish(agentID, result, account: account.id)
             return
         }
@@ -122,11 +131,11 @@ enum AgentRun {
         if ProcessInfo.processInfo.environment[nestedMarker] != nil { emit(["type": "no_room"]); return }
         let own = SubagentAccounts.ownAccountUUID()
         let agentID = UUID().uuidString.lowercased()
+        let launch = Launch()
         var tried = Set<String>()
-        var started = false
         while true {
             guard let account = await pick(accounts, config: config, own: own, excluding: tried) else {
-                if started {
+                if launch.started {
                     finish(agentID, .init(text: AgentRun.noRoom, isError: true, limitReached: true, turns: 0, permissionDenials: 0), account: nil)
                 } else {
                     emit(["type": "no_room"])
@@ -136,25 +145,31 @@ enum AgentRun {
             var model = request.model ?? request.parentModel
             if let m = model, AgentRegistry.lacksModel(account.id, m) { model = SubagentRunner.fallbackModel }
             AgentRegistry.setRunning(account.id)
-            if !started {
-                emit(["type": "started", "agentId": agentID, "account": account.id, "model": model ?? "", "outputFile": logURL(agentID).path])
+            let firstModel = model
+            let check = launch.check(subagentType: request.subagentType, account: account.id) {
+                emit(["type": "started", "agentId": agentID, "account": account.id, "model": firstModel ?? "", "outputFile": logURL(agentID).path])
                 log(agentID, "Started on the \(account.id) account: \(request.description ?? "")")
-                started = true
             }
             var req = SubagentRunner.Request(prompt: request.prompt, subagentType: request.subagentType, model: model,
                                              effort: request.effort, worktree: request.isolation == "worktree",
                                              permissionMode: permissionMode, sessionID: UUID().uuidString.lowercased(),
                                              mcpConfig: mcpConfig)
-            var result = await SubagentRunner.run(req, on: account, in: request.cwd) { step(agentID, $0) } onItem: { item(agentID, $0) }
+            let onProcess: @Sendable (Int32) -> Void = { AgentRegistry.setProcess(agentID, claude: $0) }
+            var result = await SubagentRunner.run(req, on: account, in: request.cwd, onProcess: onProcess, check: check) {
+                step(agentID, $0)
+            } onItem: { item(agentID, $0) }
             // Plans differ in models (Pro has no Fable): run it again with one every plan has.
-            if result.modelUnavailable, model != SubagentRunner.fallbackModel {
+            if result.modelUnavailable, model != SubagentRunner.fallbackModel, !AgentRegistry.wasStopped(agentID) {
                 if let model { AgentRegistry.rememberLacking(account.id, model) }
                 req.model = SubagentRunner.fallbackModel
                 req.sessionID = UUID().uuidString.lowercased()
                 step(agentID, "Using Sonnet: the \(account.id) plan doesn't include \(model ?? "the default model")")
-                result = await SubagentRunner.run(req, on: account, in: request.cwd) { step(agentID, $0) } onItem: { item(agentID, $0) }
+                result = await SubagentRunner.run(req, on: account, in: request.cwd, onProcess: onProcess, check: check) {
+                    step(agentID, $0)
+                } onItem: { item(agentID, $0) }
             }
-            if result.limitReached && result.toolUses == 0 {
+            if !launch.started { return fail(agentID, result) }
+            if result.limitReached && result.toolUses == 0 && !AgentRegistry.wasStopped(agentID) {
                 // Refused before doing anything: another account can take the task whole.
                 await SubagentUsage.shared.markFull(account)
                 tried.insert(account.id)
@@ -162,16 +177,46 @@ enum AgentRun {
                 continue
             }
             if result.limitReached { await SubagentUsage.shared.markFull(account) }
-            AgentRegistry.remember(agentID, account: account.id, directory: request.cwd, sessionID: result.sessionID ?? req.sessionID,
-                                   model: req.model)
+            AgentRegistry.remember(agentID, entry: .init(account: account.id, directory: result.directory ?? request.cwd,
+                                                         sessionID: result.sessionID ?? req.sessionID, model: req.model,
+                                                         subagentType: request.subagentType, effort: request.effort, at: Date()))
             finish(agentID, result, account: account.id)
             return
         }
     }
 
+    /// What a run's callbacks share: whether `started` went out, which happens once Claude Code's init
+    /// passed the check, on whichever account and attempt that was.
+    final class Launch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+
+        var started: Bool { lock.lock(); defer { lock.unlock() }; return done }
+
+        /// The run's init check: a reason refuses it; otherwise `begin` runs, the first time only.
+        func check(subagentType: String?, account: String, begin: @escaping @Sendable () -> Void) -> @Sendable ([String: Any]) -> String? {
+            { [self] event in
+                if let reason = SubagentRunner.checkInit(event, subagentType: subagentType) { return "\(reason) on the \(account) account" }
+                lock.lock()
+                let first = !done
+                done = true
+                lock.unlock()
+                if first { begin() }
+                return nil
+            }
+        }
+    }
+
+    /// It never started: why, as an error for the plugin to show. Nothing else stands in for it.
+    private static func fail(_ agentID: String, _ result: SubagentRunner.Result) {
+        AgentRegistry.setProcess(agentID, claude: nil)
+        _ = AgentRegistry.takeStopped(agentID)
+        emit(["type": "error", "text": result.text.isEmpty ? "Claude Code stopped before it started." : result.text])
+    }
+
     static let noRoom = "No other Claude account has room right now. Use built-in subagents."
 
-    private static func pick(_ accounts: [ClaudeAccount], config: ClaudeAccountsConfig, own: String?,
+    static func pick(_ accounts: [ClaudeAccount], config: ClaudeAccountsConfig, own: String?,
                              excluding tried: Set<String>, log: Bool = true) async -> ClaudeAccount? {
         var candidates: [SubagentAccounts.Candidate] = []
         let allowOwn = FileManager.default.fileExists(atPath: HeadroomPaths.allowOwnAccount.path)
@@ -256,7 +301,32 @@ enum AgentRun {
         exit(0)
     }
 
+    /// `Headroom --agent-stop <agentId>`: TaskStop for an agent Headroom runs. Ends its Claude Code
+    /// process; its runner then reports it stopped.
+    static func stopMain() -> Never {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--agent-stop"), i + 1 < args.count else { exit(2) }
+        let id = args[i + 1]
+        guard let pid = AgentRegistry.process(id) else {
+            emit(["type": "error", "text": "Agent \(id) isn't running."])
+            exit(1)
+        }
+        AgentRegistry.markStopped(id)
+        SubagentRunner.terminate(pid)
+        emit(["type": "stopped"])
+        exit(0)
+    }
+
     private static func finish(_ agentID: String, _ result: SubagentRunner.Result, account: String?) {
+        AgentRegistry.setProcess(agentID, claude: nil)
+        if AgentRegistry.takeStopped(agentID) {
+            log(agentID, "Stopped.")
+            var object: [String: Any] = ["type": "result", "text": "Stopped.", "isError": true, "stopped": true,
+                                         "toolUses": result.toolUses, "durationMs": result.durationMs]
+            if let account { object["account"] = account }
+            emit(object)
+            return
+        }
         log(agentID, result.isError ? "Failed: \(result.text.prefix(500))" : "Finished.\n\n\(result.text)")
         var object: [String: Any] = [
             "type": "result", "text": result.text, "isError": result.isError, "limitReached": result.limitReached,
@@ -297,11 +367,25 @@ enum SubagentLog {
 /// What Headroom remembers about the agents it ran, shared by every runner process: which account and
 /// session each agent is (for SendMessage), which accounts lack which models, and what is running now.
 enum AgentRegistry {
-    struct Entry: Codable { var account: String; var directory: String; var sessionID: String; var model: String?; var at: Date }
+    /// An agent as a follow-up needs it: where it ran (a worktree's folder with `--worktree`), its session,
+    /// and what it was started as, which `--resume` alone doesn't bring back.
+    struct Entry: Codable {
+        var account: String
+        var directory: String
+        var sessionID: String
+        var model: String?
+        var subagentType: String?
+        var effort: String?
+        var at: Date
+    }
+    /// A running agent's processes: its runner's and Claude Code's.
+    struct Processes: Codable { var runner: Int32; var claude: Int32 }
     struct Store: Codable {
         var agents: [String: Entry] = [:]
         var lacking: [String: [String]] = [:]   // account → models its plan doesn't include
         var fullUntil: [String: Date] = [:]     // account → when to try it again after "limit reached"
+        var processes: [String: Processes]? = [:]
+        var stopped: [String]? = []             // agents TaskStop ended, until their runner reported it
     }
 
     private static func withStore<T>(_ body: (inout Store) -> T) -> T {
@@ -318,8 +402,40 @@ enum AgentRegistry {
         return value
     }
 
-    static func remember(_ id: String, account: String, directory: String, sessionID: String, model: String?) {
-        withStore { $0.agents[id] = Entry(account: account, directory: directory, sessionID: sessionID, model: model, at: Date()) }
+    static func remember(_ id: String, entry: Entry, at directory: String? = nil) {
+        var entry = entry
+        if let directory { entry.directory = directory }
+        entry.at = Date()
+        withStore { $0.agents[id] = entry }
+    }
+
+    /// Records the Claude Code process running `id` (nil: none any more), beside this runner's own.
+    static func setProcess(_ id: String, claude pid: Int32?) {
+        withStore { store in
+            store.processes = (store.processes ?? [:]).filter { kill($0.value.runner, 0) == 0 }
+            store.processes?[id] = pid.map { Processes(runner: getpid(), claude: $0) }
+        }
+    }
+
+    /// The Claude Code process running `id`, while the runner that started it is alive (so the pid is still its).
+    static func process(_ id: String) -> Int32? {
+        withStore { store in
+            guard let p = store.processes?[id], p.claude > 0, kill(p.runner, 0) == 0 else { return nil }
+            return p.claude
+        }
+    }
+
+    static func markStopped(_ id: String) { withStore { $0.stopped = ($0.stopped ?? []).filter { $0 != id } + [id] } }
+
+    static func wasStopped(_ id: String) -> Bool { withStore { $0.stopped?.contains(id) ?? false } }
+
+    /// Whether TaskStop ended `id`, forgetting it.
+    static func takeStopped(_ id: String) -> Bool {
+        withStore { store in
+            guard store.stopped?.contains(id) == true else { return false }
+            store.stopped?.removeAll { $0 == id }
+            return true
+        }
     }
 
     static func lookup(_ id: String) -> Entry? { withStore { $0.agents[id] } }
