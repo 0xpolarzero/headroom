@@ -1,6 +1,6 @@
 # Agents on other providers — design
 
-Status: being built on the `agents-on-providers` branch, 2026-10-27. Research behind it: [docs/research/](research/) (A: Claude Code side,
+Status: built on the `agents-on-providers` branch, 2026-10-27. Codex and Antigravity verified live; Z.ai and OpenRouter need an inference key to verify. Research behind it: [docs/research/](research/) (A: Claude Code side,
 B: Codex, C: Z.ai and OpenRouter, D: Antigravity).
 
 ## What Claude sees
