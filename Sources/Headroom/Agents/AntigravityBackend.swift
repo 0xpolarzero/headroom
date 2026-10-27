@@ -82,7 +82,8 @@ enum AntigravityBackend: AgentBackend {
         if let effort = suffix(slug) { args += ["--effort", effort] }
         switch job.permissionMode {
         case "bypassPermissions": args += ["--mode", "accept-edits", "--dangerously-skip-permissions"]
-        case "acceptEdits", "auto": args += ["--mode", "accept-edits"]
+        // Nobody can be asked headless, so "default" lets it edit, as a Claude agent's auto mode does.
+        case "default", "acceptEdits", "auto": args += ["--mode", "accept-edits"]
         default: args += ["--mode", "plan"]
         }
         if let resume = job.resume { args += ["--conversation", resume.sessionID] }

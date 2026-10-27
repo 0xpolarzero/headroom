@@ -74,8 +74,9 @@ errors (`usageLimitExceeded`, …). Borrow from the bridge fork: JSON-RPC transp
 persistence, wait logic (B §2, with the bugs to leave behind). Mapping:
 - Items → transcript: commands → `Bash: …`, file changes, MCP calls, web search as tool rows; agent messages
   as text; the reasoning summary and plan as text. Final answer = the turn's final-phase message.
-- Permission modes → sandbox + approval (default → read-only, acceptEdits → workspace-write, auto →
-  workspace-write + auto review, bypass → full access). Approval requests nobody can answer are declined,
+- Permission modes → sandbox + approval (default and auto → workspace-write + auto review, as a Claude
+  agent's default becomes auto; acceptEdits → workspace-write; plan → read-only; bypass → full access).
+  Antigravity likewise: default, acceptEdits and auto → accept-edits; plan → plan. Approval requests nobody can answer are declined,
   never left hanging.
 - The user's MCP servers are translated from `~/.claude.json` into per-thread config overrides; the role
   goes in `developerInstructions`; CLAUDE.md content is passed explicitly (Codex only reads AGENTS.md).

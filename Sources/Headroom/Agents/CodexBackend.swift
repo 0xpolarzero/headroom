@@ -62,14 +62,14 @@ enum CodexBackend: AgentBackend {
     static func permissions(_ mode: String, autoReview: Bool = true) throws -> [String: Any] {
         let sandbox: String, approval: String
         switch mode {
-        case "default": sandbox = "read-only"; approval = "untrusted"
         case "plan": sandbox = "read-only"; approval = "never"
-        case "acceptEdits", "auto": sandbox = "workspace-write"; approval = "on-request"
+        // Nobody can be asked headless, so "default" runs as auto does, as a Claude agent's does.
+        case "default", "acceptEdits", "auto": sandbox = "workspace-write"; approval = "on-request"
         case "bypassPermissions": sandbox = "danger-full-access"; approval = "never"
         default: throw Failure("Codex doesn't recognize permission mode \(mode).")
         }
         return ["sandbox": sandbox, "approvalPolicy": approval,
-                "approvalsReviewer": mode == "auto" && autoReview ? "auto_review" : "user"]
+                "approvalsReviewer": (mode == "auto" || mode == "default") && autoReview ? "auto_review" : "user"]
     }
 
     /// Codex splits override keys on every dot, without TOML unquoting (config/src/overrides.rs).

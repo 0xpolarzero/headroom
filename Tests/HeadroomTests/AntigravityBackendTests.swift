@@ -132,13 +132,13 @@ final class AntigravityBackendTests: XCTestCase {
 
     func testPermissionModesAndExplicitResume() {
         var job = job()
-        for mode in ["default", "plan", "unknown"] {
+        for mode in ["plan", "unknown"] {
             job.permissionMode = mode
             let args = AntigravityBackend.arguments(job, slug: "gemini-3.8-flash-low")
             XCTAssertTrue(args.contains("plan"))
             XCTAssertFalse(args.contains("--dangerously-skip-permissions"))
         }
-        for mode in ["acceptEdits", "auto", "bypassPermissions"] {
+        for mode in ["default", "acceptEdits", "auto", "bypassPermissions"] {
             job.permissionMode = mode
             let args = AntigravityBackend.arguments(job, slug: "gemini-3.8-flash-low")
             XCTAssertTrue(args.contains("accept-edits"))

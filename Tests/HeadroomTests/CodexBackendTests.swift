@@ -14,7 +14,7 @@ final class CodexBackendTests: XCTestCase {
 
     func testPermissionModesKeepTheSandboxAndReviewerExplicit() throws {
         for (mode, sandbox, approval, reviewer) in [
-            ("default", "read-only", "untrusted", "user"),
+            ("default", "workspace-write", "on-request", "auto_review"),
             ("plan", "read-only", "never", "user"),
             ("acceptEdits", "workspace-write", "on-request", "user"),
             ("auto", "workspace-write", "on-request", "auto_review"),
