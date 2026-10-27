@@ -96,17 +96,26 @@ enum SubagentRunner {
                     onStep: @escaping @Sendable (String) -> Void,
                     onItem: @escaping @Sendable ([String: Any]) -> Void = { _ in }) async -> Result {
         let base = ProcessInfo.processInfo.environment
-        let output: FileHandle, errors: FileHandle
+        var output: FileHandle!, errors: FileHandle!
+        var lines: AsyncLineSequence<FileHandle.AsyncBytes>.AsyncIterator!
         var process: Process?
         var sessionID = request.sessionID
         if let spec = warmSpec(request, on: account, in: directory, environment: base), let ready = WarmPool.claim(spec) {
-            // Already started: it only needs the prompt.
-            sessionID = ready.sessionID
-            ready.input.write(WarmPool.userMessage(request.prompt))
-            try? ready.input.close()
-            output = ready.output
-            errors = ready.errors
-        } else {
+            // Already started: switch it to this run's model and mode, then it only needs the prompt.
+            var it = ready.output.bytes.lines.makeAsyncIterator()
+            if await switched(ready.input, &it, model: request.model, permissionMode: request.permissionMode) {
+                sessionID = ready.sessionID
+                ready.input.write(WarmPool.userMessage(request.prompt))
+                try? ready.input.close()
+                output = ready.output
+                errors = ready.errors
+                lines = it
+            } else {
+                try? ready.input.close()   // no prompt: it exits by itself
+                onStep("Starting Claude Code: the ready one couldn't switch")
+            }
+        }
+        if output == nil {
             guard let claude = executable() else {
                 return Result(text: "Claude Code (`claude`) was not found on this Mac.", isError: true, limitReached: false,
                               turns: 0, permissionDenials: 0)
@@ -127,14 +136,16 @@ enum SubagentRunner {
             try? stdin.fileHandleForWriting.close()
             output = stdout.fileHandleForReading
             errors = stderr.fileHandleForReading
+            lines = output.bytes.lines.makeAsyncIterator()
             process = started
         }
-        let errText = Task.detached { String(decoding: errors.readDataToEndOfFile(), as: UTF8.self) }
+        let errorHandle: FileHandle = errors
+        let errText = Task.detached { String(decoding: errorHandle.readDataToEndOfFile(), as: UTF8.self) }
 
         var final: [String: Any]?
         var toolUses = 0
         do {
-            for try await line in output.bytes.lines {
+            while let line = try await lines.next() {
                 guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { continue }
                 switch event.string("type") {
                 case "assistant":
@@ -167,6 +178,30 @@ enum SubagentRunner {
         result.toolUses = toolUses
         result.sessionID = sessionID
         return result
+    }
+
+    /// Sends a taken-over process its switches and reads its output until each is answered: true when all
+    /// succeeded. Lines before the answers (its init) carry nothing a run needs.
+    static func switched(_ input: FileHandle, _ lines: inout AsyncLineSequence<FileHandle.AsyncBytes>.AsyncIterator,
+                         model: String?, permissionMode: String) async -> Bool {
+        let switches = WarmPool.switches(model: model, permissionMode: permissionMode)
+        var waiting = Set(switches.map(\.id))
+        do {
+            for s in switches { try input.write(contentsOf: s.data) }
+            while !waiting.isEmpty, let line = try await lines.next() {
+                guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+                      event.string("type") == "control_response", let response = event.dict("response"),
+                      let id = response.string("request_id"), waiting.contains(id) else { continue }
+                if response.string("subtype") != "success" {
+                    SubagentLog.write("warm: a ready process refused \(id): \(response.string("error") ?? "")")
+                    return false
+                }
+                waiting.remove(id)
+            }
+        } catch {
+            return false
+        }
+        return waiting.isEmpty
     }
 
     /// One entry of the agent's transcript, as its row in the session shows it: what it said, each tool call

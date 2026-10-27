@@ -24,6 +24,13 @@ prompt; given one 15 s later, it took its first step after 1.8 s. So the plugin 
 its pipes with SCM_RIGHTS. In a real run the first step came 4.4 s after launch instead of 13. Each ready
 process uses about 300 MB, plus about 450 MB of MCP servers here.
 
+A ready process takes any call with the same account, folder and agent type: the runner sends it the control
+requests the Agent SDK uses (`set_permission_mode`, `set_model`) and writes the prompt only once both are
+answered, since a model switch applies to messages read after its answer. A process started on Sonnet then
+answered as Haiku 2.3 s after the call, also when claimed during its startup. Plan mode answers with Sonnet
+whatever model is asked for, cold or switched; that's Claude Code's own behavior. Cold starts measured on
+2026-10-27 took 7 to 71 s before the first reply, with or without the MCP servers.
+
 Checked first: `claude -p --output-format json` returns `result`, `session_id`, `is_error`,
 `api_error_status` and `permission_denials`; `--resume <session_id>` continues the same session; `--agent`
 accepts built-in types (Explore runs read-only) and custom ones; `--permission-mode auto`, `--effort`,

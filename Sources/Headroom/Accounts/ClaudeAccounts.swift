@@ -12,6 +12,8 @@ enum HeadroomPaths {
     static let agentsDir = support.appendingPathComponent("agents", isDirectory: true)
     /// Each account's latest usage, written by the app as it refreshes, read by the subagent runner.
     static let usage = support.appendingPathComponent("usage.json")
+    /// For trying the plugin on one account: while this file exists, a session's own account takes its subagents too.
+    static let allowOwnAccount = support.appendingPathComponent("allow-own-account")
 
     /// Creates `dir` readable by the user only.
     static func ensure(_ dir: URL) {

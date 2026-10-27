@@ -4,9 +4,12 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { RemoteAgent, TranscriptItem } from '../types'
 
 // Headroom runs a subagent on another of your Claude accounts when one has room, and answers the
-// built-in Agent tool with it exactly as a background built-in agent answers: "launched" at once, the
-// report delivered when it finishes, SendMessage continuing it. With no account free, the call goes
-// through untouched and a built-in subagent runs.
+// built-in Agent tool with it exactly as a built-in agent answers. The engine checks the call and decides
+// whether the agent runs in the foreground or the background, then raises `agent.spawn`, where Headroom
+// takes the agent over. In the foreground the call waits for the report (ctrl+b sends it to the
+// background); in the background it answers "launched" at once and the report comes as a notification.
+// SendMessage continues it. With no account free, the spawn goes through untouched and a built-in
+// subagent runs.
 
 const PANE = 'headroom-agents'
 const agents = atom({ plugin: 'headroom', key: 'agents' } as const, [] as RemoteAgent[])
@@ -19,51 +22,84 @@ let permissionMode: string | undefined
 
 type Line = { type: string; [key: string]: unknown }
 
+/**
+ * An Agent call Headroom may answer, by its tool_use_id: what its `tool.call` hook asks for, and once the
+ * engine's `agent.spawn` for it found an account with room, the run there.
+ */
+type Claim = { request: Record<string, unknown>; started?: { run: Run; line: Line; background: boolean } }
+const claims = new Map<string, Claim>()
+
+/** Sends a foreground agent to the background (its row's button, ctrl+b), by agent id. */
+const toBackground = new Map<string, () => void>()
+
 /** Headroom's own binary: beside this plugin inside Headroom.app, else the usual install. */
 async function runner($: EngineInterface): Promise<string> {
   const bundled = `${$.plugin.root}/../../../MacOS/Headroom`
   return (await $.fs.exists(bundled)) ? bundled : '/Applications/Headroom.app/Contents/MacOS/Headroom'
 }
 
-/**
- * Starts `Headroom --agent-run` and reads its JSON lines for the rest of the run. Resolves with the
- * `started` line, or null when no account has room (or the runner couldn't start).
- */
-async function launch($: EngineInterface, request: Record<string, unknown>, description: string): Promise<Line | null> {
-  const argv = [await runner($), '--agent-run']
-  let settle: (line: Line | null) => void = () => {}
-  const first = new Promise<Line | null>(resolve => (settle = resolve))
-  void (async () => {
-    let agentId: string | undefined
-    let buffer = ''
-    try {
-      for await (const chunk of $.process.spawn({ argv, input: JSON.stringify(request) })) {
-        if (chunk.stream !== 'stdout') continue
-        buffer += chunk.text
-        let newline: number
-        while ((newline = buffer.indexOf('\n')) >= 0) {
-          const text = buffer.slice(0, newline)
-          buffer = buffer.slice(newline + 1)
-          let line: Line
-          try {
-            line = JSON.parse(text) as Line
-          } catch {
-            continue
-          }
-          if (line.type === 'no_room') settle(null)
-          else if (line.type === 'started') {
-            agentId = String(line.agentId)
-            await started($, line, description, request.resume !== undefined)
-            settle(line)
-          } else if (agentId) await progress($, agentId, line)
+type Chunk = { stream: string; text: string }
+
+/** A `Headroom --agent-run` process, read as JSON lines. Ending its stream ends the process. */
+class Run {
+  private buffer = ''
+  constructor(private readonly stream: AsyncIterator<Chunk, unknown>) {}
+
+  /** Its next line, or null once it ended. */
+  async next(): Promise<Line | null> {
+    for (;;) {
+      const newline = this.buffer.indexOf('\n')
+      if (newline >= 0) {
+        const text = this.buffer.slice(0, newline)
+        this.buffer = this.buffer.slice(newline + 1)
+        try {
+          return JSON.parse(text) as Line
+        } catch {
+          continue
         }
       }
-    } catch (error) {
-      $.ui.log(`headroom: subagent runner failed: ${String(error)}`, { to: 'debug' })
+      const chunk = await this.stream.next()
+      if (chunk.done) return null
+      if (chunk.value.stream === 'stdout') this.buffer += chunk.value.text
     }
-    settle(null)
-  })()
-  return first
+  }
+
+  stop(): void {
+    void this.stream.return?.()
+  }
+}
+
+/**
+ * Starts `Headroom --agent-run` and reads it until the agent started. Resolves with the run and its
+ * `started` line, or null when no account has room (or the runner couldn't start).
+ */
+async function start($: EngineInterface, request: Record<string, unknown>): Promise<{ run: Run; line: Line } | null> {
+  try {
+    const stream = $.process.spawn({ argv: [await runner($), '--agent-run'], input: JSON.stringify(request) })
+    const run = new Run(stream[Symbol.asyncIterator]())
+    for (let line = await run.next(); line; line = await run.next()) {
+      if (line.type === 'no_room') break
+      if (line.type === 'started') return { run, line }
+    }
+  } catch (error) {
+    $.ui.log(`headroom: subagent runner failed: ${String(error)}`, { to: 'debug' })
+  }
+  return null
+}
+
+/** Reads a background agent's run to its end; `first` is a line already asked for. */
+async function follow($: EngineInterface, run: Run, id: string, first?: Promise<Line | null>): Promise<void> {
+  try {
+    for (let line = await (first ?? run.next()); line; line = await run.next()) {
+      const agent = await record($, id, line)
+      if (agent) {
+        await deliver($, agent, line)
+        await afterResult($, agent)
+      }
+    }
+  } catch (error) {
+    $.ui.log(`headroom: subagent runner failed: ${String(error)}`, { to: 'debug' })
+  }
 }
 
 /**
@@ -77,14 +113,15 @@ async function warmUp($: EngineInterface): Promise<void> {
   }
 }
 
-async function started($: EngineInterface, line: Line, description: string, resumed: boolean): Promise<void> {
+async function started($: EngineInterface, line: Line, description: string, resumed: boolean,
+                       foreground = false, toolUseId?: string): Promise<void> {
   const id = String(line.agentId)
   await update($, agents, list => {
     const known = list.find(a => a.id === id)
     if (known) return list.map(a => (a.id === id ? { ...a, status: 'running' as const, endedAt: undefined } : a))
     const agent: RemoteAgent = {
       id, description, account: String(line.account), model: String(line.model ?? ''),
-      status: 'running', steps: [], items: [], startedAt: Date.now(), pending: [],
+      status: 'running', steps: [], items: [], startedAt: Date.now(), pending: [], foreground, toolUseId,
     }
     return [...list, agent].slice(-50)
   })
@@ -95,7 +132,8 @@ async function started($: EngineInterface, line: Line, description: string, resu
   await showStatus($)
 }
 
-async function progress($: EngineInterface, id: string, line: Line): Promise<void> {
+/** Records a line of an agent's run; for its result, returns the agent as it ended. */
+async function record($: EngineInterface, id: string, line: Line): Promise<RemoteAgent | undefined> {
   if (line.type === 'step' || line.type === 'moved') {
     const text = line.type === 'moved' ? `Moved off ${line.account}: ${line.reason}` : String(line.text)
     await update($, agents, list => list.map(a => (a.id === id ? { ...a, steps: [...a.steps, text].slice(-40) } : a)))
@@ -115,17 +153,20 @@ async function progress($: EngineInterface, id: string, line: Line): Promise<voi
     list.map(a => {
       if (a.id !== id) return a
       agent = { ...a, status: failed ? 'failed' : 'done', endedAt: Date.now(), result: String(line.text ?? ''),
-                account: String(line.account ?? a.account), model: String(line.model ?? a.model), pending: [] }
+                account: String(line.account ?? a.account), model: String(line.model ?? a.model), foreground: false }
       return agent
     }),
   )
   await showStatus($)
-  if (!agent) return
-  await deliver($, agent, line, failed)
-  // Messages sent while it ran: continue it with them now, as a built-in agent reads its inbox.
-  const pending = (await read($, agents)).find(a => a.id === id)?.pending ?? []
-  const queued = agentPending.get(id) ?? []
-  agentPending.delete(id)
+  return agent
+}
+
+/** Messages sent while it ran: continue it with them now, as a built-in agent reads its inbox. */
+async function afterResult($: EngineInterface, agent: RemoteAgent): Promise<void> {
+  const pending = (await read($, agents)).find(a => a.id === agent.id)?.pending ?? []
+  const queued = agentPending.get(agent.id) ?? []
+  agentPending.delete(agent.id)
+  await update($, agents, list => list.map(a => (a.id === agent.id ? { ...a, pending: [] } : a)))
   const messages = [...pending, ...queued]
   if (messages.length > 0) void continueAgent($, agent, messages.join('\n\n'))
 }
@@ -134,7 +175,8 @@ async function progress($: EngineInterface, id: string, line: Line): Promise<voi
 const agentPending = new Map<string, string[]>()
 
 /** The report, as a background agent's completion notification reads. */
-async function deliver($: EngineInterface, agent: RemoteAgent, line: Line, failed: boolean): Promise<void> {
+async function deliver($: EngineInterface, agent: RemoteAgent, line: Line): Promise<void> {
+  const failed = line.isError === true
   const seconds = Math.round(Number(line.durationMs ?? 0) / 1000)
   const text = [
     '<task-notification>',
@@ -149,8 +191,92 @@ async function deliver($: EngineInterface, agent: RemoteAgent, line: Line, faile
   await $.prompt.submit({ text })
 }
 
+/** What the Agent call answers for an agent left running: a built-in background agent's "launched". */
+function launched(e: { description: string; prompt: string }, line: Line) {
+  return {
+    result: {
+      status: 'async_launched' as const,
+      isAsync: true as const,
+      agentId: String(line.agentId),
+      description: e.description,
+      prompt: e.prompt,
+      outputFile: String(line.outputFile),
+      resolvedModel: String(line.model ?? '') || undefined,
+    },
+  }
+}
+
+/** What the Agent call answers for a finished foreground agent: a built-in one's report, or its error. */
+function completed(prompt: string, agent: RemoteAgent, line: Line) {
+  if (line.isError === true) return { deny: String(line.text ?? 'The subagent failed.') }
+  const input = Number(line.inputTokens ?? 0)
+  const output = Number(line.outputTokens ?? 0)
+  return {
+    result: {
+      status: 'completed' as const,
+      agentId: agent.id,
+      content: [{ type: 'text' as const, text: String(line.text ?? '') }],
+      prompt,
+      resolvedModel: agent.model || undefined,
+      totalToolUseCount: Number(line.toolUses ?? 0),
+      totalDurationMs: Number(line.durationMs ?? 0),
+      totalTokens: input + output,
+      usage: {
+        input_tokens: input, output_tokens: output, cache_creation_input_tokens: null, cache_read_input_tokens: null,
+        server_tool_use: null, service_tier: null, cache_creation: null,
+      },
+    },
+  }
+}
+
+/**
+ * A foreground agent: the Agent call waits for its report, as for a built-in one. Sent to the background
+ * it answers "launched" and the report comes as a notification; interrupted, the run is stopped.
+ */
+async function foreground($: EngineInterface, e: { description: string; prompt: string }, signal: AbortSignal,
+                          run: Run, line: Line) {
+  const id = String(line.agentId)
+  const backgrounded = new Promise<'background'>(resolve => toBackground.set(id, () => resolve('background')))
+  const aborted = new Promise<'abort'>(resolve =>
+    signal.aborted ? resolve('abort') : signal.addEventListener('abort', () => resolve('abort'), { once: true }))
+  try {
+    for (;;) {
+      const next = run.next()
+      const got = await Promise.race([next, backgrounded, aborted])
+      if (got === 'background') {
+        await update($, agents, list => list.map(a => (a.id === id ? { ...a, foreground: false } : a)))
+        void follow($, run, id, next)
+        return launched(e, line)
+      }
+      if (got === 'abort') {
+        run.stop()
+        await update($, agents, list => list.map(a =>
+          a.id === id ? { ...a, status: 'failed' as const, endedAt: Date.now(), result: 'Interrupted', foreground: false } : a))
+        await showStatus($)
+        return { deny: 'Interrupted by the user.' }
+      }
+      if (!got) {
+        const end = { type: 'result', text: 'The subagent stopped without an answer.', isError: true }
+        const agent = await record($, id, end)
+        return agent ? completed(e.prompt, agent, end) : { deny: String(end.text) }
+      }
+      const agent = await record($, id, got)
+      if (agent) {
+        void afterResult($, agent)
+        return completed(e.prompt, agent, got)
+      }
+    }
+  } finally {
+    toBackground.delete(id)
+  }
+}
+
 async function continueAgent($: EngineInterface, agent: RemoteAgent, message: string): Promise<Line | null> {
-  return launch($, { prompt: message, resume: agent.id, cwd: await $.session.cwd() }, agent.description)
+  const begun = await start($, { prompt: message, resume: agent.id, cwd: await $.session.cwd() })
+  if (!begun) return null
+  await started($, begun.line, agent.description, true)
+  void follow($, begun.run, String(begun.line.agentId))
+  return begun.line
 }
 
 async function showStatus($: EngineInterface): Promise<void> {
@@ -209,6 +335,11 @@ function agentBlock($: EngineInterface, e: Parameters<EngineInterface['ui']['res
         </Box>
       )}
       <Box flexDirection="row" gap={1} marginTop={unfolded ? 1 : 0}>
+        {agent.foreground && agent.status === 'running' && (
+          <Button key={`background-${agent.id}`} action="task:background" dimColor onPress={() => toBackground.get(agent.id)?.()}>
+            Run in background (ctrl+b)
+          </Button>
+        )}
         <Button key={`transcript-${agent.id}`} dimColor onPress={toggle}>{unfolded ? 'Hide transcript' : 'Show transcript'}</Button>
         <Button key={`terminal-${agent.id}`} dimColor onPress={() => openInTerminal($, agent.id)}>Open in Terminal</Button>
       </Box>
@@ -246,21 +377,38 @@ export const register: Register = on => {
       effort: e.effort, isolation: e.isolation, cwd: await $.session.cwd(), permissionMode,
       parentModel: await $.session.model(),
     }
-    const line = await launch($, request, e.description)
-    if (!line) return next(e)
-    const id = String(line.agentId)
-    await update($, agents, list => list.map(a => (a.id === id ? { ...a, toolUseId: e.tool_use_id } : a)))
-    return {
-      result: {
-        status: 'async_launched' as const,
-        isAsync: true as const,
-        agentId: String(line.agentId),
-        description: e.description,
-        prompt: e.prompt,
-        outputFile: String(line.outputFile),
-        resolvedModel: String(line.model) || undefined,
-      },
+    // The engine checks the call (permissions, other hooks) and raises `agent.spawn`, where an account
+    // with room takes the agent; otherwise the built-in agent runs and this is its answer.
+    const claim: Claim = { request }
+    claims.set(e.tool_use_id, claim)
+    let answer: Awaited<ReturnType<typeof next>>
+    try {
+      answer = await next(e)
+    } finally {
+      claims.delete(e.tool_use_id)
     }
+    if (!claim.started) return answer
+    const { run, line, background } = claim.started
+    if (background) {
+      void follow($, run, String(line.agentId))
+      return launched(e, line)
+    }
+    return foreground($, e, next.signal, run, line)
+  }).catch(($, e, next) => next(e))
+
+  on('agent.spawn', async ($, e, next) => {
+    const claim = claims.get(e.tool_use_id)
+    if (!claim || e.resume || e.fork || e.isTeammate || e.workflow || e.parentAgentId !== undefined) return next(e)
+    const request = {
+      ...claim.request, subagentType: e.subagentType, model: e.model ?? claim.request.model,
+      cwd: e.cwd ?? claim.request.cwd, permissionMode: e.permissionMode ?? claim.request.permissionMode,
+      parentModel: e.parentModel,
+    }
+    const begun = await start($, request)
+    if (!begun) return next(e)
+    await started($, begun.line, e.description, false, !e.background, e.tool_use_id)
+    claim.started = { ...begun, background: e.background }
+    return { deny: 'Headroom runs this agent on another Claude account.' }
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'SendMessage' }, async ($, e, next) => {

@@ -153,8 +153,9 @@ enum AgentRun {
     private static func pick(_ accounts: [ClaudeAccount], config: ClaudeAccountsConfig, own: String?,
                              excluding tried: Set<String>, log: Bool = true) async -> ClaudeAccount? {
         var candidates: [SubagentAccounts.Candidate] = []
+        let allowOwn = FileManager.default.fileExists(atPath: HeadroomPaths.allowOwnAccount.path)
         for account in accounts where !tried.contains(account.id) {
-            guard let signedIn = ClaudeProvider.signedInAccount(configDir: account.cliConfigDir).uuid, signedIn != own else { continue }
+            guard let signedIn = ClaudeProvider.signedInAccount(configDir: account.cliConfigDir).uuid, allowOwn || signedIn != own else { continue }
             let usage = await SubagentUsage.shared.usage(account)
             candidates.append(.init(account: account, name: account.id, sessionUsed: usage.session, weeklyUsed: usage.weekly,
                                     active: AgentRegistry.running(account.id)))

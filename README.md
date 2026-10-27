@@ -84,8 +84,9 @@ its sessions are its own.
     built-in tool untouched.
 - **Ready processes.** Claude Code takes about 11 s to start. So when you send a prompt, the plugin asks
   Headroom to start one on the account a subagent would use, in that folder, waiting for its prompt; an Agent
-  call that matches it (same account, folder, model, type and permission mode) skips the wait: its first step
-  comes after about 2 s instead of about 13 s. Headroom keeps at most two, each about 300 MB plus your MCP
+  call on that account and folder with the same agent type takes it over and skips the wait: Headroom switches
+  it to the call's model and permission mode first. Its first step then comes after about 2 s; a cold start
+  takes 8 to 70 s. Headroom keeps at most two, each about 300 MB plus your MCP
   servers, and lets them go after 10 minutes unused or when it quits. A runner takes the process's pipes
   over a socket, so the agent keeps going if Headroom quits.
 - **Which account takes a subagent:** never the session's own account; only accounts below both thresholds

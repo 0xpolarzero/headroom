@@ -6,8 +6,9 @@ import Foundation
 /// over a Unix socket; the app hands over the process's pipes (SCM_RIGHTS), so the run belongs to the
 /// runner as if it had started it, and the app quitting doesn't stop it.
 enum WarmPool {
-    /// What a process is started with. Two runs can share a process only when all of it matches,
-    /// except the environment, which only the newest caller's is used of.
+    /// What a process is started with. A run can take a process when all of it matches except the model
+    /// and the permission mode, which the runner switches after taking it over, and the environment, which
+    /// only the newest caller's is used of.
     struct Spec: Codable, Equatable {
         var account: String
         var directory: String
@@ -16,7 +17,19 @@ enum WarmPool {
         var environment: [String: String]
 
         func matches(_ other: Spec) -> Bool {
-            account == other.account && directory == other.directory && arguments == other.arguments
+            account == other.account && directory == other.directory && Self.fixed(arguments) == Self.fixed(other.arguments)
+        }
+
+        /// The arguments a running process can't change.
+        static func fixed(_ arguments: [String]) -> [String] {
+            var out: [String] = []
+            var i = 0
+            while i < arguments.count {
+                if arguments[i] == "--model" || arguments[i] == "--permission-mode" { i += 2; continue }
+                out.append(arguments[i])
+                i += 1
+            }
+            return out
         }
     }
 
@@ -41,7 +54,26 @@ enum WarmPool {
 
     /// The stream-json line `claude -p --input-format stream-json` reads as the prompt.
     static func userMessage(_ prompt: String) -> Data {
-        let object: [String: Any] = ["type": "user", "message": ["role": "user", "content": prompt]]
+        line(["type": "user", "message": ["role": "user", "content": prompt]])
+    }
+
+    /// A control request (what the Agent SDK's `setModel` and `setPermissionMode` send), answered by a
+    /// `control_response` with the same `request_id`.
+    static func controlRequest(_ id: String, _ request: [String: Any]) -> Data {
+        line(["type": "control_request", "request_id": id, "request": request])
+    }
+
+    /// The switches a taken-over process needs before its prompt, by request id. The model applies only
+    /// to messages Claude Code reads after it answered, so the prompt waits for every answer.
+    static func switches(model: String?, permissionMode: String) -> [(id: String, data: Data)] {
+        var out = [(id: "mode", data: controlRequest("mode", ["subtype": "set_permission_mode", "mode": permissionMode]))]
+        if let model, !model.isEmpty {
+            out.append((id: "model", data: controlRequest("model", ["subtype": "set_model", "model": model])))
+        }
+        return out
+    }
+
+    private static func line(_ object: [String: Any]) -> Data {
         var data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
         data.append(0x0A)
         return data

@@ -101,12 +101,27 @@ final class SubagentTests: XCTestCase {
         let specA = SubagentRunner.warmSpec(a, on: account, in: "/work", environment: [:])
         XCTAssertEqual(specA?.arguments.contains("--session-id"), false)
         XCTAssertTrue(specA?.matches(SubagentRunner.warmSpec(b, on: account, in: "/work", environment: ["PATH": "/bin"])!) ?? false)
+        // The runner switches these after taking a process over.
         b.model = "haiku"
+        b.permissionMode = "plan"
+        XCTAssertTrue(specA?.matches(SubagentRunner.warmSpec(b, on: account, in: "/work", environment: [:])!) ?? false)
+        b.subagentType = "Explore"
         XCTAssertFalse(specA?.matches(SubagentRunner.warmSpec(b, on: account, in: "/work", environment: [:])!) ?? true)
         XCTAssertFalse(specA?.matches(SubagentRunner.warmSpec(a, on: account, in: "/elsewhere", environment: [:])!) ?? true)
         var resumed = a
         resumed.resume = true
         XCTAssertNil(SubagentRunner.warmSpec(resumed, on: account, in: "/work", environment: [:]))
+    }
+
+    func testATakenOverProcessIsSwitchedToTheRunsModelAndMode() {
+        let switches = WarmPool.switches(model: "haiku", permissionMode: "plan")
+        XCTAssertEqual(switches.map(\.id), ["mode", "model"])
+        let model = try? JSONSerialization.jsonObject(with: switches[1].data) as? [String: Any]
+        XCTAssertEqual(model?["type"] as? String, "control_request")
+        XCTAssertEqual(model?["request_id"] as? String, "model")
+        XCTAssertEqual((model?["request"] as? [String: Any])?["subtype"] as? String, "set_model")
+        XCTAssertEqual((model?["request"] as? [String: Any])?["model"] as? String, "haiku")
+        XCTAssertEqual(WarmPool.switches(model: nil, permissionMode: "auto").map(\.id), ["mode"])
     }
 
     func testPipesTravelOverTheSocket() throws {
