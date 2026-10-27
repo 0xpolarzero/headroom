@@ -82,9 +82,11 @@ final class AppModel {
     var claudeConfig = ClaudeAccountsConfig.load()
     /// Usage of the accounts besides Main, by account ID.
     var claudeAccountStates: [String: ProviderState] = [:]
-    /// Headroom's subagent server is registered with Claude Code (`~/.claude.json`).
+    /// Headroom's Claude Code plugin is installed and enabled (`~/.claude/settings.json`).
     var subagentsInstalled = false
     var claudeError: String?
+    /// When Headroom last started Claude Code to renew an account's expired sign-in.
+    @ObservationIgnored var renewedAt: [String: Date] = [:]
 
     /// Windows already announced as full; an entry clears once usage drops below 100%.
     private var alerted: Set<String> {

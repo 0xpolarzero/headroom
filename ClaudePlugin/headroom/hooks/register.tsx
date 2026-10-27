@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { RemoteAgent } from '../types'
+import type { RemoteAgent, TranscriptItem } from '../types'
 
 // Headroom runs a subagent on another of your Claude accounts when one has room, and answers the
 // built-in Agent tool with it exactly as a background built-in agent answers: "launched" at once, the
@@ -11,6 +11,8 @@ import type { RemoteAgent } from '../types'
 const PANE = 'headroom-agents'
 const agents = atom({ plugin: 'headroom', key: 'agents' } as const, [] as RemoteAgent[])
 const paneShown = atom({ plugin: 'headroom', key: 'paneShown' } as const, false)
+/** Agents whose transcript is unfolded, in their row and in the pane. */
+const open = atom({ plugin: 'headroom', key: 'open' } as const, [] as string[])
 
 /** The session's permission mode, as the last classic hook event reported it. */
 let permissionMode: string | undefined
@@ -82,7 +84,7 @@ async function started($: EngineInterface, line: Line, description: string, resu
     if (known) return list.map(a => (a.id === id ? { ...a, status: 'running' as const, endedAt: undefined } : a))
     const agent: RemoteAgent = {
       id, description, account: String(line.account), model: String(line.model ?? ''),
-      status: 'running', steps: [], startedAt: Date.now(), pending: [],
+      status: 'running', steps: [], items: [], startedAt: Date.now(), pending: [],
     }
     return [...list, agent].slice(-50)
   })
@@ -100,13 +102,19 @@ async function progress($: EngineInterface, id: string, line: Line): Promise<voi
     $.ui.invalidate('ui.render')
     return
   }
+  if (line.type === 'item') {
+    const { type: _, ...item } = line
+    await update($, agents, list =>
+      list.map(a => (a.id === id ? { ...a, items: [...a.items, item as unknown as TranscriptItem].slice(-300) } : a)))
+    return
+  }
   if (line.type !== 'result') return
   const failed = line.isError === true
   let agent: RemoteAgent | undefined
   await update($, agents, list =>
     list.map(a => {
       if (a.id !== id) return a
-      agent = { ...a, status: failed ? 'failed' : 'done', endedAt: Date.now(),
+      agent = { ...a, status: failed ? 'failed' : 'done', endedAt: Date.now(), result: String(line.text ?? ''),
                 account: String(line.account ?? a.account), model: String(line.model ?? a.model), pending: [] }
       return agent
     }),
@@ -157,6 +165,57 @@ function elapsed(agent: RemoteAgent, now: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 }
 
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+/** Terminal on the agent's own Claude Code session, on its account. */
+async function openInTerminal($: EngineInterface, id: string): Promise<void> {
+  for await (const _ of $.process.spawn({ argv: [await runner($), '--agent-open', id] })) {
+    // Nothing to read.
+  }
+}
+
+/**
+ * An agent as its row reads, like a built-in agent's: what it is and where it runs, its latest steps, and
+ * on demand its whole transcript (what it said, each tool call and result, its answer).
+ */
+function agentBlock($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], agent: RemoteAgent,
+                    unfolded: boolean): JSX.Element {
+  const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+  const tools = agent.items.filter(i => i.kind === 'tool').length || agent.steps.length
+  const state = agent.status === 'running' ? 'Running' : agent.status === 'done' ? 'Done' : 'Failed'
+  const toggle = () => update($, open, list => (list.includes(agent.id) ? list.filter(i => i !== agent.id) : [...list, agent.id]))
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <Text bold>{agent.status === 'running' ? '● ' : agent.status === 'done' ? '✓ ' : '✗ '}Agent · {agent.description}</Text>
+        <Text dimColor>  on {agent.account || 'another account'}{agent.model ? ` · ${agent.model}` : ''}</Text>
+      </Text>
+      <Text dimColor>  {state} {elapsed(agent, Date.now())} · {plural(tools, 'tool use')}</Text>
+      {!unfolded && (agent.status === 'running' ? agent.steps.slice(-3) : agent.steps.slice(-1)).map(step => (
+        <Text dimColor>  ⎿ {step}</Text>
+      ))}
+      {unfolded && (
+        <Box flexDirection="column" marginLeft={2} marginTop={1}>
+          {agent.items.length === 0 && <Text dimColor>Nothing yet.</Text>}
+          {agent.items.map(item =>
+            item.kind === 'text' ? <Markdown text={item.text} />
+            : item.kind === 'tool' ? <Text>→ {item.summary}</Text>
+            : <Text dimColor={!item.isError} color={item.isError ? 'red' : undefined}>
+                {'  ⎿ '}{item.text.split('\n').slice(0, 6).join('\n    ')}{item.text.split('\n').length > 6 ? '\n    …' : ''}
+              </Text>,
+          )}
+        </Box>
+      )}
+      <Box flexDirection="row" gap={1} marginTop={unfolded ? 1 : 0}>
+        <Button key={`transcript-${agent.id}`} dimColor onPress={toggle}>{unfolded ? 'Hide transcript' : 'Show transcript'}</Button>
+        <Button key={`terminal-${agent.id}`} dimColor onPress={() => openInTerminal($, agent.id)}>Open in Terminal</Button>
+      </Box>
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   // The mode built-in subagents inherit; the classic hook events carry it.
   on('classic.UserPromptSubmit', ($, e, next) => {
@@ -189,6 +248,8 @@ export const register: Register = on => {
     }
     const line = await launch($, request, e.description)
     if (!line) return next(e)
+    const id = String(line.agentId)
+    await update($, agents, list => list.map(a => (a.id === id ? { ...a, toolUseId: e.tool_use_id } : a)))
     return {
       result: {
         status: 'async_launched' as const,
@@ -212,7 +273,7 @@ export const register: Register = on => {
       return { result: { success: true, message: `Queued for agent ${to}: it reads it when it finishes its current work.` } }
     }
     const known: RemoteAgent = agent ?? {
-      id: to, description: e.summary ?? 'agent', account: '', model: '', status: 'done', steps: [], startedAt: Date.now(), pending: [],
+      id: to, description: e.summary ?? 'agent', account: '', model: '', status: 'done', steps: [], items: [], startedAt: Date.now(), pending: [],
     }
     const line = await continueAgent($, known, e.message)
     if (!line) return { result: { success: false, message: `Headroom could not continue agent ${to}.` } }
@@ -224,25 +285,25 @@ export const register: Register = on => {
     }
   }).catch(($, e, next) => next(e))
 
+  // The Agent call's row in the transcript: the remote agent, drawn like a built-in one.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.tool !== 'Agent') return next(e)
+    const agent = (await read($, agents)).find(a => a.toolUseId === e.requestId)
+    if (!agent) return next(e)
+    const unfolded = (await read($, open)).includes(agent.id) || e.props.isExpanded === true
+    return agentBlock($, e, agent, unfolded)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const list = (await read($, agents)).slice().reverse()
-    const now = Date.now()
+    const unfolded = await read($, open)
     return (
       <Box flexDirection="column">
         {list.length === 0 && <Text dimColor>No agents on other accounts yet in this session.</Text>}
         {list.map(agent => (
           <Box flexDirection="column" marginBottom={1}>
-            <Text bold>
-              {agent.status === 'running' ? '● ' : agent.status === 'done' ? '✓ ' : '✗ '}
-              {agent.description}
-            </Text>
-            <Text dimColor>
-              {agent.account} · {agent.model || 'default model'} · {agent.status === 'running' ? 'running' : agent.status} {elapsed(agent, now)}
-            </Text>
-            {(agent.status === 'running' ? agent.steps.slice(-4) : agent.steps.slice(-1)).map(step => (
-              <Text dimColor>  {step}</Text>
-            ))}
+            {agentBlock($, e, agent, unfolded.includes(agent.id))}
           </Box>
         ))}
       </Box>

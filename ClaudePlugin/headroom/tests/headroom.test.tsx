@@ -111,3 +111,31 @@ test('the pane shows a running agent and its steps', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /Read: note.txt/ }))?.text).toContain('Read: note.txt')
   await ui.unmount()
 })
+
+test("the Agent call's row shows the remote agent and unfolds its transcript", async ($, on) => {
+  engine(on, lines(
+    { type: 'started', agentId: AGENT_ID, account: 'Pro', model: 'claude-sonnet-5-5', outputFile: '/tmp/a.log' },
+    { type: 'step', text: 'Read: note.txt' },
+    { type: 'item', kind: 'tool', id: 't1', summary: 'Read: note.txt', input: '{}' },
+    { type: 'item', kind: 'result', id: 't1', text: 'hello', isError: false },
+    { type: 'item', kind: 'text', text: 'The note says hello.' },
+  ))
+  await $.tool.call({ tool: 'Agent', description: 'read the note', prompt: 'Read note.txt', tool_use_id: 'toolu_1' } as never)
+  await new Promise(resolve => setTimeout(resolve, 50))
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({
+      plugin: 'headroom', component: 'ToolUse', requestId: 'toolu_1', surface,
+      props: { tool_use_id: 'toolu_1', tool: 'Agent', input: {}, isRunning: false, isErrored: false, isInterrupted: false },
+    })
+    expect((await ui.find({ type: 'Text', text: /read the note/ }))?.text).toContain('Agent')
+    expect((await ui.find({ type: 'Text', text: /on Pro/ }))?.text).toContain('on Pro')
+    expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+    await ui.press({ key: `transcript-${AGENT_ID}` })
+    expect((await ui.find({ type: 'Markdown' }) as { text?: string } | undefined)?.text).toContain('The note says hello.')
+    expect((await ui.find({ type: 'Text', text: /hello$/ }))?.text).toContain('hello')
+    await ui.press({ key: `transcript-${AGENT_ID}` })
+    await ui.unmount()
+  }
+})
+

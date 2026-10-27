@@ -87,7 +87,15 @@ extension AppModel {
         claudeAccountStates[id, default: ProviderState()].isLoading = true
         claudeAccountStates[id]?.lastAttempt = .now
         do {
-            let snapshot = try await ClaudeProvider(configDir: account.cliConfigDir).fetch()
+            var snapshot: UsageSnapshot
+            do {
+                snapshot = try await ClaudeProvider(configDir: account.cliConfigDir).fetch()
+            } catch ProviderError.unauthorized where !account.isMain && Date().timeIntervalSince(renewedAt[id] ?? .distantPast) > 600 {
+                // Unused for a while: Claude Code renews the sign-in when started.
+                renewedAt[id] = Date()
+                guard let renewed = await ClaudeSignIn.renew(account) else { throw ProviderError.unauthorized("Claude Code sign-in expired. Run `claude` to refresh it.") }
+                snapshot = renewed
+            }
             claudeAccountStates[id]?.snapshot = snapshot
             claudeAccountStates[id]?.error = nil
             claudeAccountStates[id]?.notConfigured = false

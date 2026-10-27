@@ -93,7 +93,8 @@ enum SubagentRunner {
 
     /// Runs to completion, calling `onStep` for each step the agent takes ("Read: note.txt").
     static func run(_ request: Request, on account: ClaudeAccount, in directory: String,
-                    onStep: @escaping @Sendable (String) -> Void) async -> Result {
+                    onStep: @escaping @Sendable (String) -> Void,
+                    onItem: @escaping @Sendable ([String: Any]) -> Void = { _ in }) async -> Result {
         let base = ProcessInfo.processInfo.environment
         let output: FileHandle, errors: FileHandle
         var process: Process?
@@ -137,9 +138,16 @@ enum SubagentRunner {
                 guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { continue }
                 switch event.string("type") {
                 case "assistant":
-                    for block in event.dict("message")?.array("content") ?? [] where block.string("type") == "tool_use" {
-                        toolUses += 1
-                        onStep(describe(tool: block.string("name") ?? "tool", input: block.dict("input") ?? [:]))
+                    for block in event.dict("message")?.array("content") ?? [] {
+                        if block.string("type") == "tool_use" {
+                            toolUses += 1
+                            onStep(describe(tool: block.string("name") ?? "tool", input: block.dict("input") ?? [:]))
+                        }
+                        if let item = transcriptItem(block) { onItem(item) }
+                    }
+                case "user":
+                    for block in event.dict("message")?.array("content") ?? [] {
+                        if let item = transcriptItem(block) { onItem(item) }
                     }
                 case "result":
                     final = event
@@ -159,6 +167,31 @@ enum SubagentRunner {
         result.toolUses = toolUses
         result.sessionID = sessionID
         return result
+    }
+
+    /// One entry of the agent's transcript, as its row in the session shows it: what it said, each tool call
+    /// with its input, each result. Long texts are cut; the whole session stays in the account's folder.
+    static func transcriptItem(_ block: [String: Any]) -> [String: Any]? {
+        func cut(_ text: String, _ limit: Int) -> String { text.count > limit ? String(text.prefix(limit)) + "…" : text }
+        switch block.string("type") {
+        case "text":
+            guard let text = block.string("text"), !text.isEmpty else { return nil }
+            return ["kind": "text", "text": cut(text, 4000)]
+        case "tool_use":
+            let input = block.dict("input") ?? [:]
+            let json = (try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]))
+                .map { String(decoding: $0, as: UTF8.self) } ?? ""
+            return ["kind": "tool", "id": block.string("id") ?? "", "summary": describe(tool: block.string("name") ?? "tool", input: input),
+                    "input": cut(json, 2000)]
+        case "tool_result":
+            let text: String
+            if let s = block["content"] as? String { text = s }
+            else { text = (block.array("content") ?? []).compactMap { $0.string("text") }.joined(separator: "\n") }
+            return ["kind": "result", "id": block.string("tool_use_id") ?? "", "text": cut(text, 2000),
+                    "isError": block["is_error"] as? Bool ?? false]
+        default:
+            return nil
+        }
     }
 
     /// Claude Code's result event (`--output-format json`, or the last stream-json line).

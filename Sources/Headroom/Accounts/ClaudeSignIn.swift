@@ -35,5 +35,30 @@ enum ClaudeSignIn {
         NSWorkspace.shared.open(script)
     }
 
+    /// Claude Code renews an account's sign-in when it starts; Headroom only reads it. So when an account's
+    /// sign-in has expired (unused for a while), Headroom starts Claude Code on it with no prompt, which costs
+    /// no usage, until its usage reads again, then lets it go. Nil when that didn't renew it.
+    static func renew(_ account: ClaudeAccount) async -> UsageSnapshot? {
+        guard !account.isMain, let claude = SubagentRunner.executable() else { return nil }
+        SubagentLog.write("renewing the \(account.id) sign-in")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: claude)
+        process.arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+        process.environment = SubagentRunner.environment(for: account, from: ProcessInfo.processInfo.environment)
+        process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        let input = Pipe()
+        process.standardInput = input
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        defer { try? input.fileHandleForWriting.close() }   // no prompt: it exits by itself
+        for _ in 0..<15 {
+            try? await Task.sleep(for: .seconds(2))
+            if let snapshot = try? await ClaudeProvider(configDir: account.cliConfigDir).fetch() { return snapshot }
+            if !process.isRunning { break }
+        }
+        return nil
+    }
+
     static func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 }

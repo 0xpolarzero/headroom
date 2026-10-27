@@ -63,8 +63,10 @@ its sessions are its own.
 
 - **Add account** (Settings → Claude accounts) with a short name, for example "Pro". Headroom opens Terminal on
   Claude Code in that account's folder; sign in there (type `/login` if it doesn't ask). Claude Code keeps
-  and renews that sign-in itself, and Headroom reads the account's usage from it. If it isn't used for a long
-  time it expires; run `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude` again.
+  and renews that sign-in itself, and Headroom reads the account's usage from it. When it has expired
+  because the account wasn't used for a while, Headroom starts Claude Code on that account with no prompt,
+  which renews it without using any of its limits. If that fails, run
+  `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude` again.
 - **The panel and the menu bar** show every account's limits, in the order set in Settings.
 - **Run subagents on accounts with room** (Settings) installs Headroom's Claude Code plugin for all your
   sessions (`claude plugin install headroom@headroom --scope user`, from a marketplace folder inside

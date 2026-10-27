@@ -133,4 +133,19 @@ final class SubagentTests: XCTestCase {
         XCTAssertEqual(object?["type"] as? String, "user")
         XCTAssertEqual((object?["message"] as? [String: Any])?["content"] as? String, "Read note.txt")
     }
+
+    func testTranscriptEntriesReadLikeTheAgentsRow() {
+        XCTAssertEqual(SubagentRunner.transcriptItem(["type": "text", "text": "Done."])?["text"] as? String, "Done.")
+        let tool = SubagentRunner.transcriptItem(["type": "tool_use", "id": "t1", "name": "Read", "input": ["file_path": "/a/note.txt"]])
+        XCTAssertEqual(tool?["summary"] as? String, "Read: note.txt")
+        XCTAssertEqual(tool?["id"] as? String, "t1")
+        XCTAssertTrue((tool?["input"] as? String)?.contains("\"/a/note.txt\"") == true)
+        let result = SubagentRunner.transcriptItem(["type": "tool_result", "tool_use_id": "t1",
+                                                    "content": [["type": "text", "text": "a"], ["type": "text", "text": "b"]]])
+        XCTAssertEqual(result?["text"] as? String, "a\nb")
+        XCTAssertEqual(result?["isError"] as? Bool, false)
+        XCTAssertNil(SubagentRunner.transcriptItem(["type": "thinking", "thinking": "…"]))
+        XCTAssertEqual((SubagentRunner.transcriptItem(["type": "text", "text": String(repeating: "x", count: 5000)])?["text"] as? String)?.count, 4001)
+    }
 }
+

@@ -71,7 +71,7 @@ enum AgentRun {
     }
 
     static func emit(_ object: [String: Any]) {
-        guard var data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        guard var data = try? JSONSerialization.data(withJSONObject: object, options: .withoutEscapingSlashes) else { return }
         data.append(0x0A)
         FileHandle.standardOutput.write(data)
     }
@@ -92,7 +92,7 @@ enum AgentRun {
             AgentRegistry.setRunning(account.id)
             let req = SubagentRunner.Request(prompt: request.prompt, model: entry.model, permissionMode: permissionMode,
                                              sessionID: entry.sessionID, resume: true, mcpConfig: mcpConfig)
-            let result = await SubagentRunner.run(req, on: account, in: entry.directory) { step(agentID, $0) }
+            let result = await SubagentRunner.run(req, on: account, in: entry.directory) { step(agentID, $0) } onItem: { item(agentID, $0) }
             if result.limitReached { await SubagentUsage.shared.markFull(account) }
             finish(agentID, result, account: account.id)
             return
@@ -124,14 +124,14 @@ enum AgentRun {
                                              effort: request.effort, worktree: request.isolation == "worktree",
                                              permissionMode: permissionMode, sessionID: UUID().uuidString.lowercased(),
                                              mcpConfig: mcpConfig)
-            var result = await SubagentRunner.run(req, on: account, in: request.cwd) { step(agentID, $0) }
+            var result = await SubagentRunner.run(req, on: account, in: request.cwd) { step(agentID, $0) } onItem: { item(agentID, $0) }
             // Plans differ in models (Pro has no Fable): run it again with one every plan has.
             if result.modelUnavailable, model != SubagentRunner.fallbackModel {
                 if let model { AgentRegistry.rememberLacking(account.id, model) }
                 req.model = SubagentRunner.fallbackModel
                 req.sessionID = UUID().uuidString.lowercased()
                 step(agentID, "Using Sonnet: the \(account.id) plan doesn't include \(model ?? "the default model")")
-                result = await SubagentRunner.run(req, on: account, in: request.cwd) { step(agentID, $0) }
+                result = await SubagentRunner.run(req, on: account, in: request.cwd) { step(agentID, $0) } onItem: { item(agentID, $0) }
             }
             if result.limitReached && result.toolUses == 0 {
                 // Refused before doing anything: another account can take the task whole.
@@ -193,7 +193,45 @@ enum AgentRun {
 
     private static func step(_ agentID: String, _ text: String) {
         emit(["type": "step", "text": text])
-        log(agentID, text)
+    }
+
+    /// A transcript entry for the plugin's row, and in readable form for the agent's log (its `outputFile`).
+    private static func item(_ agentID: String, _ item: [String: Any]) {
+        var line = item
+        line["type"] = "item"
+        emit(line)
+        switch item["kind"] as? String {
+        case "text": log(agentID, item["text"] as? String ?? "")
+        case "tool": log(agentID, "→ \(item["summary"] as? String ?? "")")
+        case "result": log(agentID, "← " + (item["text"] as? String ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix(20).joined(separator: "\n   "))
+        default: break
+        }
+    }
+
+    /// `Headroom --agent-open <agentId>`: Terminal on the agent's own Claude Code session, on its account,
+    /// where its whole transcript reads as any session's and can be continued.
+    static func openMain() -> Never {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--agent-open"), i + 1 < args.count,
+              let entry = AgentRegistry.lookup(args[i + 1]),
+              let account = ClaudeAccountsConfig.load().accounts.first(where: { $0.id == entry.account }) else { exit(1) }
+        let script = HeadroomPaths.agentsDir.appendingPathComponent("open-\(args[i + 1]).command")
+        HeadroomPaths.ensure(HeadroomPaths.agentsDir)
+        let export = account.cliConfigDir.map { "export CLAUDE_CONFIG_DIR=\(ClaudeSignIn.shellQuote($0))\n" } ?? ""
+        let body = """
+        #!/bin/zsh -l
+        \(export)cd \(ClaudeSignIn.shellQuote(entry.directory)) || exit 1
+        exec claude --resume \(entry.sessionID)
+        """
+        guard (try? body.write(to: script, atomically: true, encoding: .utf8)) != nil else { exit(1) }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = [script.path]
+        try? open.run()
+        open.waitUntilExit()
+        exit(0)
     }
 
     private static func finish(_ agentID: String, _ result: SubagentRunner.Result, account: String?) {

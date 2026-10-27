@@ -6,6 +6,7 @@ enum Entry {
         if CommandLine.arguments.contains("--print") { printUsage(); return }
         if CommandLine.arguments.contains("--agent-run") { AgentRun.main() }
         if CommandLine.arguments.contains("--agent-warm") { AgentRun.warmMain() }
+        if CommandLine.arguments.contains("--agent-open") { AgentRun.openMain() }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

@@ -50,9 +50,12 @@ actor SubagentUsage {
         let saved = Self.readStatus()[account.id]
         if let saved, Date().timeIntervalSince(saved.at) < 360 { return (saved.session, saved.weekly) }
         if let hit = cache[account.id], Date().timeIntervalSince(hit.at) < 120 { return (hit.sessionUsed, hit.weeklyUsed) }
-        let snapshot: UsageSnapshot?
+        var snapshot: UsageSnapshot?
         do {
             snapshot = try await ClaudeProvider(configDir: account.cliConfigDir).fetch()
+        } catch ProviderError.unauthorized {
+            snapshot = await ClaudeSignIn.renew(account)
+            if snapshot == nil { SubagentLog.write("the \(account.id) sign-in couldn't be renewed") }
         } catch {
             SubagentLog.write("usage of \(account.id) unreadable: \(error.localizedDescription)")
             // Rate limited, say: an older reading beats none. A full account still answers "limit reached".
