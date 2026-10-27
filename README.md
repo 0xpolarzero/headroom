@@ -94,12 +94,8 @@ its sessions are its own.
   - The first session on a new Claude Code version runs a self-test on another account: it starts an
     agent the way a ready process starts it, continues it, and stops one (two one-line Haiku answers). If
     any step fails, the status line says what broke until a later version passes.
-  - In non-interactive sessions (`claude -p` and the SDK), routed background agents and `SendMessage`
-    replies are errors: Claude Code exposes no way to register Headroom's pending work, so input ending
-    would lose their reports. Use a foreground Agent call (`run_in_background: false`, with no
-    `background: true` in its definition), or an interactive session. This also applies to stream-json
-    input kept open: the plugin cannot tell when it will close. With no other account free, a built-in
-    background agent still runs normally. See the [API investigation](docs/claude-accounts.md#non-interactive-background-agents-2026-10-27).
+  - Not yet: in a `claude -p` run that ends with its prompt, a background agent on another account is cut
+    off when the run exits; a built-in one keeps the run open until it reports.
 - **Ready processes.** Claude Code takes about 11 s to start. So when you send a prompt, the plugin asks
   Headroom to start one on the account a subagent would use, in that folder, waiting for its prompt; an Agent
   call on that account and folder with the same agent type takes it over and skips the wait: Headroom switches

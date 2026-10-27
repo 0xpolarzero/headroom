@@ -38,8 +38,6 @@ const open = atom({ plugin: 'headroom', key: 'open' } as const, [] as string[])
 
 /** The session's permission mode, as the last classic hook event reported it. */
 let permissionMode: string | undefined
-/** A headless host can close its input at any time; it cannot wait for our background reports. */
-let interactive = false
 
 type Line = { type: string; [key: string]: unknown }
 
@@ -143,7 +141,7 @@ type Begun = { run: Run; line: Line } | { noRoom: true } | { error: string }
  */
 async function start($: EngineInterface, request: Record<string, unknown>): Promise<Begun> {
   try {
-    const stream = $.process.spawn({ argv: [await runner($), '--agent-run'], input: JSON.stringify({ ...request, interactive }) })
+    const stream = $.process.spawn({ argv: [await runner($), '--agent-run'], input: JSON.stringify(request) })
     const run = new Run(stream[Symbol.asyncIterator]())
     for (let line = await run.next(); line; line = await run.next()) {
       if (line.type === 'no_room') return { noRoom: true }
@@ -367,7 +365,7 @@ async function foreground($: EngineInterface, e: { description: string; prompt: 
 
 /** Continues an agent with a message on its account: its `started` line, or why it couldn't. */
 async function continueAgent($: EngineInterface, agent: RemoteAgent, message: string): Promise<Line | { error: string }> {
-  const begun = await start($, { prompt: message, resume: agent.id, cwd: await $.session.cwd(), permissionMode, background: true })
+  const begun = await start($, { prompt: message, resume: agent.id, cwd: await $.session.cwd(), permissionMode })
   if ('noRoom' in begun) return { error: 'Headroom found no account for it.' }
   // A follow-up's `started` names where it runs; an agent from an earlier session is known by it.
   if ('error' in begun) return begun
@@ -493,7 +491,6 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
-    interactive = e.isInteractive
     await $.command.register({ name: 'agents-elsewhere', description: 'Show the subagents Headroom runs on your other accounts and providers' })
     await syncCatalog($).catch(error => $.ui.log(`headroom: reading Headroom's agents failed: ${String(error)}`, { to: 'debug' }))
     void selfTest($).catch(error => {
@@ -542,10 +539,10 @@ export const register: Register = on => {
       // Core checked permissions, but its turn-local agent list predates UserPromptSubmit. Only that
       // exact rejection is recoverable: the catalog and runner still enforce ownership and enablement.
       if (owned && !claim.started && answer.isError === true && answer.text?.startsWith(missing)) {
-        const background = (e as typeof e & { run_in_background?: boolean }).run_in_background === true
-        const begun = await start($, { ...request, background })
+        const begun = await start($, request)
         if ('noRoom' in begun) return { deny: `Headroom found nowhere to run ${e.subagent_type}.` }
         if ('error' in begun) return { deny: `Headroom couldn't run this agent (${e.subagent_type}): ${begun.error}` }
+        const background = e.run_in_background === true
         await started($, begun.line, e.description, false, !background, e.tool_use_id)
         claim.started = { ...begun, background }
       }
@@ -576,7 +573,6 @@ export const register: Register = on => {
       ...claim.request, subagentType: e.subagentType, model: e.model ?? claim.request.model,
       cwd: e.cwd ?? claim.request.cwd, permissionMode: e.permissionMode ?? claim.request.permissionMode,
       parentModel: e.parentModel,
-      background: e.background,
     }
     const begun = await start($, request)
     if ('noRoom' in begun) return owned ? { deny: `Headroom found nowhere to run ${type}.` } : next(e)
@@ -591,7 +587,6 @@ export const register: Register = on => {
     const agent = (await read($, agents)).find(a => a.id === to)
     // Headroom's agents have UUIDs; one from an earlier session is still known to Headroom.
     if (!agent && !UUID.test(to)) return next(e)
-    if (!interactive) return { deny: 'Headroom cannot deliver SendMessage replies in a non-interactive session: Claude Code does not wait for its background work. Start a foreground Agent call instead, or use an interactive Claude Code session.' }
     if (agent?.status === 'running') {
       agentPending.set(to, [...(agentPending.get(to) ?? []), e.message])
       return { result: { success: true, message: `Queued for agent ${to}: it reads it when it finishes its current work.` } }

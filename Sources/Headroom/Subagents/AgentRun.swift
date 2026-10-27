@@ -30,14 +30,6 @@ enum AgentRun {
         var resume: String?
         /// An agent type from Headroom's list (`headroom:codex-deep`): it runs on its own provider, never elsewhere.
         var agent: String?
-        /// The engine's final background decision and whether its host keeps an interactive prompt.
-        var background: Bool?
-        var interactive: Bool?
-
-        var backgroundError: String? {
-            guard background == true, interactive != true else { return nil }
-            return "Headroom cannot run a background agent in a non-interactive session: Claude Code does not wait for its report when input ends. Run this Agent in the foreground (run_in_background: false, and remove background: true from its definition), or use an interactive Claude Code session."
-        }
     }
 
     static func main() -> Never {
@@ -110,11 +102,6 @@ enum AgentRun {
     }
 
     static func run(_ request: Request) async {
-        // Owned agents and follow-ups never fall back. Reject before starting their provider or session.
-        if request.agent != nil || request.resume != nil, let error = request.backgroundError {
-            emit(["type": "error", "text": error])
-            return
-        }
         let config = ClaudeAccountsConfig.load()
         let accounts = config.ordered
         let mcpConfig = writeMCPConfig(directory: request.cwd)
@@ -169,11 +156,6 @@ enum AgentRun {
                 } else {
                     emit(["type": "no_room"])
                 }
-                return
-            }
-            // No room still belongs to the built-in tool; an eligible routed agent must fail visibly.
-            if let error = request.backgroundError {
-                emit(["type": "error", "text": error])
                 return
             }
             var model = request.model ?? request.parentModel
