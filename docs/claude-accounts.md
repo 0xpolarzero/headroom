@@ -1,11 +1,24 @@
 # Several Claude accounts, with automatic failover for Claude Code
 
-Status: **replaced (2026-10-26).** The relay described here was built, then removed. Headroom now gives
-each account its own copy of the Claude app instead; see [Current design](#current-design-one-app-copy-per-account).
-The rest of this document is the research and the relay design, kept for reference; the code is in git
-history (commits 72aecac to a0f4307).
+Status: **replaced twice.** The relay described here was built, then removed; so was the next design, one
+Claude app copy per account. Current: [subagents on accounts with
+room](#current-design-2026-10-27-subagents-on-accounts-with-room). The rest of this document is the research
+and the earlier designs, kept for reference; their code is in git history.
 
-## Current design: one app copy per account
+## Current design (2026-10-27): subagents on accounts with room
+
+The app copies below were also replaced. Each account is now only a Claude Code sign-in (`CLAUDE_CONFIG_DIR`
+= `~/.claude-accounts/<name>`), and `Headroom --mcp` gives Claude Code `Agent` and `SendMessage` tools that
+mirror the built-in ones but run each subagent as `claude -p` on another account with room (never the
+session's own, both usage thresholds respected, most room first). With no account free they answer "No other
+Claude account has room right now. Use built-in subagents." The README describes it in full.
+
+Checked first: `claude -p --output-format json` returns `result`, `session_id`, `is_error`,
+`api_error_status` and `permission_denials`; `--resume <session_id>` continues the same session; `--agent`
+accepts built-in types (Explore runs read-only) and custom ones; `--permission-mode auto`, `--effort`,
+`--model` and `--worktree` work headless.
+
+## Earlier design: one app copy per account
 
 Why the relay went: it could only swap the token on model requests, so a session's other traffic (settings,
 telemetry, Remote Control) still went out as the Claude app's account; its connections didn't look like

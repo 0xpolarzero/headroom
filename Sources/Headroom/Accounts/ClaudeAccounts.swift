@@ -7,7 +7,7 @@ enum HeadroomPaths {
         return base.appendingPathComponent("Headroom", isDirectory: true)
     }()
     static let accounts = support.appendingPathComponent("claude-accounts.json")
-    static let presetSync = support.appendingPathComponent("preset-sync.json")
+    static let agents = support.appendingPathComponent("subagents.json")
 
     /// Creates `dir` readable by the user only.
     static func ensure(_ dir: URL) {
@@ -16,25 +16,19 @@ enum HeadroomPaths {
     }
 }
 
-/// One Claude account: its own copy of the Claude app (a data folder of its own, so its own sign-in and
-/// session list) and its own terminal sign-in (a Claude Code config folder), which is what Headroom reads
-/// usage from. Main is the default pair: the Claude app as installed, and `~/.claude`.
+/// One Claude account: a Claude Code sign-in of its own. Main is the default one (`~/.claude`); every other
+/// account lives in `~/.claude-accounts/<name>` (`CLAUDE_CONFIG_DIR`). Headroom shows each account's
+/// limits and runs subagents on the accounts that have room (`Headroom --mcp`).
 struct ClaudeAccount: Codable, Hashable, Sendable, Identifiable {
     static let mainID = "main"
 
-    /// "main", or a short name also used in folder names ("Pro").
+    /// "main", or a short name also used as the folder name ("Pro").
     var id: String
     var addedAt = Date()
 
     var isMain: Bool { id == Self.mainID }
 
-    /// The Claude app's data folder for this account.
-    var appDataDir: String {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].path
-        return isMain ? support + "/Claude" : support + "/Claude-\(id)"
-    }
-
-    /// `CLAUDE_CONFIG_DIR` for this account's terminal sign-in; nil for Main (the default `~/.claude`).
+    /// `CLAUDE_CONFIG_DIR` for this account; nil for Main (the default `~/.claude`).
     var cliConfigDir: String? { isMain ? nil : NSHomeDirectory() + "/.claude-accounts/\(id)" }
 
     init(id: String) { self.id = id }
@@ -59,9 +53,10 @@ struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
     var accounts: [ClaudeAccount] = []
     /// Priority order of account IDs; always contains "main" exactly once.
     var order: [String] = [ClaudeAccount.mainID]
-    /// New sessions go to the first account below this share (0...1) of its Session and Weekly limits.
-    var newSessionThreshold = ClaudeAccountsConfig.defaultThreshold
-    static let defaultThreshold = 0.85
+    /// An account takes subagents while its Session and its Weekly use are below these (0...1).
+    var sessionThreshold = ClaudeAccountsConfig.defaultThreshold
+    var weeklyThreshold = ClaudeAccountsConfig.defaultThreshold
+    static let defaultThreshold = 0.9
 
     init() {}
 
@@ -69,7 +64,8 @@ struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         accounts = try c.decodeIfPresent([ClaudeAccount].self, forKey: .accounts) ?? []
         order = try c.decodeIfPresent([String].self, forKey: .order) ?? [ClaudeAccount.mainID]
-        newSessionThreshold = try c.decodeIfPresent(Double.self, forKey: .newSessionThreshold) ?? Self.defaultThreshold
+        sessionThreshold = try c.decodeIfPresent(Double.self, forKey: .sessionThreshold) ?? Self.defaultThreshold
+        weeklyThreshold = try c.decodeIfPresent(Double.self, forKey: .weeklyThreshold) ?? Self.defaultThreshold
     }
 
     /// Every account, Main included, in priority order.

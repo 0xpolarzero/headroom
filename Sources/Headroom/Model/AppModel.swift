@@ -82,15 +82,9 @@ final class AppModel {
     var claudeConfig = ClaudeAccountsConfig.load()
     /// Usage of the accounts besides Main, by account ID.
     var claudeAccountStates: [String: ProviderState] = [:]
-    /// Accounts whose copy of the Claude app is running.
-    var claudeRunning: Set<String> = []
-    /// The account each app copy is signed in to (account ID → account UUID).
-    var claudeAppAccounts: [String: String] = [:]
+    /// Headroom's subagent server is registered with Claude Code (`~/.claude.json`).
+    var subagentsInstalled = false
     var claudeError: String?
-    /// The account last announced as the one for new sessions.
-    var lastRecommended: String? {
-        didSet { defaults.set(lastRecommended, forKey: "lastRecommendedClaude") }
-    }
 
     /// Windows already announced as full; an entry clears once usage drops below 100%.
     private var alerted: Set<String> {
@@ -110,7 +104,6 @@ final class AppModel {
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
         loadAccounts()
-        lastRecommended = defaults.string(forKey: "lastRecommendedClaude")
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
     }
 

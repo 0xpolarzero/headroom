@@ -137,8 +137,8 @@ struct SettingsView: View {
     }
 }
 
-/// The Claude accounts in priority order: each one's window and Terminal sign-in, adding and
-/// removing accounts, and when new sessions should move on to the next account.
+/// The Claude accounts: their order, signing them in, adding and removing them, and the subagents that
+/// run on the ones with room.
 struct ClaudeAccountsSettings: View {
     @Bindable var model: AppModel
     @Binding var name: String
@@ -147,19 +147,17 @@ struct ClaudeAccountsSettings: View {
         let rows = model.claudeRows
         ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
             HStack(spacing: 6) {
-                Text("\(index + 1).").monospacedDigit().foregroundStyle(.secondary).frame(width: 16, alignment: .trailing)
                 Text(row.name).lineLimit(1)
                 if row.isMain { Text("Main").font(.caption).foregroundStyle(.secondary) }
                 if let email = row.email { Text(email).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
                 Spacer()
                 Button { model.moveClaudeAccount(row.id, by: -1) } label: { Image(systemName: "chevron.up") }
                     .disabled(index == 0)
-                    .help("Suggest earlier")
+                    .help("Move up")
                 Button { model.moveClaudeAccount(row.id, by: 1) } label: { Image(systemName: "chevron.down") }
                     .disabled(index == rows.count - 1)
-                    .help("Suggest later")
+                    .help("Move down")
                 Menu {
-                    Button(row.isRunning ? "Show its Claude window" : "Open its Claude window") { model.openClaudeWindow(row.id) }
                     Button("Sign in in Terminal") { model.signInTerminal(row.id) }
                     if !row.isMain {
                         Divider()
@@ -183,30 +181,31 @@ struct ClaudeAccountsSettings: View {
                 .disabled(ClaudeAccount.slug(name).isEmpty)
         }
         .buttonStyle(.borderless)
-        Text("""
-            Each account gets its own Claude window, with its own sign-in and sessions; settings, skills, hooks \
-            and plugins in ~/.claude are shared, and session presets are kept in sync. To sign a new window in, \
-            quit your main Claude app first (the sign-in link goes to whichever copy is open), sign in, then \
-            reopen Claude from here. Then sign in once in Terminal so Headroom can show its usage.
-            """)
+        Text("Opens Terminal on Claude Code in the account's own folder (~/.claude-accounts/<name>), sharing your settings, skills, hooks and plugins. Sign in there with that account.")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
+        Toggle("Run subagents on accounts with room", isOn: Binding(
+            get: { model.subagentsInstalled }, set: { model.setSubagentsInstalled($0) }))
+        Text("Adds Headroom's Agent and SendMessage tools to Claude Code. Sessions use them like the built-in ones; each subagent runs on another of your accounts, in auto mode, or falls back to the built-in subagents when none has room.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        threshold("Up to Session", \.sessionThreshold) { model.setThresholds(session: $0) }
+        threshold("Up to Weekly", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
+        if let error = model.claudeError {
+            Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func threshold(_ label: String, _ key: KeyPath<ClaudeAccountsConfig, Double>, set: @escaping (Double) -> Void) -> some View {
         HStack {
-            Text("Suggest the next account at")
+            Text(label)
             Spacer()
-            Picker("Suggest the next account at", selection: Binding(
-                get: { model.claudeConfig.newSessionThreshold }, set: { model.setNewSessionThreshold($0) })) {
-                ForEach([0.75, 0.85, 0.95], id: \.self) { Text("\(Int($0 * 100))%").tag($0) }
-                Text("Its limit").tag(1.0)
+            Picker(label, selection: Binding(get: { model.claudeConfig[keyPath: key] }, set: set)) {
+                ForEach([0.5, 0.75, 0.9, 0.95], id: \.self) { Text("\(Int($0 * 100))% used").tag($0) }
             }
             .labelsHidden()
             .fixedSize()
         }
-        Text("New sessions are suggested on the first account below this share of its Session or Weekly limit. A running session stays on its account.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        if let error = model.claudeError {
-            Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-        }
+        .disabled(!model.subagentsInstalled)
     }
 
     private func add() {

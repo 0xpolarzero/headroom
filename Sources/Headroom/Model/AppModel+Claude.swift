@@ -10,24 +10,14 @@ struct ClaudeAccountRow: Identifiable {
     var plan: String?
     var snapshot: UsageSnapshot?
     var error: String?
-    /// The account its Claude window is signed in to; nil when that copy is signed out.
-    var appUUID: String?
-    /// The account its terminal sign-in (the one Headroom reads usage from) belongs to.
+    /// The account its Claude Code sign-in belongs to; nil when not signed in yet.
     var cliUUID: String?
-    var isRunning: Bool
-    /// New sessions should start here.
-    var isRecommended = false
+    /// Below both thresholds, so it can take subagents from sessions on other accounts.
+    var takesSubagents = false
     var id: String { account.id }
     var isMain: Bool { account.isMain }
 
-    /// The fuller of Session and Weekly, 0...100; nil without numbers.
-    var used: Double? {
-        let values = (snapshot?.windows ?? []).filter { $0.label == "Session" || $0.label == "Weekly" }.compactMap(\.usedPercent)
-        return values.max()
-    }
-
-    /// The window and the terminal are signed in to different accounts.
-    var mismatch: Bool { appUUID != nil && cliUUID != nil && appUUID != cliUUID }
+    func used(_ label: String) -> Double? { snapshot?.windows.first { $0.label == label }?.usedPercent }
 }
 
 extension AppModel {
@@ -37,54 +27,29 @@ extension AppModel {
     var showsClaudeAccounts: Bool { !claudeConfig.accounts.isEmpty }
 
     var claudeRows: [ClaudeAccountRow] {
-        var rows = claudeConfig.ordered.map { account -> ClaudeAccountRow in
+        claudeConfig.ordered.map { account -> ClaudeAccountRow in
             let s = account.isMain ? state(.claude) : claudeAccountStates[account.id] ?? ProviderState()
             let cli = ClaudeProvider.signedInAccount(configDir: account.cliConfigDir)
             let plan = s.snapshot?.plan
             let name = account.isMain ? plan.map { String($0.split(separator: " ")[0]) } ?? "Main" : account.id
-            return ClaudeAccountRow(account: account, name: name, email: cli.email, plan: plan, snapshot: s.snapshot,
-                                    error: s.error, appUUID: claudeAppAccounts[account.id], cliUUID: cli.uuid,
-                                    isRunning: claudeRunning.contains(account.id))
+            var row = ClaudeAccountRow(account: account, name: name, email: cli.email, plan: plan, snapshot: s.snapshot,
+                                       error: s.error, cliUUID: cli.uuid)
+            if let session = row.used("Session"), let weekly = row.used("Weekly") {
+                row.takesSubagents = session < claudeConfig.sessionThreshold * 100 && weekly < claudeConfig.weeklyThreshold * 100
+            }
+            return row
         }
-        if let i = Self.recommended(rows.map(\.used), threshold: claudeConfig.newSessionThreshold * 100) {
-            rows[i].isRecommended = true
-        }
-        return rows
-    }
-
-    /// Where new sessions should start: the first account in the order below the threshold; if every
-    /// account is above it, the least used one that isn't full; nil when all are full or unknown.
-    nonisolated static func recommended(_ used: [Double?], threshold: Double) -> Int? {
-        if let first = used.firstIndex(where: { ($0 ?? 100) < threshold }) { return first }
-        let open = used.enumerated().compactMap { i, u in u.flatMap { $0 < 100 ? (i, $0) : nil } }
-        return open.min { $0.1 < $1.1 }?.0
     }
 
     // MARK: Ticks
 
-    /// Every 15 s and when the panel opens: who runs and is signed in where, presets, due usage.
+    /// Every 15 s and when the panel opens: the account list, whether the server is registered, due usage.
     func claudeTick(panelOpened: Bool = false) async {
         let fresh = ClaudeAccountsConfig.load()
         if fresh != claudeConfig { claudeConfig = fresh }
-        let accounts = claudeConfig.ordered
-        let running = Set(accounts.filter(ClaudeApps.isRunning).map(\.id))
-        if running != claudeRunning { claudeRunning = running }
-        var signedIn: [String: String] = [:]
-        for account in accounts { signedIn[account.id] = ClaudeApps.appAccountUUID(account) }
-        if signedIn != claudeAppAccounts { claudeAppAccounts = signedIn }
-        if accounts.count > 1 { SessionPresets.sync(accounts) { ClaudeApps.runningApp($0)?.launchDate } }
+        let installed = SubagentInstaller.isInstalled()
+        if installed != subagentsInstalled { subagentsInstalled = installed }
         await refreshClaudeAccounts(force: false, throttle: panelOpened ? Self.openThrottle : nil)
-        announceRecommendation()
-    }
-
-    /// One notification when new sessions should move to another account.
-    private func announceRecommendation() {
-        guard showsClaudeAccounts, let row = claudeRows.first(where: \.isRecommended) else { return }
-        defer { lastRecommended = row.id }
-        guard let previous = lastRecommended, previous != row.id, notificationsOn else { return }
-        let from = claudeRows.first { $0.id == previous }
-        let why = from?.used.map { " \(from!.name) is at \(Int($0.rounded()))%." } ?? ""
-        post("Use \(row.name) for new Claude sessions.\(why)", id: "claude.recommend.\(row.id)")
     }
 
     func refreshClaudeAccounts(force: Bool, throttle: TimeInterval? = nil) async {
@@ -123,7 +88,7 @@ extension AppModel {
 
     // MARK: Accounts
 
-    /// Adds an account and opens its Claude window, where it signs in.
+    /// Adds an account and opens Terminal, where Claude Code signs it in.
     func addClaudeAccount(name: String) {
         let id = ClaudeAccount.slug(name)
         claudeError = nil
@@ -139,28 +104,19 @@ extension AppModel {
             config.accounts.append(ClaudeAccount(id: id))
             config.normalize()
         }
-        openClaudeWindow(id)
-    }
-
-    func openClaudeWindow(_ id: String) {
-        guard let account = claudeConfig.ordered.first(where: { $0.id == id }) else { return }
-        ClaudeApps.open(account)
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            await claudeTick()
-        }
+        signInTerminal(id)
     }
 
     func signInTerminal(_ id: String) {
         guard let row = claudeRows.first(where: { $0.id == id }) else { return }
         do {
-            try ClaudeApps.openTerminalSignIn(row.account, name: row.name)
+            try ClaudeSignIn.openTerminalSignIn(row.account, name: row.name)
         } catch {
             claudeError = "Could not open Terminal: \(error.localizedDescription)"
         }
     }
 
-    /// Forgets the account in Headroom. Its app folder and Claude Code folder stay on disk.
+    /// Forgets the account in Headroom. Its Claude Code folder stays on disk.
     func removeClaudeAccount(_ id: String) {
         updateConfig { config in
             config.accounts.removeAll { $0.id == id }
@@ -176,8 +132,23 @@ extension AppModel {
         }
     }
 
-    func setNewSessionThreshold(_ value: Double) {
-        updateConfig { $0.newSessionThreshold = value }
+    func setThresholds(session: Double? = nil, weekly: Double? = nil) {
+        updateConfig { config in
+            if let session { config.sessionThreshold = session }
+            if let weekly { config.weeklyThreshold = weekly }
+        }
+    }
+
+    func setSubagentsInstalled(_ on: Bool) {
+        claudeError = nil
+        Task {
+            do {
+                try await on ? SubagentInstaller.install() : SubagentInstaller.uninstall()
+            } catch {
+                claudeError = error.localizedDescription
+            }
+            subagentsInstalled = SubagentInstaller.isInstalled()
+        }
     }
 
     private func updateConfig(_ change: (inout ClaudeAccountsConfig) -> Void) {

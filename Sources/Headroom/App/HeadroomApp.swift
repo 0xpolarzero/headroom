@@ -4,6 +4,7 @@ import AppKit
 enum Entry {
     static func main() {
         if CommandLine.arguments.contains("--print") { printUsage(); return }
+        if CommandLine.arguments.contains("--mcp") { SubagentServer.run() }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

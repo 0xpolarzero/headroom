@@ -5,16 +5,15 @@ helps you **run Claude Code on several Claude accounts**. It covers **Claude**, 
 **Z.ai** and **OpenRouter**. It is inspired by [OpenUsage](https://github.com/robinebers/openusage) but does
 much less, on purpose.
 
-**Several Claude accounts.** Got a Max plan and a $20 Pro, or a work and a personal account? Headroom gives
-each account its own Claude app window, signed in to that account, so its Code-tab sessions run entirely on
-it. It shows every account's limits side by side and marks the one to use for your next session, so you spend
-the cheap plan first and move on before it runs out. Settings, skills, hooks and plugins stay shared; only the
-sessions are per account. Nothing is proxied or rewritten: every window is the official app with a normal
-sign-in. See [Several Claude accounts](#several-claude-accounts).
+**Several Claude accounts.** Got a Max plan and a $20 Pro, or a work and a personal account? Headroom shows
+every account's limits side by side, and lets your Claude Code sessions run their **subagents on whichever
+other account has room**. Claude uses them exactly like its built-in subagents; when no account has room it
+falls back to the built-in ones. Each subagent is plain Claude Code signed in to that account: nothing is
+proxied or rewritten. See [Several Claude accounts](#several-claude-accounts).
 
 The menu bar item shows every provider side by side, in the order set in Settings: its logo with what is
 left of the Session, the Weekly, or both stacked (OpenRouter shows its credit balance). With several Claude
-accounts, it shows each one's name and what is left, the one for new sessions in a filled tag. Providers that
+accounts, it shows each one's name and what is left. Providers that
 aren't set up are left out. Click it to open the panel: every limit window with a meter of what is left (blue,
 yellow from 20% left, red from 10% left) and when it resets, plus a small ↺ count of the limit resets an
 account can spend (Claude reset grants, Codex reset credits; hover for when they expire). OpenRouter's section
@@ -57,30 +56,38 @@ service `Headroom`.
 
 ## Several Claude accounts
 
-Each Claude account gets its own copy of the Claude app, signed in to that account, so its Code-tab sessions
-run entirely as that account. Nothing is relayed or rewritten: each copy is the official app with a normal
-sign-in. Headroom opens the copies, shows every account's limits and says which one to use for new sessions.
+Every account is a Claude Code sign-in of its own. Main is the one you already have (`~/.claude`). Each other
+account lives in `~/.claude-accounts/<name>` (`CLAUDE_CONFIG_DIR`), which links to your settings, skills,
+agents, commands, hooks, plugins and CLAUDE.md in `~/.claude`, so it behaves the same; only its sign-in and
+its sessions are its own.
 
-- **Add account** (Settings → Claude accounts) with a short name, for example "Pro". Headroom opens a new
-  Claude window with its own data folder (`~/Library/Application Support/Claude-Pro`, through the app's
-  `--user-data-dir`). To sign it in, quit your main Claude app first: the sign-in link goes to whichever copy is
-  open. Sign in in the new window, then reopen your main app with its **Open** button in Headroom.
-- **Sign in in Terminal** once per account. Headroom opens Terminal on `claude` with the account's own config
-  folder (`~/.claude-accounts/Pro`); Claude Code signs in and keeps that login itself. Headroom reads its usage
-  from it, the same way it reads your main account from `~/.claude`. If that sign-in isn't used for a long
-  time it expires; run `claude` there again.
-- **Open / Show** brings an account's window forward or starts it. Use these rather than the Dock icon: macOS
-  sees every copy as the same app, so the Dock only reaches whichever copy is already running.
-- **What is shared:** everything Claude Code reads from `~/.claude` (settings, hooks, skills, agents,
-  plugins, CLAUDE.md, MCP servers, memory), because every copy runs Claude Code on it. The terminal folders
-  link the same items. Session presets are kept the same in every copy (written to copies that aren't
-  running, so a change shows up in the others once they have been closed and reopened).
-- **What is separate:** each copy's list of sessions, and what Anthropic keeps per account (chats,
-  Customize, connectors, Remote Control).
-- **Which account for new sessions:** the first in your order below 85% of its Session or Weekly limit (75%,
-  95% or "its limit" in Settings). The menu bar shows each account's name and what is left, with a filled
-  name tag on that account. A notification says when it changes. A running session stays where it is.
-- Running two paid subscriptions side by side is your call; nothing here moves a session between accounts.
+- **Add account** (Settings → Claude accounts) with a short name, for example "Pro". Headroom opens Terminal on
+  Claude Code in that account's folder; sign in there (type `/login` if it doesn't ask). Claude Code keeps
+  and renews that sign-in itself, and Headroom reads the account's usage from it. If it isn't used for a long
+  time it expires; run `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude` again.
+- **The panel and the menu bar** show every account's limits, in the order set in Settings.
+- **Run subagents on accounts with room** (Settings) registers `Headroom --mcp` with Claude Code for all your
+  sessions (`claude mcp add --scope user headroom`). It adds two tools that mirror the built-in ones:
+  - **`Agent`** takes the same parameters (`description`, `prompt`, `subagent_type`, `model`, `effort`,
+    `isolation`) and returns the agent's final answer and its `agentId`. It runs `claude -p` on the chosen
+    account, in the session's folder, in auto permission mode. Several calls in one message run in parallel,
+    spread over the accounts.
+  - **`SendMessage`** continues such an agent by its `agentId`, on the same account.
+
+  The server tells Claude to prefer these for subagent work. They start fresh, without the conversation, like
+  built-in subagents, and can't ask questions.
+- **Which account takes a subagent:** never the session's own account; only accounts below both thresholds
+  (90% of the Session and of the Weekly limit by default, set in Settings); among those, the one with the
+  most room. Usage is read from each account's sign-in, cached for two minutes. If an account answers "limit
+  reached" before doing anything, the next one takes the task.
+- **Plans differ in models.** If an account's plan doesn't include the model asked for (a Pro plan has no
+  Fable, for example), the subagent runs there with Sonnet and its answer says so.
+- **When none has room**, `Agent` answers `No other Claude account has room right now. Use built-in subagents.`
+  and Claude carries on with its built-in subagents.
+- A subagent never starts subagents on yet another account. The other accounts' folders don't share your
+  user-level MCP servers (`~/.claude.json`), so subagents there don't have them.
+- Running two paid subscriptions side by side is your call; every request is made by Claude Code itself,
+  signed in to the account it bills.
 
 ## Behaviour
 
@@ -89,8 +96,7 @@ sign-in. Headroom opens the copies, shows every account's limits and says which 
 - A provider shows **Outdated** after 10 minutes without a successful refresh.
 - Settings (gear icon): enable, disable and reorder providers, what the menu bar shows, Claude accounts,
   other accounts (Antigravity, Z.ai, OpenRouter), launch at login, and notifications.
-- Notifications: one alert when a Session or Weekly window reaches 100%, once per reset, and one when new
-  Claude sessions should move to another account.
+- Notifications: one alert when a Session or Weekly window reaches 100%, once per reset.
 - Limit resets: Claude's reset grants are checked at most once an hour per account; Codex's reset credits
   with every refresh.
 

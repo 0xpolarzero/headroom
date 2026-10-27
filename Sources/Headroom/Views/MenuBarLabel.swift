@@ -55,8 +55,7 @@ struct MenuBarLabel: View {
     }
 }
 
-/// Claude with several accounts: each account's name and what is left, in priority order. The account
-/// new sessions should use has a filled name tag, the others an outlined one.
+/// Claude with several accounts: each account's name and what is left, in the order set in Settings.
 struct ClaudeMenuBarLabel: View {
     let rows: [ClaudeAccountRow]
     let mode: MenuBarMode
@@ -69,7 +68,7 @@ struct ClaudeMenuBarLabel: View {
                 .frame(width: 15, height: 15)
             ForEach(rows) { row in
                 HStack(spacing: 3) {
-                    tag(row.name, filled: row.isRecommended)
+                    tag(row.name)
                     numbers(row.snapshot).fixedSize()
                 }
             }
@@ -79,20 +78,13 @@ struct ClaudeMenuBarLabel: View {
         .frame(height: 22)
     }
 
-    /// A filled tag is drawn as a solid shape with the text cut out, so it stays a template image.
-    private func tag(_ name: String, filled: Bool) -> some View {
-        let text = Text(name).font(.system(size: 9, weight: .bold)).padding(.horizontal, 3).padding(.vertical, 1)
-        return ZStack {
-            if filled {
-                RoundedRectangle(cornerRadius: 3).fill(.black)
-                text.blendMode(.destinationOut)
-            } else {
-                RoundedRectangle(cornerRadius: 3).strokeBorder(lineWidth: 1)
-                text
-            }
-        }
-        .fixedSize()
-        .compositingGroup()
+    private func tag(_ name: String) -> some View {
+        Text(name)
+            .font(.system(size: 9, weight: .bold))
+            .padding(.horizontal, 3)
+            .padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(lineWidth: 1))
+            .fixedSize()
     }
 
     @ViewBuilder private func numbers(_ snapshot: UsageSnapshot?) -> some View {
