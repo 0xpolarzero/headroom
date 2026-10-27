@@ -1,6 +1,6 @@
 # Agents on other providers — design
 
-Status: proposal, 2026-10-27. Research behind it: [docs/research/](research/) (A: Claude Code side,
+Status: being built on the `agents-on-providers` branch, 2026-10-27. Research behind it: [docs/research/](research/) (A: Claude Code side,
 B: Codex, C: Z.ai and OpenRouter, D: Antigravity).
 
 ## What Claude sees
@@ -82,7 +82,7 @@ persistence, wait logic (B §2, with the bugs to leave behind). Mapping:
 - Open in Terminal: `cd <cwd> && CODEX_HOME=<home> codex resume <threadId>` (stop the runner's copy first).
 - Worktree isolation: Headroom creates the worktree before `thread/start`.
 
-**3. Antigravity: deferred.** `agy -p --output-format stream-json` would work technically (research D §4),
+**3. Antigravity: through the official `agy` CLI as a child process (the user decided to go ahead; no OAuth token reuse).** `agy -p --output-format stream-json` would work technically (research D §4),
 but Google's current FAQ calls wrapping `agy` in third-party coding agents unsupported on consumer plans,
 its terms ban reusing the Antigravity OAuth, and it has banned accounts for this before. A Google forum
 moderator said the opposite; that conflict is still open. Revisit once Google answers it in writing. Gemini

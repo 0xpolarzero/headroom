@@ -116,6 +116,24 @@ its sessions are its own.
 - Running two paid subscriptions side by side is your call; every request is made by Claude Code itself,
   signed in to the account it bills.
 
+## Agents on other providers
+
+**Settings → Agents** is a list of your own agent types, each on a provider and model of its own: Codex,
+Z.ai, OpenRouter, Antigravity, or your other Claude accounts. Each has a name, a description (what it is
+for: Claude reads it to choose), a provider, a model from that provider's list, and an effort, either fixed
+or decided by Claude on each call. Turn one off to hide it.
+
+- Claude sees the enabled ones beside its built-in agent types, as `headroom:<name>` with their description
+  and where they run, and calls them with its built-in `Agent` tool. The plugin reads the list on every
+  prompt, so edits apply from the next turn of every session.
+- Such an agent always runs on its provider: never as a built-in agent, never somewhere else. When the
+  provider can't take it (signed out, out of usage, a model or effort it lacks), the call fails and Claude
+  says why.
+- It behaves like the agents on other Claude accounts above: the same row and transcript, foreground or
+  background, `SendMessage` (on the same provider, model and session, even if the list changed since),
+  `TaskStop`, `ListAgents`, and Open in Terminal on the provider's own session.
+- They run only from the main session's `Agent` tool: not as forks, teammates or from inside a subagent.
+
 ## Behaviour
 
 - Refreshes every 5 minutes, when the panel opens and on ⌘R. After a failure it retries after 60 s and keeps
