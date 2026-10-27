@@ -37,21 +37,48 @@ enum SubagentAccounts {
     }
 }
 
-/// Usage per account, read from each account's own Claude Code sign-in, kept for two minutes.
+/// Usage per account: what the Headroom app last read (it refreshes every few minutes), else read now from
+/// the account's own Claude Code sign-in. An account that just answered "limit reached" counts as full.
 actor SubagentUsage {
     static let shared = SubagentUsage()
     private var cache: [String: (at: Date, sessionUsed: Double?, weeklyUsed: Double?)] = [:]
 
+    struct Status: Codable, Equatable { var session: Double?; var weekly: Double?; var at: Date }
+
     func usage(_ account: ClaudeAccount) async -> (session: Double?, weekly: Double?) {
+        if AgentRegistry.isFull(account.id) { return (100, 100) }
+        let saved = Self.readStatus()[account.id]
+        if let saved, Date().timeIntervalSince(saved.at) < 360 { return (saved.session, saved.weekly) }
         if let hit = cache[account.id], Date().timeIntervalSince(hit.at) < 120 { return (hit.sessionUsed, hit.weeklyUsed) }
-        let snapshot = try? await ClaudeProvider(configDir: account.cliConfigDir).fetch()
+        let snapshot: UsageSnapshot?
+        do {
+            snapshot = try await ClaudeProvider(configDir: account.cliConfigDir).fetch()
+        } catch {
+            SubagentLog.write("usage of \(account.id) unreadable: \(error.localizedDescription)")
+            // Rate limited, say: an older reading beats none. A full account still answers "limit reached".
+            if let saved, Date().timeIntervalSince(saved.at) < 30 * 60 { return (saved.session, saved.weekly) }
+            snapshot = nil
+        }
         func used(_ label: String) -> Double? { snapshot?.windows.first { $0.label == label }?.usedPercent }
         cache[account.id] = (Date(), used("Session"), used("Weekly"))
+        // Shared with the next runners, which are other processes.
+        if snapshot != nil {
+            var status = Self.readStatus()
+            status[account.id] = Status(session: used("Session"), weekly: used("Weekly"), at: Date())
+            Self.writeStatus(status)
+        }
         return (used("Session"), used("Weekly"))
     }
 
-    /// An account that just answered "limit reached" counts as full for the next ten minutes.
-    func markFull(_ account: ClaudeAccount) {
-        cache[account.id] = (Date().addingTimeInterval(480), 100, 100)
+    /// Full for the next ten minutes, for every runner.
+    func markFull(_ account: ClaudeAccount) { AgentRegistry.markFull(account.id) }
+
+    static func readStatus() -> [String: Status] {
+        (try? Data(contentsOf: HeadroomPaths.usage)).flatMap { try? JSONDecoder.headroom.decode([String: Status].self, from: $0) } ?? [:]
+    }
+
+    static func writeStatus(_ status: [String: Status]) {
+        HeadroomPaths.ensure(HeadroomPaths.support)
+        try? JSONEncoder.headroom.encode(status).write(to: HeadroomPaths.usage, options: .atomic)
     }
 }

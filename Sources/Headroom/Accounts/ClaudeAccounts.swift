@@ -8,6 +8,10 @@ enum HeadroomPaths {
     }()
     static let accounts = support.appendingPathComponent("claude-accounts.json")
     static let agents = support.appendingPathComponent("subagents.json")
+    static let agentsLock = support.appendingPathComponent("subagents.lock")
+    static let agentsDir = support.appendingPathComponent("agents", isDirectory: true)
+    /// Each account's latest usage, written by the app as it refreshes, read by the subagent runner.
+    static let usage = support.appendingPathComponent("usage.json")
 
     /// Creates `dir` readable by the user only.
     static func ensure(_ dir: URL) {

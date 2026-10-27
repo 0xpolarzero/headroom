@@ -50,6 +50,22 @@ extension AppModel {
         let installed = SubagentInstaller.isInstalled()
         if installed != subagentsInstalled { subagentsInstalled = installed }
         await refreshClaudeAccounts(force: false, throttle: panelOpened ? Self.openThrottle : nil)
+        writeUsageStatus()
+    }
+
+    /// Each account's latest usage for the subagent runner, so it needn't ask Anthropic on every run.
+    private func writeUsageStatus() {
+        var status: [String: SubagentUsage.Status] = [:]
+        for row in claudeRows {
+            let s = row.isMain ? state(.claude) : claudeAccountStates[row.id] ?? ProviderState()
+            // Kept through errors (rate limited, say): when it was read goes with it.
+            guard let at = s.lastSuccess, s.snapshot != nil else { continue }
+            status[row.id] = .init(session: row.used("Session"), weekly: row.used("Weekly"), at: at)
+        }
+        let saved = SubagentUsage.readStatus()
+        // A runner may have read an account more recently than the app.
+        for (id, entry) in saved where (status[id]?.at ?? .distantPast) < entry.at { status[id] = entry }
+        if status != saved { SubagentUsage.writeStatus(status) }
     }
 
     func refreshClaudeAccounts(force: Bool, throttle: TimeInterval? = nil) async {

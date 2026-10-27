@@ -66,26 +66,36 @@ its sessions are its own.
   and renews that sign-in itself, and Headroom reads the account's usage from it. If it isn't used for a long
   time it expires; run `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude` again.
 - **The panel and the menu bar** show every account's limits, in the order set in Settings.
-- **Run subagents on accounts with room** (Settings) registers `Headroom --mcp` with Claude Code for all your
-  sessions (`claude mcp add --scope user headroom`). It adds two tools that mirror the built-in ones:
-  - **`Agent`** takes the same parameters (`description`, `prompt`, `subagent_type`, `model`, `effort`,
-    `isolation`) and returns the agent's final answer and its `agentId`. It runs `claude -p` on the chosen
-    account, in the session's folder, in auto permission mode. Several calls in one message run in parallel,
-    spread over the accounts.
-  - **`SendMessage`** continues such an agent by its `agentId`, on the same account.
-
-  The server tells Claude to prefer these for subagent work. They start fresh, without the conversation, like
-  built-in subagents, and can't ask questions.
+- **Run subagents on accounts with room** (Settings) installs Headroom's Claude Code plugin for all your
+  sessions (`claude plugin install headroom@headroom --scope user`, from a marketplace folder inside
+  Headroom.app, so it updates with the app). Claude keeps using its built-in `Agent` tool as usual. When
+  another of your accounts has room, the plugin answers that call itself and runs the subagent there:
+  - Claude sees exactly what a background built-in agent gives: "launched" at once with an `agentId`, then a
+    `<task-notification>` with the agent's report when it finishes. `SendMessage` to that `agentId` continues
+    it on the same account; a message sent while it works is read when it finishes.
+  - It runs `claude -p` in the session's folder with the same parameters (`subagent_type`, `model`, `effort`,
+    `isolation`), your MCP servers (from `~/.claude.json`, passed with `--mcp-config`) and the session's
+    permission mode. "Ask each time" becomes auto mode, since nobody can be asked there.
+  - The status line shows "1 agent on Pro"; a pane, **Agents on other accounts** (`/agents-elsewhere`), lists
+    each agent's latest steps.
+  - Calls with no other account free, calls from subagents, named teammates and remote agents go to the
+    built-in tool untouched.
+- **Ready processes.** Claude Code takes about 11 s to start. So when you send a prompt, the plugin asks
+  Headroom to start one on the account a subagent would use, in that folder, waiting for its prompt; an Agent
+  call that matches it (same account, folder, model, type and permission mode) skips the wait: its first step
+  comes after about 2 s instead of about 13 s. Headroom keeps at most two, each about 300 MB plus your MCP
+  servers, and lets them go after 10 minutes unused or when it quits. A runner takes the process's pipes
+  over a socket, so the agent keeps going if Headroom quits.
 - **Which account takes a subagent:** never the session's own account; only accounts below both thresholds
   (90% of the Session and of the Weekly limit by default, set in Settings); among those, the one with the
-  most room. Usage is read from each account's sign-in, cached for two minutes. If an account answers "limit
-  reached" before doing anything, the next one takes the task.
+  most room. Usage comes from what the app last read (every few minutes), else from the account's sign-in;
+  when that is rate limited, a reading up to 30 minutes old is used. If an account answers "limit reached"
+  before doing anything, it counts as full for 10 minutes and the next one takes the task.
 - **Plans differ in models.** If an account's plan doesn't include the model asked for (a Pro plan has no
-  Fable, for example), the subagent runs there with Sonnet and its answer says so.
-- **When none has room**, `Agent` answers `No other Claude account has room right now. Use built-in subagents.`
-  and Claude carries on with its built-in subagents.
-- A subagent never starts subagents on yet another account. The other accounts' folders don't share your
-  user-level MCP servers (`~/.claude.json`), so subagents there don't have them.
+  Fable, for example), the subagent runs there with Sonnet, and Headroom remembers it.
+- A subagent never starts subagents on yet another account. Decisions are logged in
+  `~/Library/Logs/Headroom/subagents.log`; each agent's steps in
+  `~/Library/Application Support/Headroom/agents/<agentId>.log`.
 - Running two paid subscriptions side by side is your call; every request is made by Claude Code itself,
   signed in to the account it bills.
 

@@ -8,10 +8,21 @@ and the earlier designs, kept for reference; their code is in git history.
 ## Current design (2026-10-27): subagents on accounts with room
 
 The app copies below were also replaced. Each account is now only a Claude Code sign-in (`CLAUDE_CONFIG_DIR`
-= `~/.claude-accounts/<name>`), and `Headroom --mcp` gives Claude Code `Agent` and `SendMessage` tools that
-mirror the built-in ones but run each subagent as `claude -p` on another account with room (never the
-session's own, both usage thresholds respected, most room first). With no account free they answer "No other
-Claude account has room right now. Use built-in subagents." The README describes it in full.
+= `~/.claude-accounts/<name>`). Headroom's Claude Code plugin (`ClaudePlugin/` in this repository, installed
+at user scope) hooks the built-in `Agent` tool: when another account has room (never the session's own, both
+usage thresholds respected, most room first), it starts `Headroom --agent-run`, which runs `claude -p` there,
+and answers the call as a background built-in agent does (`async_launched`, then a `<task-notification>`
+through `$.prompt.submit`). `SendMessage` to that agent resumes its session on the same account. With no
+account free the call goes to the built-in tool. A first version was an MCP server (`Headroom --mcp`) with
+look-alike tools; Claude had to be told to prefer them and couldn't run them in the background, so it was
+dropped. The README describes the current behaviour in full.
+
+Startup: a cold `claude -p` on the Pro account took 11.2 s before doing anything (12.5 s with the MCP
+servers), the agent's own work 4 s. A process started with `--input-format stream-json` waits for its
+prompt; given one 15 s later, it took its first step after 1.8 s. So the plugin asks the app to start one
+(`Headroom --agent-warm`) on each prompt the user sends, and a runner claims it over a Unix socket, receiving
+its pipes with SCM_RIGHTS. In a real run the first step came 4.4 s after launch instead of 13. Each ready
+process uses about 300 MB, plus about 450 MB of MCP servers here.
 
 Checked first: `claude -p --output-format json` returns `result`, `session_id`, `is_error`,
 `api_error_status` and `permission_denials`; `--resume <session_id>` continues the same session; `--agent`

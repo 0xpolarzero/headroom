@@ -1,6 +1,7 @@
 import Foundation
 
-/// Runs one subagent turn as a headless Claude Code process (`claude -p`) on a given account.
+/// Runs one subagent turn as a headless Claude Code process (`claude -p`) on a given account, reading its
+/// stream-json output as it comes.
 enum SubagentRunner {
     struct Request: Equatable {
         var prompt: String
@@ -8,13 +9,16 @@ enum SubagentRunner {
         var model: String?
         var effort: String?
         var worktree = false
-        /// Continue this Claude Code session instead of starting one.
-        var resume: String?
+        var permissionMode = "auto"
+        /// The Claude Code session to start (`--session-id`), or to continue when `resume` is set.
+        var sessionID: String
+        var resume = false
+        /// A `--mcp-config` file with the caller's own MCP servers.
+        var mcpConfig: String?
     }
 
     struct Result: Equatable {
         var text: String
-        var sessionID: String?
         var isError: Bool
         /// Anthropic refused for usage limits; nothing to gain from retrying on the same account.
         var limitReached: Bool
@@ -22,19 +26,40 @@ enum SubagentRunner {
         var modelUnavailable = false
         var turns: Int
         var permissionDenials: Int
+        var toolUses = 0
+        var durationMs = 0
+        var inputTokens = 0
+        var outputTokens = 0
+        var model: String?
+        /// The session it ran as: a ready process comes with its own.
+        var sessionID: String?
     }
+
+    /// What a subagent falls back to when the account's plan lacks the model asked for: every paid plan has it.
+    static let fallbackModel = "sonnet"
 
     /// `claude -p` reads the prompt from stdin, so its length never meets the argument limit.
     static func arguments(_ request: Request) -> [String] {
-        var args = ["-p", "--output-format", "json", "--permission-mode", "auto"]
-        if let resume = request.resume { args += ["--resume", resume] }
+        var args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", request.permissionMode]
+        args += request.resume ? ["--resume", request.sessionID] : ["--session-id", request.sessionID]
         // "general-purpose" is the plain session; any other type is an agent Claude Code knows
         // (Explore, Plan, or one from ~/.claude/agents, which every account's folder links to).
         if let type = request.subagentType, !type.isEmpty, type != "general-purpose" { args += ["--agent", type] }
         if let model = request.model, !model.isEmpty { args += ["--model", model] }
         if let effort = request.effort, !effort.isEmpty { args += ["--effort", effort] }
         if request.worktree { args.append("--worktree") }
+        if let mcp = request.mcpConfig { args += ["--mcp-config", mcp] }
         return args
+    }
+
+    /// What a ready process must have been started with to take this run; nil for a follow-up.
+    static func warmSpec(_ request: Request, on account: ClaudeAccount, in directory: String,
+                         environment base: [String: String]) -> WarmPool.Spec? {
+        guard !request.resume else { return nil }
+        var args = arguments(request)
+        if let i = args.firstIndex(of: "--session-id") { args.removeSubrange(i...i + 1) }
+        return WarmPool.Spec(account: account.id, directory: directory, arguments: args,
+                             environment: environment(for: account, from: base))
     }
 
     /// The calling session's environment, minus everything that ties it to that session and account.
@@ -44,7 +69,7 @@ enum SubagentRunner {
               || key == "CLAUDE_CONFIG_DIR" || key == "CLAUDE_EFFORT" || key == "CLAUDE_PID" || key == "ANTHROPIC_BASE_URL")
         }
         if let dir = account.cliConfigDir { env["CLAUDE_CONFIG_DIR"] = dir }
-        env[SubagentServer.nestedMarker] = "1"
+        env[AgentRun.nestedMarker] = "1"
         return env
     }
 
@@ -57,64 +82,107 @@ enum SubagentRunner {
         return candidates.first { fm.isExecutableFile(atPath: $0) }
     }
 
-    /// Runs to completion. `onStart` hands back the process so the caller can stop it.
-    static func run(_ request: Request, on account: ClaudeAccount, in directory: String,
-                    onStart: @Sendable (Process) -> Void = { _ in }) async -> Result {
-        guard let claude = executable() else {
-            return Result(text: "Claude Code (`claude`) was not found on this Mac.", sessionID: nil, isError: true,
-                          limitReached: false, turns: 0, permissionDenials: 0)
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: claude)
-        process.arguments = arguments(request)
-        process.environment = environment(for: account, from: ProcessInfo.processInfo.environment)
-        process.currentDirectoryURL = URL(fileURLWithPath: directory)
-        let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        let (out, err): (Data, Data) = await withCheckedContinuation { cont in
-            // Read both pipes while the process runs, so a large answer can't fill a pipe and stall it.
-            let group = DispatchGroup()
-            var outData = Data(), errData = Data()
-            group.enter()
-            DispatchQueue.global().async { outData = stdout.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-            group.enter()
-            DispatchQueue.global().async { errData = stderr.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-            do {
-                try process.run()
-            } catch {
-                cont.resume(returning: (Data(), Data(error.localizedDescription.utf8)))
-                return
-            }
-            onStart(process)
-            stdin.fileHandleForWriting.write(Data(request.prompt.utf8))
-            try? stdin.fileHandleForWriting.close()
-            group.notify(queue: .global()) {
-                process.waitUntilExit()
-                cont.resume(returning: (outData, errData))
-            }
-        }
-        return parse(out, stderr: String(decoding: err, as: UTF8.self))
+    /// The caller's MCP servers for `--mcp-config`: its user servers and the ones it set for this folder,
+    /// from `~/.claude.json` (an account's own folder has neither). Headroom's own entry is left out.
+    static func mcpConfig(from claudeJSON: [String: Any], directory: String) -> [String: Any]? {
+        var servers = claudeJSON.dict("mcpServers") ?? [:]
+        for (key, value) in claudeJSON.dict("projects")?.dict(directory)?.dict("mcpServers") ?? [:] { servers[key] = value }
+        servers["headroom"] = nil
+        return servers.isEmpty ? nil : ["mcpServers": servers]
     }
 
-    /// Claude Code's `--output-format json` result object.
-    static func parse(_ data: Data, stderr: String) -> Result {
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Result(text: message.isEmpty ? "The subagent stopped without an answer." : String(message.suffix(2000)),
-                          sessionID: nil, isError: true, limitReached: Self.mentionsLimit(message), turns: 0, permissionDenials: 0)
+    /// Runs to completion, calling `onStep` for each step the agent takes ("Read: note.txt").
+    static func run(_ request: Request, on account: ClaudeAccount, in directory: String,
+                    onStep: @escaping @Sendable (String) -> Void) async -> Result {
+        let base = ProcessInfo.processInfo.environment
+        let output: FileHandle, errors: FileHandle
+        var process: Process?
+        var sessionID = request.sessionID
+        if let spec = warmSpec(request, on: account, in: directory, environment: base), let ready = WarmPool.claim(spec) {
+            // Already started: it only needs the prompt.
+            sessionID = ready.sessionID
+            ready.input.write(WarmPool.userMessage(request.prompt))
+            try? ready.input.close()
+            output = ready.output
+            errors = ready.errors
+        } else {
+            guard let claude = executable() else {
+                return Result(text: "Claude Code (`claude`) was not found on this Mac.", isError: true, limitReached: false,
+                              turns: 0, permissionDenials: 0)
+            }
+            let started = Process()
+            started.executableURL = URL(fileURLWithPath: claude)
+            started.arguments = arguments(request)
+            started.environment = environment(for: account, from: base)
+            started.currentDirectoryURL = URL(fileURLWithPath: directory)
+            let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
+            started.standardInput = stdin
+            started.standardOutput = stdout
+            started.standardError = stderr
+            do { try started.run() } catch {
+                return Result(text: error.localizedDescription, isError: true, limitReached: false, turns: 0, permissionDenials: 0)
+            }
+            stdin.fileHandleForWriting.write(Data(request.prompt.utf8))
+            try? stdin.fileHandleForWriting.close()
+            output = stdout.fileHandleForReading
+            errors = stderr.fileHandleForReading
+            process = started
         }
+        let errText = Task.detached { String(decoding: errors.readDataToEndOfFile(), as: UTF8.self) }
+
+        var final: [String: Any]?
+        var toolUses = 0
+        do {
+            for try await line in output.bytes.lines {
+                guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { continue }
+                switch event.string("type") {
+                case "assistant":
+                    for block in event.dict("message")?.array("content") ?? [] where block.string("type") == "tool_use" {
+                        toolUses += 1
+                        onStep(describe(tool: block.string("name") ?? "tool", input: block.dict("input") ?? [:]))
+                    }
+                case "result":
+                    final = event
+                default:
+                    break
+                }
+            }
+        } catch {}
+        process?.waitUntilExit()
+        let stderrText = await errText.value
+        guard let final else {
+            let message = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Result(text: message.isEmpty ? "The subagent stopped without an answer." : String(message.suffix(2000)),
+                          isError: true, limitReached: mentionsLimit(message), turns: 0, permissionDenials: 0, sessionID: sessionID)
+        }
+        var result = parse(final)
+        result.toolUses = toolUses
+        result.sessionID = sessionID
+        return result
+    }
+
+    /// Claude Code's result event (`--output-format json`, or the last stream-json line).
+    static func parse(_ root: [String: Any]) -> Result {
         let text = root.string("result") ?? ""
         let isError = root["is_error"] as? Bool ?? false
         let status = root.double("api_error_status").map(Int.init)
         let modelUnavailable = isError && Self.modelUnavailable(text)
-        return Result(text: text, sessionID: root.string("session_id"), isError: isError,
+        let usage = root.dict("usage")
+        return Result(text: text, isError: isError,
                       limitReached: isError && !modelUnavailable && (status == 429 || mentionsLimit(text)),
                       modelUnavailable: modelUnavailable,
                       turns: Int(root.double("num_turns") ?? 0),
-                      permissionDenials: (root["permission_denials"] as? [Any])?.count ?? 0)
+                      permissionDenials: (root["permission_denials"] as? [Any])?.count ?? 0,
+                      durationMs: Int(root.double("duration_ms") ?? 0),
+                      inputTokens: Int((usage?.double("input_tokens") ?? 0) + (usage?.double("cache_read_input_tokens") ?? 0)
+                                       + (usage?.double("cache_creation_input_tokens") ?? 0)),
+                      outputTokens: Int(usage?.double("output_tokens") ?? 0),
+                      model: root.dict("modelUsage")?.keys.sorted().first)
+    }
+
+    static func mentionsLimit(_ text: String) -> Bool {
+        let t = text.lowercased()
+        return t.contains("usage limit") || t.contains("limit reached") || t.contains("rate limit") || t.contains("hit your limit")
     }
 
     static func modelUnavailable(_ text: String) -> Bool {
@@ -122,11 +190,21 @@ enum SubagentRunner {
         return t.contains("switch to another model") || t.contains("requires usage credits") || t.contains("not available on your plan")
     }
 
-    /// What a subagent falls back to when the account's plan lacks the model asked for: every paid plan has it.
-    static let fallbackModel = "sonnet"
-
-    static func mentionsLimit(_ text: String) -> Bool {
-        let t = text.lowercased()
-        return t.contains("usage limit") || t.contains("limit reached") || t.contains("rate limit") || t.contains("hit your limit")
+    /// One short line for a step, as a built-in agent's progress reads: "Read: note.txt", "Bash: Run the tests".
+    static func describe(tool: String, input: [String: Any]) -> String {
+        func file(_ key: String) -> String? { input.string(key).map { ($0 as NSString).lastPathComponent } }
+        let detail: String?
+        switch tool {
+        case "Read", "Edit", "Write", "NotebookEdit": detail = file("file_path") ?? file("notebook_path")
+        case "Bash": detail = input.string("description") ?? input.string("command")
+        case "Grep", "Glob": detail = input.string("pattern")
+        case "WebFetch": detail = input.string("url")
+        case "WebSearch": detail = input.string("query")
+        case "Agent", "Task": detail = input.string("description")
+        default: detail = nil
+        }
+        guard let detail, !detail.isEmpty else { return tool }
+        let line = detail.replacingOccurrences(of: "\n", with: " ")
+        return line.count > 80 ? "\(tool): \(line.prefix(79))…" : "\(tool): \(line)"
     }
 }

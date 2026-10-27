@@ -4,7 +4,8 @@ import AppKit
 enum Entry {
     static func main() {
         if CommandLine.arguments.contains("--print") { printUsage(); return }
-        if CommandLine.arguments.contains("--mcp") { SubagentServer.run() }
+        if CommandLine.arguments.contains("--agent-run") { AgentRun.main() }
+        if CommandLine.arguments.contains("--agent-warm") { AgentRun.warmMain() }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -45,5 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.start()
         self.model = model
         statusBar = StatusBarController(model: model)
+        WarmPoolServer.shared.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        WarmPoolServer.shared.stop()
     }
 }

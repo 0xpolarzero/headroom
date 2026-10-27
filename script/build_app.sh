@@ -11,6 +11,9 @@ version="${VERSION:-0.1.0}"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/Headroom"
+# The Claude Code plugin that runs subagents on other accounts, a marketplace Claude Code reads in place.
+cp -R ClaudePlugin "$app/Contents/Resources/ClaudePlugin"
+rm -rf "$app/Contents/Resources/ClaudePlugin/headroom/tests" "$app/Contents/Resources/ClaudePlugin/headroom/.claude-plugin/types"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

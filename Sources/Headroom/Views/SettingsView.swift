@@ -186,7 +186,7 @@ struct ClaudeAccountsSettings: View {
 
         Toggle("Run subagents on accounts with room", isOn: Binding(
             get: { model.subagentsInstalled }, set: { model.setSubagentsInstalled($0) }))
-        Text("Adds Headroom's Agent and SendMessage tools to Claude Code. Sessions use them like the built-in ones; each subagent runs on another of your accounts, in auto mode, or falls back to the built-in subagents when none has room.")
+        Text("Installs Headroom's Claude Code plugin. When another of your accounts has room, a session's subagents run there, exactly like built-in ones; otherwise they run as usual.")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         threshold("Up to Session", \.sessionThreshold) { model.setThresholds(session: $0) }
         threshold("Up to Weekly", \.weeklyThreshold) { model.setThresholds(weekly: $0) }

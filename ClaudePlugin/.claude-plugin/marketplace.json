@@ -1,0 +1,11 @@
+{
+  "name": "headroom",
+  "owner": { "name": "Headroom" },
+  "plugins": [
+    {
+      "name": "headroom",
+      "source": "./headroom",
+      "description": "Runs Claude Code's subagents on your other Claude accounts that have room, exactly like built-in subagents."
+    }
+  ]
+}

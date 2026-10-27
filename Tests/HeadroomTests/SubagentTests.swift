@@ -34,11 +34,20 @@ final class SubagentTests: XCTestCase {
     // MARK: Running Claude Code
 
     func testArgumentsMirrorTheBuiltInParameters() {
-        let args = SubagentRunner.arguments(.init(prompt: "x", subagentType: "Explore", model: "haiku", effort: "high", worktree: true))
-        XCTAssertEqual(args, ["-p", "--output-format", "json", "--permission-mode", "auto", "--agent", "Explore",
-                              "--model", "haiku", "--effort", "high", "--worktree"])
-        XCTAssertFalse(SubagentRunner.arguments(.init(prompt: "x", subagentType: "general-purpose")).contains("--agent"))
-        XCTAssertEqual(SubagentRunner.arguments(.init(prompt: "x", resume: "s1")).suffix(2), ["--resume", "s1"])
+        let args = SubagentRunner.arguments(.init(prompt: "x", subagentType: "Explore", model: "haiku", effort: "high", worktree: true,
+                                                  permissionMode: "acceptEdits", sessionID: "s1", mcpConfig: "/m.json"))
+        XCTAssertEqual(args, ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+                              "--session-id", "s1", "--agent", "Explore", "--model", "haiku", "--effort", "high", "--worktree",
+                              "--mcp-config", "/m.json"])
+        XCTAssertFalse(SubagentRunner.arguments(.init(prompt: "x", subagentType: "general-purpose", sessionID: "s")).contains("--agent"))
+        XCTAssertTrue(SubagentRunner.arguments(.init(prompt: "x", sessionID: "s1", resume: true)).contains("--resume"))
+    }
+
+    func testPermissionModeFollowsTheSession() {
+        XCTAssertEqual(AgentRun.mappedPermissionMode("acceptEdits"), "acceptEdits")
+        XCTAssertEqual(AgentRun.mappedPermissionMode("plan"), "plan")
+        XCTAssertEqual(AgentRun.mappedPermissionMode("default"), "auto")   // a headless run can't ask
+        XCTAssertEqual(AgentRun.mappedPermissionMode(nil), "auto")
     }
 
     func testEnvironmentDropsTheCallingSessionsIdentity() {
@@ -49,60 +58,79 @@ final class SubagentTests: XCTestCase {
         XCTAssertNil(pro["CLAUDE_CODE_ACCOUNT_UUID"])
         XCTAssertNil(pro["CLAUDECODE"])
         XCTAssertTrue(pro["CLAUDE_CONFIG_DIR"]!.hasSuffix("/.claude-accounts/Pro"))
-        XCTAssertEqual(pro[SubagentServer.nestedMarker], "1")
+        XCTAssertEqual(pro[AgentRun.nestedMarker], "1")
         XCTAssertNil(SubagentRunner.environment(for: ClaudeAccount(id: "main"), from: base)["CLAUDE_CONFIG_DIR"])
     }
 
+    func testMCPServersComeFromTheCallersConfig() {
+        let root: [String: Any] = [
+            "mcpServers": ["lcu": ["command": "lcu"], "headroom": ["command": "Headroom"]],
+            "projects": ["/work": ["mcpServers": ["db": ["command": "db"]]], "/other": ["mcpServers": ["x": [:]]]],
+        ]
+        let servers = SubagentRunner.mcpConfig(from: root, directory: "/work")?["mcpServers"] as? [String: Any]
+        XCTAssertEqual(Set(servers?.keys ?? [:].keys), ["lcu", "db"])
+        XCTAssertNil(SubagentRunner.mcpConfig(from: [:], directory: "/work"))
+    }
+
     func testParsesClaudeCodesResult() {
-        let ok = SubagentRunner.parse(Data(#"{"type":"result","is_error":false,"result":"HELLO","session_id":"s1","num_turns":2,"permission_denials":[]}"#.utf8), stderr: "")
-        XCTAssertEqual(ok, .init(text: "HELLO", sessionID: "s1", isError: false, limitReached: false, turns: 2, permissionDenials: 0))
-        XCTAssertFalse(ok.modelUnavailable)
-        let limit = SubagentRunner.parse(Data(#"{"is_error":true,"result":"Claude AI usage limit reached","api_error_status":429,"num_turns":1}"#.utf8), stderr: "")
+        let ok = SubagentRunner.parse(["type": "result", "is_error": false, "result": "HELLO", "num_turns": 2, "permission_denials": [],
+                                       "duration_ms": 1200, "usage": ["input_tokens": 10, "output_tokens": 5]])
+        XCTAssertEqual(ok.text, "HELLO")
+        XCTAssertFalse(ok.isError)
+        XCTAssertEqual(ok.durationMs, 1200)
+        XCTAssertEqual(ok.outputTokens, 5)
+        let limit = SubagentRunner.parse(["is_error": true, "result": "Claude AI usage limit reached", "api_error_status": 429, "num_turns": 1])
         XCTAssertTrue(limit.limitReached)
-        let model = SubagentRunner.parse(Data(#"{"is_error":true,"result":"Fable 5.1 requires usage credits. Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.","api_error_status":429,"num_turns":1}"#.utf8), stderr: "")
+        let model = SubagentRunner.parse(["is_error": true, "result": "Fable 5.1 requires usage credits. Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.", "api_error_status": 429])
         XCTAssertTrue(model.modelUnavailable)
         XCTAssertFalse(model.limitReached)
-        let crash = SubagentRunner.parse(Data(), stderr: "boom")
-        XCTAssertEqual(crash.text, "boom")
-        XCTAssertTrue(crash.isError)
     }
 
-    func testResultEndsWithTheAgentID() {
-        let text = SubagentServer().format(.init(text: "Done.", sessionID: "s1", isError: false, limitReached: false, turns: 3, permissionDenials: 1), account: "Pro")
-        XCTAssertTrue(text.hasPrefix("Done."))
-        XCTAssertTrue(text.contains("denied 1 action"))
-        XCTAssertTrue(text.hasSuffix("agentId: s1 (ran on the Pro account; use SendMessage with this agentId to continue this agent)"))
+    func testStepsReadLikeAgentProgress() {
+        XCTAssertEqual(SubagentRunner.describe(tool: "Read", input: ["file_path": "/a/b/note.txt"]), "Read: note.txt")
+        XCTAssertEqual(SubagentRunner.describe(tool: "Bash", input: ["command": "npm test", "description": "Run the tests"]), "Bash: Run the tests")
+        XCTAssertEqual(SubagentRunner.describe(tool: "TodoWrite", input: [:]), "TodoWrite")
     }
 
-    // MARK: MCP
-
-    private func exchange(_ message: [String: Any]) async -> [String: Any]? {
-        let server = SubagentServer()
-        let box = Box()
-        server.output = { box.data = $0 }
-        await server.handle(message)
-        return box.data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    func testAReadyProcessMatchesEverythingButTheSession() {
+        let account = ClaudeAccount(id: "Pro")
+        let a = SubagentRunner.Request(prompt: "one", model: "sonnet", permissionMode: "auto", sessionID: "s1", mcpConfig: "/m.json")
+        var b = a
+        b.prompt = "two"
+        b.sessionID = "s2"
+        let specA = SubagentRunner.warmSpec(a, on: account, in: "/work", environment: [:])
+        XCTAssertEqual(specA?.arguments.contains("--session-id"), false)
+        XCTAssertTrue(specA?.matches(SubagentRunner.warmSpec(b, on: account, in: "/work", environment: ["PATH": "/bin"])!) ?? false)
+        b.model = "haiku"
+        XCTAssertFalse(specA?.matches(SubagentRunner.warmSpec(b, on: account, in: "/work", environment: [:])!) ?? true)
+        XCTAssertFalse(specA?.matches(SubagentRunner.warmSpec(a, on: account, in: "/elsewhere", environment: [:])!) ?? true)
+        var resumed = a
+        resumed.resume = true
+        XCTAssertNil(SubagentRunner.warmSpec(resumed, on: account, in: "/work", environment: [:]))
     }
 
-    func testInitializeCarriesTheInstructions() async {
-        let reply = await exchange(["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": ["protocolVersion": "2025-06-18"]])
-        let result = reply?["result"] as? [String: Any]
-        XCTAssertEqual(result?["protocolVersion"] as? String, "2025-06-18")
-        XCTAssertTrue((result?["instructions"] as? String)?.contains(SubagentServer.noRoom) == true)
+    func testPipesTravelOverTheSocket() throws {
+        var pair: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        let pipe = Pipe()
+        WarmPool.reply(pair[0], ["sessionID": "abc"], passing: [pipe.fileHandleForWriting.fileDescriptor])
+        var fds: [Int32] = []
+        let reply = WarmPool.receive(pair[1], fds: &fds)
+        XCTAssertEqual(reply?["sessionID"] as? String, "abc")
+        XCTAssertEqual(fds.count, 1)
+        let handle = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
+        handle.write(Data("hi".utf8))
+        try handle.close()
+        try pipe.fileHandleForWriting.close()
+        XCTAssertEqual(String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self), "hi")
+        close(pair[0]); close(pair[1])
     }
 
-    func testListsAgentAndSendMessage() async {
-        let reply = await exchange(["jsonrpc": "2.0", "id": 2, "method": "tools/list"])
-        let tools = (reply?["result"] as? [String: Any])?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.compactMap { $0["name"] as? String }, ["Agent", "SendMessage"])
-        let schema = tools?.first?["inputSchema"] as? [String: Any]
-        XCTAssertEqual(schema?["required"] as? [String], ["description", "prompt"])
-    }
-
-    func testUnknownMethodIsAnError() async {
-        let reply = await exchange(["jsonrpc": "2.0", "id": 3, "method": "resources/list"])
-        XCTAssertEqual((reply?["error"] as? [String: Any])?["code"] as? Int, -32601)
+    func testThePromptIsAStreamJSONUserMessage() throws {
+        let line = WarmPool.userMessage("Read note.txt")
+        XCTAssertEqual(line.last, 0x0A)
+        let object = try JSONSerialization.jsonObject(with: line.dropLast()) as? [String: Any]
+        XCTAssertEqual(object?["type"] as? String, "user")
+        XCTAssertEqual((object?["message"] as? [String: Any])?["content"] as? String, "Read note.txt")
     }
 }
-
-private final class Box: @unchecked Sendable { var data: Data? }

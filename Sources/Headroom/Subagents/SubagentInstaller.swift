@@ -1,39 +1,51 @@
 import Foundation
 
-/// Registers `Headroom --mcp` with Claude Code for every session (user scope), through Claude Code's own
-/// `claude mcp add`, so Headroom never edits Claude Code's files itself.
+/// Installs Headroom's Claude Code plugin for every session (user scope), through Claude Code's own
+/// `claude plugin` commands. The plugin ships inside Headroom.app as a folder marketplace, which Claude
+/// Code reads in place, so it updates with the app.
 enum SubagentInstaller {
-    static let name = "headroom"
+    static let marketplace = "headroom"
+    static let plugin = "headroom@headroom"
 
     enum InstallError: LocalizedError {
-        case noClaude, failed(String)
+        case noClaude, noPlugin, failed(String)
         var errorDescription: String? {
             switch self {
             case .noClaude: "Claude Code (`claude`) was not found on this Mac."
+            case .noPlugin: "This copy of Headroom has no Claude Code plugin; build it with script/build_app.sh."
             case .failed(let output): "Claude Code refused: \(output)"
             }
         }
     }
 
-    /// The server is listed under `mcpServers` in `~/.claude.json`.
+    /// The plugin's marketplace folder inside the app bundle.
+    static var marketplaceFolder: String? {
+        let path = Bundle.main.bundlePath + "/Contents/Resources/ClaudePlugin"
+        return FileManager.default.fileExists(atPath: path + "/.claude-plugin/marketplace.json") ? path : nil
+    }
+
+    /// Enabled in Claude Code's user settings (`enabledPlugins` in `~/.claude/settings.json`).
     static func isInstalled() -> Bool {
-        let url = URL(fileURLWithPath: NSHomeDirectory() + "/.claude.json")
+        let url = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/settings.json")
         guard let root = (try? Data(contentsOf: url)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
         else { return false }
-        return root.dict("mcpServers")?[name] != nil
+        return root.dict("enabledPlugins")?[plugin] as? Bool == true
     }
 
     static func install() async throws {
-        let executable = Bundle.main.executablePath ?? CommandLine.arguments[0]
-        if isInstalled() { try await claude(["mcp", "remove", "--scope", "user", name]) }
-        try await claude(["mcp", "add", "--scope", "user", name, "--", executable, "--mcp"])
+        guard let folder = marketplaceFolder else { throw InstallError.noPlugin }
+        _ = try? await claude(["plugin", "marketplace", "remove", marketplace])
+        try await claude(["plugin", "marketplace", "add", folder])
+        try await claude(["plugin", "install", plugin, "--scope", "user"])
     }
 
     static func uninstall() async throws {
-        try await claude(["mcp", "remove", "--scope", "user", name])
+        try await claude(["plugin", "uninstall", plugin, "--scope", "user"])
+        _ = try? await claude(["plugin", "marketplace", "remove", marketplace])
     }
 
-    private static func claude(_ args: [String]) async throws {
+    @discardableResult
+    private static func claude(_ args: [String]) async throws -> String {
         guard let path = SubagentRunner.executable() else { throw InstallError.noClaude }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
@@ -46,8 +58,8 @@ enum SubagentInstaller {
         try process.run()
         let data = await Task.detached { output.fileHandleForReading.readDataToEndOfFile() }.value
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw InstallError.failed(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
-        }
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard process.terminationStatus == 0 else { throw InstallError.failed(text) }
+        return text
     }
 }
