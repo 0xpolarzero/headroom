@@ -16,24 +16,32 @@ struct OpenRouterProvider: UsageProvider {
             return (http.statusCode, object as? [String: Any] ?? [:])
         }
 
-        let (status, credits) = try await get("/credits")
-        if status == 401 { throw ProviderError.unauthorized("OpenRouter API key invalid. Check it in Settings.") }
-        guard (200..<300).contains(status) else { throw ProviderError.http(status) }
-        let balance = Self.balance(from: credits)
-
-        // Management keys list every key; anything else falls back to the key's own record.
+        // Regular inference keys report themselves; /credits and /keys require management access.
+        let (status, body) = try await get("/key")
         var keys: [KeyUsage] = []
-        if let (s, body) = try? await get("/keys"), (200..<300).contains(s) {
-            keys = Self.keys(fromList: body)
-        } else if let (s, body) = try? await get("/key"), (200..<300).contains(s), let one = Self.key(from: body.dict("data") ?? [:]) {
-            keys = [one]
-        }
-
         var windows: [UsageWindow] = []
         var menuText: String?
-        if let balance {
-            windows.append(Self.creditsWindow(balance))
-            menuText = Format.dollars(balance.total - balance.used)
+        if (200..<300).contains(status), !Self.isManagementKey(body), let one = Self.key(from: body.dict("data") ?? [:]) {
+            keys = [one]
+            if let remaining = one.limitRemaining {
+                menuText = Format.dollars(max(remaining, 0))
+                windows.append(UsageWindow(label: "Credits", usedPercent: one.limit.flatMap { $0 > 0 ? min(max(($0 - remaining) / $0 * 100, 0), 100) : nil },
+                                           detail: "\(Format.dollars(max(remaining, 0))) left on this key"))
+            }
+        } else if Self.isManagementKey(body) || status == 401 || status == 403 {
+            // A management key can show account balance and all keys, but cannot run an agent.
+            let (creditStatus, credits) = try await get("/credits")
+            if creditStatus == 401 { throw ProviderError.unauthorized("OpenRouter API key invalid. Check it in Settings.") }
+            guard (200..<300).contains(creditStatus) else { throw ProviderError.http(creditStatus) }
+            if let balance = Self.balance(from: credits) {
+                windows.append(Self.creditsWindow(balance))
+                menuText = Format.dollars(max(balance.total - balance.used, 0))
+            }
+            if let (s, list) = try? await get("/keys"), (200..<300).contains(s) { keys = Self.keys(fromList: list) }
+        } else if !(200..<300).contains(status) {
+            throw ProviderError.http(status)
+        } else {
+            throw ProviderError.invalidResponse
         }
         return UsageSnapshot(title: "OpenRouter", plan: nil, windows: windows, keys: keys, menuBarText: menuText)
     }
@@ -65,7 +73,35 @@ struct OpenRouterProvider: UsageProvider {
                         disabled: d["disabled"] as? Bool ?? false)
     }
 
-    private static func apiKey() -> String? {
+    /// A management key is for provisioning, not model calls. Check the regular-key identity first.
+    /// https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key
+    static func validateInferenceKey(_ key: String) async throws {
+        let headers = ["Authorization": "Bearer \(key)", "Accept": "application/json"]
+        let (body, http) = try await HTTP.json(HTTP.request(base + "/key", headers: headers))
+        let root = body as? [String: Any] ?? [:]
+        if (200..<300).contains(http.statusCode) {
+            try checkInferenceKey(root)
+            return
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            let (_, credits) = try await HTTP.json(HTTP.request(base + "/credits", headers: headers))
+            if (200..<300).contains(credits.statusCode) { throw ProviderError.message(EndpointProfile.missingKey(.openrouter)) }
+            throw ProviderError.unauthorized("OpenRouter authentication failed. Check the regular API key in Headroom's Settings.")
+        }
+        throw ProviderError.http(http.statusCode)
+    }
+
+    static func checkInferenceKey(_ root: [String: Any]) throws {
+        guard root.dict("data") != nil else { throw ProviderError.invalidResponse }
+        if isManagementKey(root) { throw ProviderError.message(EndpointProfile.missingKey(.openrouter)) }
+    }
+
+    static func isManagementKey(_ root: [String: Any]) -> Bool {
+        let data = root.dict("data") ?? root
+        return data["is_management_key"] as? Bool == true || data["is_provisioning_key"] as? Bool == true
+    }
+
+    static func apiKey() -> String? {
         if let k = Keychain.readOwn(service: keyService, account: keyAccount), !k.isEmpty { return k }
         if let k = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !k.isEmpty { return k }

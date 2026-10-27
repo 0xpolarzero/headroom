@@ -77,6 +77,7 @@ final class AppModel {
     private(set) var accountError: String?
     private(set) var zaiSignedIn = false
     private(set) var hasOpenRouterKey = false
+    private(set) var hasZAIKey = false
     private var signInTask: Task<Void, Never>?
     // Claude accounts (AppModel+Claude.swift)
     var claudeConfig = ClaudeAccountsConfig.load()
@@ -220,6 +221,7 @@ final class AppModel {
         antigravityEmail = login.flatMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }?.string("email")
         zaiSignedIn = Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.sessionAccount) != nil
             || Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.keyAccount) != nil
+        hasZAIKey = Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.keyAccount) != nil
         hasOpenRouterKey = Keychain.readOwn(service: OpenRouterProvider.keyService, account: OpenRouterProvider.keyAccount) != nil
     }
 
@@ -267,6 +269,24 @@ final class AppModel {
 
     func signOutZAI() {
         Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.sessionAccount)
+        Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.keyAccount)
+        loadAccounts()
+        reset(.zai)
+    }
+
+    func saveZAIKey(_ key: String) {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        guard Keychain.writeOwn(service: ZAIProvider.service, account: ZAIProvider.keyAccount, value: key) else {
+            accountError = "Could not save the Coding Plan API key to the Keychain."
+            return
+        }
+        accountError = nil
+        loadAccounts()
+        reset(.zai)
+    }
+
+    func removeZAIKey() {
         Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.keyAccount)
         loadAccounts()
         reset(.zai)
