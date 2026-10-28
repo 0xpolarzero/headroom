@@ -27,10 +27,25 @@ runner still supplies both. Worktree isolation belongs to the remote worker, so 
 creates no second, unused worktree.
 
 No-room calls remain built-in, as do ordinary forks, teammates, workflow agents, remote agents and calls
-from subagents. Other failures never fall back to the session's model: admission failures are Agent
-errors, and execution failures are explicit `Headroom agent failed: ...` reports with a failed pane entry.
-The native task may finish normally while carrying that failure report. If room disappears between
-admission and execution, the report explains the error instead of spending on the session's account.
+from subagents. Each subagent already running on an account counts as 10 points of its usage, so a burst
+of parallel calls doesn't all land on one account's last points.
+
+**Usage limits never reach the calling agent** (changed 2026-10-28, after six parallel Opus judges sent to
+Pro at 50% ran it to its session limit and each reported `You've hit your session limit` to the caller,
+which then asked the user whether to wait). If an account reaches its limit before any work, the agent
+starts again on the next account. If it reaches its limit partway through, the agent's Claude Code session
+is copied to the next account's folder (`projects/<folder>/<session>.jsonl` and its side files, without
+the trailing limit notice) and continued there with `--resume` and a neutral "continue" prompt. A follow-up
+(SendMessage) works the same way. The next account is the other account with the most room. If none
+has room, it's the session's own account, which is where a built-in subagent would have run. The same
+applies when the room an agent was admitted for is gone by the time it starts. Only when every account,
+the session's own included, is at its limit does the caller get the limit as an error. The pane shows each
+move. `HEADROOM_LIVE_FAILOVER=1 swift test --filter testLiveAnAgentAtItsLimit` checks a move between
+two real accounts with Haiku.
+
+Other failures never fall back: admission failures are Agent errors, and execution failures are explicit
+`Headroom agent failed: ...` reports with a failed pane entry. The native task may finish normally while
+carrying that failure report.
 The runner validates Claude Code's init before announcing `started`, and checks that the native id is
 preserved. `Headroom --agent-selftest` retains the ready-process start, resume and stop checks once per
 Claude Code version. The pane, status line, warm pool and remote logs remain Headroom's.

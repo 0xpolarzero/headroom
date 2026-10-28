@@ -364,7 +364,9 @@ enum SubagentRunner {
 
     static func mentionsLimit(_ text: String) -> Bool {
         let t = text.lowercased()
-        return t.contains("usage limit") || t.contains("limit reached") || t.contains("rate limit") || t.contains("hit your limit")
+        // Claude Code says "You've hit your session limit" / "weekly limit" / "Opus limit", not only "your limit".
+        return t.contains("usage limit") || t.contains("limit reached") || t.contains("rate limit")
+            || t.range(of: #"hit your (\w+ )?limit"#, options: .regularExpression) != nil
     }
 
     static func modelUnavailable(_ text: String) -> Bool {

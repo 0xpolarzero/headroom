@@ -9,7 +9,8 @@ import Foundation
 /// - `{"type":"started","agentId","account","model","outputFile"}`: Claude Code started as expected and
 ///   is running, the agent's id fixed.
 /// - `{"type":"step","text"}`: a step the agent took ("Read: note.txt").
-/// - `{"type":"moved","account","reason"}`: the account refused before any work; another took over.
+/// - `{"type":"moved","account","reason"}`: the account reached its usage limit; another took over (before
+///   any work, from the start; partway through, continuing the same session).
 /// - `{"type":"result","text","isError",...}`: its final answer; `stopped` when TaskStop ended it.
 enum AgentRun {
     /// Set in a subagent's environment: a subagent never starts subagents on yet another account.
@@ -164,7 +165,7 @@ enum AgentRun {
             let req = SubagentRunner.Request(prompt: request.prompt, subagentType: entry.subagentType, model: entry.model,
                                              effort: entry.effort, permissionMode: permissionMode, sessionID: entry.sessionID,
                                              resume: true, mcpConfig: mcpConfig)
-            let result = await SubagentRunner.run(req, on: account, in: entry.directory,
+            var result = await SubagentRunner.run(req, on: account, in: entry.directory,
                                                   onProcess: { AgentRegistry.setProcess(agentID, claude: $0) },
                                                   check: launch.check(subagentType: entry.subagentType, account: account.id) { event in
                 AgentRegistry.remember(agentID, entry: entry, at: event["cwd"] as? String)
@@ -172,8 +173,13 @@ enum AgentRun {
             }) { step(agentID, $0) } onItem: { item(agentID, $0) }
             if result.limitReached { await SubagentUsage.shared.markFull(account) }
             guard launch.started else { return fail(agentID, result) }
-            AgentRegistry.remember(agentID, entry: entry, at: result.directory)
-            finish(agentID, result, account: account.id)
+            var moved = entry
+            if let directory = result.directory { moved.directory = directory }
+            (result, moved) = await carryOn(agentID, entry: moved, result: result, accounts: accounts, config: config,
+                                            own: SubagentAccounts.ownAccountUUID(), tried: [],
+                                            permissionMode: permissionMode, mcpConfig: mcpConfig)
+            AgentRegistry.remember(agentID, entry: moved)
+            finish(agentID, result, account: moved.account)
             return
         }
 
@@ -182,10 +188,13 @@ enum AgentRun {
         let agentID = request.id ?? UUID().uuidString.lowercased()
         let launch = Launch()
         var tried = Set<String>()
+        var refused: SubagentRunner.Result?
         while true {
-            guard let account = await pick(accounts, config: config, own: own, excluding: tried) else {
+            // Admitted already: when the room it was admitted for is gone, the session's own account takes it,
+            // as a built-in subagent would have run there.
+            guard let account = await nextAccount(accounts, config: config, own: own, excluding: tried) else {
                 if launch.started {
-                    finish(agentID, .init(text: AgentRun.noRoom, isError: true, limitReached: true, turns: 0, permissionDenials: 0), account: nil)
+                    finish(agentID, refused ?? .init(text: AgentRun.noRoom, isError: true, limitReached: true, turns: 0, permissionDenials: 0), account: nil)
                 } else {
                     emit(["type": "no_room"])
                 }
@@ -226,16 +235,86 @@ enum AgentRun {
                 // Refused before doing anything: another account can take the task whole.
                 await SubagentUsage.shared.markFull(account)
                 tried.insert(account.id)
+                refused = result
                 emit(["type": "moved", "account": account.id, "reason": "\(account.id) is at its usage limit"])
                 continue
             }
-            if result.limitReached { await SubagentUsage.shared.markFull(account) }
-            AgentRegistry.remember(agentID, entry: .init(account: account.id, directory: result.directory ?? request.cwd,
-                                                         sessionID: result.sessionID ?? req.sessionID, model: req.model,
-                                                         subagentType: request.subagentType, effort: request.effort, at: Date()))
-            finish(agentID, result, account: account.id)
+            var entry = AgentRegistry.Entry(account: account.id, directory: result.directory ?? request.cwd,
+                                            sessionID: result.sessionID ?? req.sessionID, model: req.model,
+                                            subagentType: request.subagentType, effort: request.effort, at: Date())
+            (result, entry) = await carryOn(agentID, entry: entry, result: result, accounts: accounts, config: config, own: own,
+                                            tried: tried, permissionMode: permissionMode, mcpConfig: mcpConfig)
+            AgentRegistry.remember(agentID, entry: entry)
+            finish(agentID, result, account: entry.account)
             return
         }
+    }
+
+    /// What a moved agent is told: nothing about accounts or limits, only to go on.
+    static let continuePrompt = "Continue the task from where you left off and finish it."
+
+    /// An agent an account stopped at its usage limit partway through: its session moves to the next account
+    /// with room, else to the calling session's own, and continues there. Whoever called the agent only ever
+    /// gets its report; the limit shows only when every account, the session's own included, is at one.
+    static func carryOn(_ agentID: String, entry: AgentRegistry.Entry, result: SubagentRunner.Result,
+                        accounts: [ClaudeAccount], config: ClaudeAccountsConfig, own: String?, tried: Set<String>,
+                        permissionMode: String, mcpConfig: String?) async -> (SubagentRunner.Result, AgentRegistry.Entry) {
+        var entry = entry, result = result, tried = tried
+        var toolUses = result.toolUses, durationMs = result.durationMs
+        while result.limitReached, !AgentRegistry.wasStopped(agentID),
+              let from = accounts.first(where: { $0.id == entry.account }) {
+            await SubagentUsage.shared.markFull(from)
+            tried.insert(from.id)
+            guard let to = await nextAccount(accounts, config: config, own: own, excluding: tried) else { break }
+            guard SessionTransfer.copy(entry.sessionID, from: from, to: to) else {
+                SubagentLog.write("\(agentID): session \(entry.sessionID) couldn't be copied from \(from.id) to \(to.id)")
+                break
+            }
+            SubagentLog.write("\(agentID) continues on \(to.id): \(from.id) is at its usage limit")
+            emit(["type": "moved", "account": from.id, "reason": "\(from.id) is at its usage limit; continuing on \(to.id)"])
+            log(agentID, "\(from.id) is at its usage limit; continuing on the \(to.id) account.")
+            if let m = entry.model, AgentRegistry.lacksModel(to.id, m) { entry.model = SubagentRunner.fallbackModel }
+            entry.account = to.id
+            AgentRegistry.setRunning(to.id)
+            AgentRegistry.remember(agentID, entry: entry)   // a stop or a follow-up finds it on its new account
+            var req = SubagentRunner.Request(prompt: continuePrompt, subagentType: entry.subagentType, model: entry.model,
+                                             effort: entry.effort, permissionMode: permissionMode, sessionID: entry.sessionID,
+                                             resume: true, mcpConfig: mcpConfig)
+            let onProcess: @Sendable (Int32) -> Void = { AgentRegistry.setProcess(agentID, claude: $0) }
+            result = await SubagentRunner.run(req, on: to, in: entry.directory, onProcess: onProcess) {
+                step(agentID, $0)
+            } onItem: { item(agentID, $0) }
+            if result.modelUnavailable, let model = entry.model, model != SubagentRunner.fallbackModel,
+               !AgentRegistry.wasStopped(agentID), SessionTransfer.copy(entry.sessionID, from: from, to: to) {
+                AgentRegistry.rememberLacking(to.id, model)
+                entry.model = SubagentRunner.fallbackModel
+                req.model = entry.model
+                step(agentID, "Using Sonnet: the \(to.id) plan doesn't include \(model)")
+                result = await SubagentRunner.run(req, on: to, in: entry.directory, onProcess: onProcess) {
+                    step(agentID, $0)
+                } onItem: { item(agentID, $0) }
+            }
+            toolUses += result.toolUses
+            durationMs += result.durationMs
+        }
+        result.toolUses = toolUses
+        result.durationMs = durationMs
+        return (result, entry)
+    }
+
+    /// The calling session's own account among Headroom's, as `ownAccountUUID` names it.
+    static func ownAccount(_ accounts: [ClaudeAccount], own: String?) -> ClaudeAccount? {
+        guard let own else { return nil }
+        return accounts.first { ClaudeProvider.signedInAccount(configDir: $0.cliConfigDir).uuid == own }
+    }
+
+    /// Where an admitted agent runs next: the other account with the most room, else the session's own.
+    static func nextAccount(_ accounts: [ClaudeAccount], config: ClaudeAccountsConfig, own: String?,
+                            excluding tried: Set<String>) async -> ClaudeAccount? {
+        if let account = await pick(accounts, config: config, own: own, excluding: tried) { return account }
+        guard let mine = ownAccount(accounts, own: own), !tried.contains(mine.id) else { return nil }
+        SubagentLog.write("no other account has room → \(mine.id), the session's own")
+        return mine
     }
 
     /// Runs an agent from Headroom's list on its provider: its answer, or an error when the provider didn't

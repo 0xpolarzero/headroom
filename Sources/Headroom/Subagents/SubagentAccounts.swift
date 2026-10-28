@@ -12,13 +12,17 @@ enum SubagentAccounts {
         var active = 0
     }
 
+    /// Points of usage each subagent already running on an account is expected to take before it ends.
+    static let reservedPerAgent = 10.0
+
     /// The best candidate, or nil when none has room. Unknown usage counts as no room: an account whose
-    /// limits can't be read can't be trusted not to be full.
+    /// limits can't be read can't be trusted not to be full. The subagents running on an account count
+    /// against its room, so a burst of calls doesn't all land on one account's last few points.
     static func pick(_ candidates: [Candidate], sessionThreshold: Double, weeklyThreshold: Double) -> Candidate? {
         func room(_ c: Candidate) -> Double? {
-            guard let s = c.sessionUsed, let w = c.weeklyUsed,
-                  s < sessionThreshold * 100, w < weeklyThreshold * 100 else { return nil }
-            return min(sessionThreshold * 100 - s, weeklyThreshold * 100 - w) - Double(c.active) * 10
+            guard let s = c.sessionUsed, let w = c.weeklyUsed else { return nil }
+            let r = min(sessionThreshold * 100 - s, weeklyThreshold * 100 - w) - Double(c.active) * reservedPerAgent
+            return r > 0 ? r : nil
         }
         var best: (Candidate, Double)?
         for c in candidates {

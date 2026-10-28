@@ -27,6 +27,12 @@ final class SubagentTests: XCTestCase {
         XCTAssertEqual(picked?.account.id, "B")
     }
 
+    func testRunningAgentsUseUpAnAccountsRoom() {
+        // Pro at 50% of a 90% threshold: four agents fit, a fifth goes elsewhere (or to the session's own).
+        XCTAssertEqual(SubagentAccounts.pick([candidate("Pro", 50, 25, active: 3)], sessionThreshold: 0.9, weeklyThreshold: 0.95)?.account.id, "Pro")
+        XCTAssertNil(SubagentAccounts.pick([candidate("Pro", 50, 25, active: 4)], sessionThreshold: 0.9, weeklyThreshold: 0.95))
+    }
+
     func testOwnAccountComesFromTheSession() {
         XCTAssertEqual(SubagentAccounts.ownAccountUUID(environment: ["CLAUDE_CODE_ACCOUNT_UUID": "u1"]), "u1")
     }
@@ -240,6 +246,73 @@ final class SubagentTests: XCTestCase {
     func testAUsageLimitReadsFromClaudeCodesApiError() {
         let limit = SubagentRunner.parse(["is_error": true, "result": "You've hit your weekly limit", "api_error": "usage_limit_reached"])
         XCTAssertTrue(limit.limitReached)
+    }
+
+    func testClaudeCodesLimitMessagesReadAsLimits() {
+        for text in ["You've hit your session limit · resets 10:40pm (Europe/Paris)", "You've hit your weekly limit · resets 5am",
+                     "You've hit your Opus limit", "You've hit your limit"] {
+            XCTAssertTrue(SubagentRunner.parse(["is_error": true, "result": text]).limitReached, text)
+        }
+        XCTAssertFalse(SubagentRunner.parse(["is_error": true, "result": "You've hit a snag"]).limitReached)
+    }
+
+    // MARK: Moving a session to another account
+
+    func testTransferDropsTheTrailingLimitNoticeOnly() throws {
+        let lines = [
+            #"{"type":"user","message":{"role":"user","content":"go"}}"#,
+            #"{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"Overloaded"}]}}"#,
+            #"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use"}]}}"#,
+            #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}"#,
+            #"{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"You've hit your session limit"}]}}"#,
+            #"{"type":"last-prompt","lastPrompt":"go"}"#,
+            "",
+        ]
+        let kept = String(decoding: SessionTransfer.withoutTrailingNotices(Data(lines.joined(separator: "\n").utf8)), as: UTF8.self)
+        XCTAssertEqual(kept, (lines[0...3] + lines[5...]).joined(separator: "\n"))
+    }
+
+    func testTransferCopiesTheTranscriptAndItsSideFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-transfer-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("a/projects"), target = root.appendingPathComponent("b/projects")
+        let project = source.appendingPathComponent("-w-sic")
+        try FileManager.default.createDirectory(at: project.appendingPathComponent("s1/tool-results"), withIntermediateDirectories: true)
+        try Data(#"{"type":"user","message":{"content":"go"}}"#.utf8).write(to: project.appendingPathComponent("s1.jsonl"))
+        try Data("big".utf8).write(to: project.appendingPathComponent("s1/tool-results/r.txt"))
+
+        XCTAssertTrue(SessionTransfer.copy("s1", from: source, to: target))
+        XCTAssertNotNil(FileManager.default.contents(atPath: target.appendingPathComponent("-w-sic/s1.jsonl").path))
+        XCTAssertEqual(FileManager.default.contents(atPath: target.appendingPathComponent("-w-sic/s1/tool-results/r.txt").path), Data("big".utf8))
+        XCTAssertFalse(SessionTransfer.copy("missing", from: source, to: target))
+        XCTAssertFalse(SessionTransfer.copy("s1", from: source, to: source))
+    }
+
+    /// Starts a Haiku agent on another account, treats it as stopped at its limit (as it is when that account
+    /// is full), and checks the session's own account continues the same session and answers.
+    func testLiveAnAgentAtItsLimitContinuesOnTheSessionsOwnAccount() async throws {
+        guard ProcessInfo.processInfo.environment["HEADROOM_LIVE_FAILOVER"] == "1" else {
+            throw XCTSkip("Set HEADROOM_LIVE_FAILOVER=1 to move a Haiku session between two signed-in accounts.")
+        }
+        let config = ClaudeAccountsConfig.load()
+        let own = SubagentAccounts.ownAccountUUID()
+        guard let mine = AgentRun.ownAccount(config.ordered, own: own),
+              let other = config.ordered.first(where: { $0.id != mine.id }) else { throw XCTSkip("Needs two Headroom accounts.") }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-failover-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sessionID = UUID().uuidString.lowercased()
+        let first = SubagentRunner.Request(prompt: "What is 17 times 3? Reply with the number only.", subagentType: nil, model: "haiku",
+                                           effort: nil, permissionMode: "auto", sessionID: sessionID)
+        var result = await SubagentRunner.run(first, on: other, in: directory.path, claim: { _ in nil }) { _ in }
+        result.limitReached = true
+        let entry = AgentRegistry.Entry(account: other.id, directory: result.directory ?? directory.path, sessionID: sessionID,
+                                        model: "haiku", subagentType: nil, effort: nil, at: Date())
+        let (final, moved) = await AgentRun.carryOn("live-failover", entry: entry, result: result, accounts: [mine, other], config: config,
+                                                     own: own, tried: [], permissionMode: "auto", mcpConfig: nil)
+        XCTAssertEqual(moved.account, mine.id)
+        XCTAssertFalse(final.isError, final.text)
+        XCTAssertTrue(final.text.contains("51"), final.text)
     }
 
     func testAgentsRecordedBeforeTheAgentTypeWasKeptStillLoad() throws {
