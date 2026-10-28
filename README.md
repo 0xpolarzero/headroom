@@ -1,24 +1,40 @@
 # Headroom
 
-Headroom is a macOS menu bar app for people who code with AI agents on subscriptions. It shows how much of
-your limits is left on **Claude**, **Codex**, **Antigravity**, **Z.ai** and **OpenRouter**, and it lets
-Claude Code spend that room: subagents run on whichever of your Claude accounts has some left, and you can
-add agents that run on the other providers.
+Headroom is a macOS menu bar app that lets Claude Code use **all your Claude accounts** and **your other AI
+subscriptions as agents**. Subagents run on whichever Claude account has room left, and agents backed by
+**Codex**, **Antigravity**, **Z.ai** or **OpenRouter** show up in Claude Code next to its own. It works in
+the Claude Code CLI and in the Claude desktop app, and the menu bar shows what is left of every limit.
 
 <img src="docs/images/panel.png" width="346" alt="The Headroom panel: Claude Max and Pro accounts, Codex, Antigravity, Z.ai and OpenRouter, each with what is left and when it resets">
 
 ## Why use it
 
-- **See every limit at a glance.** The menu bar shows what is left of each provider's Session and Weekly
-  limits. Click it for the details and reset times.
 - **Use all your Claude accounts.** With a Max plan and a Pro plan, or a work and a personal account, Claude
   Code runs subagents on the account that has room instead of hitting the limit on one.
-- **Use the other plans you pay for.** Give Claude agents backed by Codex, Gemini (Antigravity), GLM (Z.ai)
-  or any OpenRouter model, and it calls them like its own subagents.
+- **Use the other plans you pay for as agents.** Give Claude agents backed by Codex, Gemini (Antigravity),
+  GLM (Z.ai) or any OpenRouter model, and it calls them like its own subagents.
+- **See every limit at a glance.** The menu bar shows what is left of each provider's Session and Weekly
+  limits. Click it for the details and reset times.
 
 ## Install
 
-You need macOS 15 or later and the Swift 6 toolchain (Command Line Tools are enough).
+You need macOS 15 or later on Apple silicon or Intel. The Claude Code features need
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed.
+
+1. Download `Headroom.zip` from the [latest release](https://github.com/0xpolarzero/headroom/releases/latest)
+   and unzip it.
+2. Move `Headroom.app` to Applications.
+3. The app isn't notarized, so macOS blocks it the first time. Clear the download flag, then open it:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Headroom.app
+```
+
+```sh
+open /Applications/Headroom.app
+```
+
+To build it yourself instead, you need the Swift 6 toolchain (Command Line Tools are enough):
 
 ```sh
 git clone https://github.com/0xpolarzero/headroom.git

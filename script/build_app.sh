@@ -3,8 +3,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-swift build -c release
-bin="$(swift build -c release --show-bin-path)/Headroom"
+# UNIVERSAL=1 builds for Apple silicon and Intel (needs Xcode).
+archs=""
+[ "${UNIVERSAL:-}" = 1 ] && archs="--arch arm64 --arch x86_64"
+swift build -c release $archs
+bin="$(swift build -c release $archs --show-bin-path)/Headroom"
 app=dist/Headroom.app
 version="${VERSION:-0.1.0}"
 
