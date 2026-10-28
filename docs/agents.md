@@ -99,7 +99,8 @@ persistence, wait logic (B §2, with the bugs to leave behind). Mapping:
   agent's default becomes auto; acceptEdits → workspace-write; plan → read-only; bypass → full access).
   Antigravity likewise: default, acceptEdits and auto → accept-edits; plan → plan. Approval requests nobody can answer are declined,
   never left hanging.
-- The user's MCP servers are translated from `~/.claude.json` into per-thread config overrides; the role
+- The user's MCP servers are translated from `~/.claude.json` into per-thread config overrides, except
+  servers Codex already configures itself (`config/read`), which keep Codex's entry (LCU needs its Codex adapter); the role
   goes in `developerInstructions`; CLAUDE.md content is passed explicitly (Codex only reads AGENTS.md).
 - Open in Terminal: `cd <cwd> && CODEX_HOME=<home> codex resume <threadId>` (stop the runner's copy first).
 - Worktree isolation: Headroom creates the worktree before `thread/start`.

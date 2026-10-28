@@ -56,6 +56,14 @@ final class CodexBackendTests: XCTestCase {
         XCTAssertEqual(mapped.config.count, 1)
     }
 
+    func testCodexOwnMCPServersAreNotOverridden() {
+        let mapped = CodexBackend.mcpOverrides(["mcpServers": ["lcu": ["command": "node", "args": ["claude.mjs"]], "docs": ["command": "node"]]], native: ["lcu"])
+        XCTAssertNil(mapped.config["mcp_servers.lcu.command"])
+        XCTAssertNil(mapped.config["mcp_servers.lcu.args"])
+        XCTAssertEqual(mapped.config["mcp_servers.docs.command"] as? String, "node")
+        XCTAssertEqual(mapped.kept, ["lcu"])
+    }
+
     func testCompletedItemsAreEmittedOnceAndOnlyFinalAnswerWins() throws {
         let log = CodexEventLog()
         var turn = CodexBackend.TurnState()
@@ -119,7 +127,7 @@ final class CodexBackendTests: XCTestCase {
         let log = CodexEventLog()
         var request = job(in: fake.deletingLastPathComponent().path)
         let config = fake.deletingLastPathComponent().appendingPathComponent("mcp.json")
-        try Data(#"{"mcpServers":{"docs":{"command":"node","args":["s.js"]},"sse":{"type":"sse","url":"https://example.test"}}}"#.utf8).write(to: config)
+        try Data(#"{"mcpServers":{"docs":{"command":"node","args":["s.js"]},"sse":{"type":"sse","url":"https://example.test"},"lcu":{"command":"node","args":["claude.mjs"]}}}"#.utf8).write(to: config)
         request.mcpConfig = config.path
         let result = await CodexBackend.run(request, log.events, executable: fake.path)
         XCTAssertFalse(result.isError, result.text)
@@ -133,11 +141,14 @@ final class CodexBackendTests: XCTestCase {
         XCTAssertEqual(log.started, ["Codex/gpt-6-luna"])
         XCTAssertEqual(log.pids.count, 1)
         XCTAssertTrue(log.steps.contains("Skipped unsupported Codex MCP server: sse"))
+        XCTAssertTrue(log.steps.contains("Kept Codex's own MCP server: lcu"))
         let requests = try requests(fake)
         let thread = try XCTUnwrap(requests.first { $0.string("method") == "thread/start" }?.dict("params"))
         XCTAssertEqual(thread.string("cwd"), request.cwd)
         XCTAssertEqual(thread.string("developerInstructions"), request.definition.instructions)
         XCTAssertEqual(thread.dict("config")?.string("mcp_servers.docs.command"), "node")
+        XCTAssertNil(thread.dict("config")?["mcp_servers.lcu.command"])
+        XCTAssertEqual(requests.first { $0.string("method") == "config/read" }?.dict("params")?.string("cwd"), request.cwd)
         XCTAssertEqual(requests.filter { $0.string("method") == "model/list" }.count, 2)
     }
 
@@ -343,6 +354,7 @@ while True:
     if scenario == 'timeout' and method == 'unanswered': time.sleep(10); continue
     if method == 'initialize': response(req, {'userAgent':'test','platformFamily':'unix','platformOs':'macos','codexHome':'/tmp'})
     elif method == 'initialized': initialized = True
+    elif method == 'config/read': response(req, {'config':{'mcp_servers':{'lcu':{'command':'node'}}},'origins':{}})
     elif method == 'model/list':
         assert initialized
         if not p.get('cursor'): response(req, {'data':[{'id':'hidden','model':'hidden','hidden':True}], 'nextCursor':'page2'})
