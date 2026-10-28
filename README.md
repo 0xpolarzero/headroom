@@ -1,155 +1,115 @@
 # Headroom
 
-A small macOS menu bar app that shows how much of your coding-agent subscription limits you have used, and
-helps you **run Claude Code on several Claude accounts**. It covers **Claude**, **Codex**, **Antigravity**,
-**Z.ai** and **OpenRouter**. It is inspired by [OpenUsage](https://github.com/robinebers/openusage) but does
-much less, on purpose.
+Headroom is a macOS menu bar app for people who code with AI agents on subscriptions. It shows how much of
+your limits is left on **Claude**, **Codex**, **Antigravity**, **Z.ai** and **OpenRouter**, and it lets
+Claude Code spend that room: subagents run on whichever of your Claude accounts has some left, and you can
+add agents that run on the other providers.
 
-**Several Claude accounts.** Got a Max plan and a $20 Pro, or a work and a personal account? Headroom shows
-every account's limits side by side, and lets your Claude Code sessions run their **subagents on whichever
-other account has room**. Claude uses them exactly like its built-in subagents; when no account has room it
-falls back to the built-in ones. Each subagent is plain Claude Code signed in to that account: nothing is
-proxied or rewritten. See [Several Claude accounts](#several-claude-accounts).
+<img src="docs/images/panel.png" width="346" alt="The Headroom panel: Claude Max and Pro accounts, Codex, Antigravity, Z.ai and OpenRouter, each with what is left and when it resets">
 
-The menu bar item shows every provider side by side, in the order set in Settings: its logo with what is
-left of the Session, the Weekly, or both stacked (OpenRouter shows its credit balance). With several Claude
-accounts, it shows each one's name and what is left. Providers that
-aren't set up are left out. Click it to open the panel: every limit window with a meter of what is left (blue,
-yellow from 20% left, red from 10% left) and when it resets, plus a small ↺ count of the limit resets an
-account can spend (Claude reset grants, Codex reset credits; hover for when they expire). OpenRouter's section
-expands to show spend per key.
+## Why use it
 
-On a Mac with a notch, macOS hides a menu bar item that doesn't fit next to it. If Headroom is missing,
-⌘-drag other items out of the way, or turn off providers you don't need in Settings.
+- **See every limit at a glance.** The menu bar shows what is left of each provider's Session and Weekly
+  limits. Click it for the details and reset times.
+- **Use all your Claude accounts.** With a Max plan and a Pro plan, or a work and a personal account, Claude
+  Code runs subagents on the account that has room instead of hitting the limit on one.
+- **Use the other plans you pay for.** Give Claude agents backed by Codex, Gemini (Antigravity), GLM (Z.ai)
+  or any OpenRouter model, and it calls them like its own subagents.
 
-## Requirements
+## Install
 
-- macOS 15 or later
-- Swift 6 toolchain (Command Line Tools are enough; no Xcode project)
-
-## Build and run
+You need macOS 15 or later and the Swift 6 toolchain (Command Line Tools are enough).
 
 ```sh
-./script/build_app.sh     # release build → dist/Headroom.app (ad-hoc signed)
-open dist/Headroom.app
+git clone https://github.com/0xpolarzero/headroom.git
+cd headroom
+./script/build_app.sh
+cp -R dist/Headroom.app /Applications/
+open /Applications/Headroom.app
 ```
 
-For development, `swift run Headroom` starts the app without a bundle (launch at login and notifications
-are then unavailable). `swift run Headroom --print` fetches every provider once and prints the result.
-`swift test` runs the mapping and account tests.
+Headroom appears in the menu bar. If you don't see it on a Mac with a notch, macOS hid it for lack of
+space: ⌘-drag other items away, or turn off providers you don't need in Settings.
 
-## Providers
+## Turn on providers
 
-| Provider | Where Headroom reads credentials |
+Headroom picks up the logins you already have. Open **Settings** (gear icon) to turn providers on or off,
+change their order, choose what the menu bar shows, and sign in where needed.
+
+| Provider | How Headroom signs in |
 | --- | --- |
-| Claude | Claude Code's keychain item (`Claude Code-credentials`), else `~/.claude/.credentials.json`. Run `claude` if the login expired. Shows Session, Weekly and model-scoped weekly limits such as Fable. More accounts: **Add account** in Settings (see below). |
-| Codex | `~/.codex/auth.json` (or `$CODEX_HOME`, `~/.config/codex`), else the Codex keychain item. Sign in with `codex`. |
-| Antigravity | **Sign in with Google** in Settings (Headroom's own login), else the token Antigravity keeps in the keychain (`gemini` / `antigravity`). Expired access tokens are renewed from the refresh token and kept in memory only. Shows Session, Weekly, Argon Weekly (when Google reports it) and the Claude pool. |
-| Z.ai | **Sign in** in Settings opens a z.ai window; the web session is kept in Headroom's keychain item. Falls back to `~/.config/zai/key.json` or `ZAI_API_KEY` / `GLM_API_KEY`. |
-| OpenRouter | API key saved in Settings, or `OPENROUTER_API_KEY`. A management key also lists usage for every key. |
+| Claude | Your Claude Code login. If it expired, run `claude`. |
+| Codex | Your Codex CLI login (`~/.codex/auth.json`). Sign in with `codex`. |
+| Antigravity | **Sign in with Google** in Settings, or the Antigravity app's login. |
+| Z.ai | **Sign in** in Settings, or `ZAI_API_KEY`. |
+| OpenRouter | An API key in Settings, or `OPENROUTER_API_KEY`. A management key also shows spend per key. |
 
-Headroom only reads usage. It never changes another app's state, with one exception: when the Codex
-access token is about to expire or is rejected, Headroom refreshes it as the Codex CLI does and writes the new
-tokens back into `auth.json`, changing only the token fields and `last_refresh`. A keychain-based Codex login
-is never refreshed. Headroom's own logins (Antigravity, Z.ai, OpenRouter) live in keychain items under the
-service `Headroom`.
+Headroom only reads usage. The one exception: it renews an expiring Codex token the way the Codex CLI does
+and writes it back to `auth.json`. Its own logins are kept in the keychain.
 
 ## Several Claude accounts
 
-Every account is a Claude Code sign-in of its own. Main is the one you already have (`~/.claude`). Each other
-account lives in `~/.claude-accounts/<name>` (`CLAUDE_CONFIG_DIR`), which links to your settings, skills,
-agents, commands, hooks, plugins and CLAUDE.md in `~/.claude`, so it behaves the same; only its sign-in and
-its sessions are its own.
+<img src="docs/images/settings-general.png" width="346" alt="Settings, General tab: providers, menu bar, Claude accounts, the option to run subagents on accounts with room, and other logins">
 
-- **Add account** (Settings → Claude accounts) with a short name, for example "Pro". Headroom opens Terminal on
-  Claude Code in that account's folder; sign in there (type `/login` if it doesn't ask). Claude Code keeps
-  and renews that sign-in itself, and Headroom reads the account's usage from it. When it has expired
-  because the account wasn't used for a while, Headroom starts Claude Code on that account with no prompt,
-  which renews it without using any of its limits. If that fails, run
-  `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude` again.
-- **The panel and the menu bar** show every account's limits, in the order set in Settings.
-- **Run subagents on accounts with room** (Settings) installs Headroom's Claude Code plugin for all your
-  sessions (`claude plugin install headroom@headroom --scope user`, from a marketplace folder inside
-  Headroom.app, so it updates with the app). Claude keeps using its built-in `Agent` tool as usual. When
-  another of your accounts has room, Claude Code creates a real native subagent and Headroom runs its work there:
-  - Claude Code owns the task, transcript row, foreground/background controls, report delivery and lifetime.
-    Headroom answers the agent's model step with its remote report, without a model request on the session's
-    account. Foreground calls wait normally; ctrl+b sends them to the background. Background reports keep
-    `claude -p` alive after its input ends and reach SDK hosts, including the desktop app. `SendMessage`,
-    `TaskStop` and `ListAgents` use the native agent's id and Claude Code's own handling. Follow-ups resume
-    the remote session on the same account, folder (its worktree with `isolation: "worktree"`) and agent
-    type. Claude Code queues messages received while it works and resumes it with them.
-  - It runs `claude -p` in the session's folder with the same parameters (`subagent_type`, `model`, `effort`,
-    `isolation`), your MCP servers (from `~/.claude.json`, passed with `--mcp-config`) and the session's
-    permission mode. "Ask each time" becomes auto mode, since nobody can be asked there.
-  - The status line shows "1 agent on Pro"; a pane, **Agents on other accounts** (`/agents-elsewhere`), lists
-    each agent's latest steps.
-  - Some calls go to the built-in tool untouched, on purpose: forks (they run on the session's own context
-    and its prompt cache), named teammates, workflow agents, remote agents, calls from subagents, and any
-    call when no other account has room.
-  - Anything else that doesn't work as expected is an error, never a quiet switch to the built-in agent: an
-    Agent field the plugin doesn't know yet, an agent type the other account lacks, a runner that fails or
-    ends without a report. Claude gets the error and tells you.
-  - The first session on a new Claude Code version runs a self-test on another account: it starts an
-    agent the way a ready process starts it, continues it, and stops one (two one-line Haiku answers). If
-    any step fails, the status line says what broke until a later version passes.
-  - The native transcript keeps the remote final report. Remote steps and tool results stay in Headroom's
-    pane and logs; they are not replayed as native tool calls. The pane shows remote tool use;
-    Claude Code's counter counts native calls only. See the
-    [native task adapter](docs/claude-accounts.md#native-task-adapter-2026-10-27) for the API checks and live tests.
-- **Ready processes.** Claude Code takes about 11 s to start. So when you send a prompt, the plugin asks
-  Headroom to start one on the account a subagent would use, in that folder, waiting for its prompt; an Agent
-  call on that account and folder with the same agent type takes it over and skips the wait: Headroom switches
-  it to the call's model and permission mode first. Its first step then comes after about 2 s; a cold start
-  takes 8 to 70 s. Headroom keeps at most two, each about 300 MB plus your MCP
-  servers, and lets them go after 10 minutes unused or when it quits. A runner takes the process's pipes
-  over a socket, so the agent keeps going if Headroom quits.
-- **Which account takes a subagent:** never the session's own account; only accounts below both thresholds
-  (90% of the Session and of the Weekly limit by default, set in Settings); among those, the one with the
-  most room. Usage comes from what the app last read (every few minutes), else from the account's sign-in;
-  when that is rate limited, a reading up to 30 minutes old is used. If an account answers "limit reached"
-  before doing anything, it counts as full for 10 minutes and the next one takes the task.
-- **Plans differ in models.** If an account's plan doesn't include the model asked for (a Pro plan has no
-  Fable, for example), the subagent runs there with Sonnet, and Headroom remembers it.
-- A subagent never starts subagents on yet another account. Decisions are logged in
-  `~/Library/Logs/Headroom/subagents.log`; each agent's steps in
-  `~/Library/Application Support/Headroom/agents/<agentId>.log`.
-- Running two paid subscriptions side by side is your call; every request is made by Claude Code itself,
-  signed in to the account it bills.
+In **Settings → Claude accounts**, type a short name (for example "Pro") and click **Add account**. Terminal
+opens Claude Code for that account; sign in there (type `/login` if it doesn't ask). Each account has its
+own login and sessions but shares your settings, skills, agents, plugins and CLAUDE.md from `~/.claude`.
+
+The panel and the menu bar then show every account's limits.
+
+## Subagents on accounts with room
+
+Turn on **Run subagents on accounts with room**. This installs Headroom's Claude Code plugin for all your
+sessions. Nothing changes in how you use Claude Code: when Claude starts a subagent and another of your
+accounts has room, the subagent runs there. When none has room, Claude uses its normal subagents.
+
+- An account has room while it is under both thresholds set in Settings (by default 90% used of the
+  Session and of the Weekly limit). The one with the most room wins. A session never sends subagents to its own account.
+- The subagent is a normal Claude Code process signed in to that account, in the same folder, with the same
+  model, effort, permission mode and MCP servers. If the account's plan lacks the model (Pro has no Fable),
+  it uses Sonnet.
+- It shows up like any subagent: you can watch it, send it to the background, message it or stop it. The
+  status line says where it runs, and `/agents-elsewhere` lists each one's steps.
+- Forks, teammates and subagents started by a subagent stay on the session's own account.
+
+Logs are in `~/Library/Logs/Headroom/subagents.log`. How it works, with the tests behind it:
+[docs/claude-accounts.md](docs/claude-accounts.md).
 
 ## Agents on other providers
 
-**Settings → Agents** is a list of your own agent types, each on a provider and model of its own: Codex,
-Z.ai, OpenRouter, Antigravity, or your other Claude accounts. Each has a name, a description (what it is
-for: Claude reads it to choose), a provider, a model from that provider's list, and an effort, either fixed
-or decided by Claude on each call. Turn one off to hide it.
+<img src="docs/images/settings-agents.png" width="346" alt="Settings, Agents tab: Save Claude usage, and five agents on Antigravity, Codex and Z.ai">
 
-Turn on **Save Claude usage** to ask Claude to delegate substantial implementation, exploration, reviews
-and research to Headroom agents first, choosing by their descriptions. Claude works itself or uses built-in
-subagents when no Headroom agent fits. Off by default; changes apply from the next prompt.
+In **Settings → Agents**, click **Add agent** and choose a name, a description, a provider (Codex, Z.ai,
+OpenRouter, Antigravity, or one of your Claude accounts), a model and an effort. Claude sees each enabled
+agent as `headroom:<name>` next to its built-in agent types and picks one by its description, so write
+the description for Claude: what the agent is good at.
 
-- Claude sees the enabled ones beside its built-in agent types, as `headroom:<name>` with their description
-  and where they run, and calls them with its built-in `Agent` tool. The plugin reads the list on every
-  prompt, so edits apply from the next turn of every session.
-- Such an agent always runs on its provider: never as a built-in agent, never somewhere else. When the
-  provider can't take it (signed out, out of usage, a model or effort it lacks), the call fails and Claude
-  says why.
-- It behaves like the agents on other Claude accounts above: the same row and transcript, foreground or
-  background, `SendMessage` (on the same provider, model and session, even if the list changed since),
-  `TaskStop`, `ListAgents`, and Open in Terminal on the provider's own session.
-- They run only from the main session's `Agent` tool: not as forks, teammates or from inside a subagent.
+- This needs the plugin, so turn on **Run subagents on accounts with room** too.
+- An agent always runs on its provider. If the provider can't take it (signed out, out of usage, missing
+  model), the call fails and Claude tells you why.
+- Z.ai agents need a Coding Plan API key, saved in Settings; the website sign-in only reads usage.
+- Changes apply from your next prompt, in every session.
 
-## Behaviour
+**Save Claude usage** (off by default) asks Claude to hand substantial work (implementation, exploration,
+reviews, research) to these agents first, and to do it itself only when none fits.
 
-- Refreshes every 5 minutes, when the panel opens and on ⌘R. After a failure it retries after 60 s and keeps
-  showing the last good data with a warning icon (hover it for the error).
-- A provider shows **Outdated** after 10 minutes without a successful refresh.
-- Settings (gear icon): enable, disable and reorder providers, what the menu bar shows, Claude accounts,
-  other accounts (Antigravity, Z.ai, OpenRouter), launch at login, and notifications.
-- Notifications: one alert when a Session or Weekly window reaches 100%, once per reset.
-- Limit resets: Claude's reset grants are checked at most once an hour per account; Codex's reset credits
-  with every refresh.
+Design and details: [docs/agents.md](docs/agents.md).
+
+## Refresh and alerts
+
+Usage refreshes every 5 minutes, when you open the panel, and on ⌘R. After a failure Headroom keeps the
+last good numbers and shows a warning icon; after 10 minutes without a refresh it marks the provider
+**Outdated**. You get one notification when a Session or Weekly limit reaches 100%.
+
+## Development
+
+```sh
+swift run Headroom           # run without building the app bundle
+swift run Headroom --print   # fetch every provider once and print it
+swift test
+```
 
 ## License
 
-MIT. The provider logos come from [OpenUsage](https://github.com/robinebers/openusage) (MIT).
+MIT. Provider logos come from [OpenUsage](https://github.com/robinebers/openusage) (MIT), which also
+inspired this app.
