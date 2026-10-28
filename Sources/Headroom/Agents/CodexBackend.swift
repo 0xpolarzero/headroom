@@ -74,9 +74,12 @@ enum CodexBackend: AgentBackend {
 
     /// Codex splits override keys on every dot, without TOML unquoting (config/src/overrides.rs).
     /// Use a table value when a server name contains dots, preserving the caller's literal name.
-    static func mcpOverrides(_ root: [String: Any]) -> (config: [String: Any], skipped: [String]) {
-        var servers: [String: [String: Any]] = [:], skipped: [String] = []
+    /// Servers Codex configures itself keep its own entry: a tool set up for both hosts (LCU) needs Codex's
+    /// adapter, and Claude's copy would replace its command.
+    static func mcpOverrides(_ root: [String: Any], native: Set<String> = []) -> (config: [String: Any], skipped: [String], kept: [String]) {
+        var servers: [String: [String: Any]] = [:], skipped: [String] = [], kept: [String] = []
         for (name, value) in (root.dict("mcpServers") ?? [:]).sorted(by: { $0.key < $1.key }) {
+            if native.contains(name) { kept.append(name); continue }
             guard let server = value as? [String: Any] else { skipped.append(name); continue }
             var mapped: [String: Any] = [:]
             switch server.string("type") ?? "stdio" {
@@ -95,12 +98,24 @@ enum CodexBackend: AgentBackend {
             }
             servers[name] = mapped
         }
-        if servers.keys.contains(where: { $0.contains(".") }) { return (["mcp_servers": servers], skipped) }
+        if servers.keys.contains(where: { $0.contains(".") }) { return (["mcp_servers": servers], skipped, kept) }
         var config: [String: Any] = [:]
         for (name, fields) in servers {
             for (field, value) in fields { config["mcp_servers.\(name).\(field)"] = value }
         }
-        return (config, skipped)
+        return (config, skipped, kept)
+    }
+
+    /// The MCP servers Codex's own configuration defines for this folder. Older servers without
+    /// `config/read` report none, so every caller server is translated as before.
+    static func nativeMCPServers(_ server: CodexAppServer, cwd: String, events: AgentEvents) async -> Set<String> {
+        do {
+            let response = try await server.call("config/read", ["cwd": cwd], timeout: 15)
+            return Set(response.dict("config")?.dict("mcp_servers")?.keys.map { $0 } ?? [])
+        } catch {
+            events.step("Codex didn't report its own MCP servers; using the caller's")
+            return []
+        }
     }
 
     /// Typed refusals let the server finish blocked tools. Unknown methods get an immediate answer too.
@@ -167,9 +182,10 @@ enum CodexBackend: AgentBackend {
                 if let file = job.mcpConfig {
                     let object = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: file)))
                     guard let root = object as? [String: Any], root["mcpServers"] is [String: Any] else { throw Failure("Headroom couldn't read the caller's MCP configuration.") }
-                    let mcp = mcpOverrides(root)
+                    let mcp = mcpOverrides(root, native: await nativeMCPServers(server, cwd: directory, events: events))
                     params["config"] = mcp.config
                     for name in mcp.skipped { events.step("Skipped unsupported Codex MCP server: \(name)") }
+                    for name in mcp.kept { events.step("Kept Codex's own MCP server: \(name)") }
                 }
                 let method = job.resume == nil ? "thread/start" : "thread/resume"
                 if let sessionID { params["threadId"] = sessionID }
