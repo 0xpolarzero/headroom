@@ -8,12 +8,12 @@ and the earlier designs, kept for reference; their code is in git history.
 ## Current design (2026-10-27): subagents on accounts with room
 
 The app copies below were also replaced. Each account is now a Claude Code sign-in (`CLAUDE_CONFIG_DIR`
-= `~/.claude-accounts/<name>`). Headroom's plugin keeps Claude Code's built-in `Agent` tool and native
+= `~/.claude-accounts/<name>`). lastdrop's plugin keeps Claude Code's built-in `Agent` tool and native
 subagents. When another account has room (never the session's own, both thresholds respected, most room
-first), `Headroom --agent-route` admits the call without starting a model or claiming a warm process.
+first), `lastdrop --agent-route` admits the call without starting a model or claiming a warm process.
 The engine still checks the call and creates its own task through `agent.spawn`'s `next(e)`. A separate
-`turn.step` hook runs `Headroom --agent-run` inside that native task and serves the remote report without
-calling the session's model client. Headroom-owned provider types (`headroom:<name>`) use the same adapter.
+`turn.step` hook runs `lastdrop --agent-run` inside that native task and serves the remote report without
+calling the session's model client. lastdrop-owned provider types (`lastdrop:<name>`) use the same adapter.
 
 Claude Code owns foreground/background transitions, ctrl+b, notifications, waiting before print-mode
 exit, `ListAgents`, `TaskStop` and `SendMessage`. There are no plugin replacements for those tools or
@@ -40,15 +40,15 @@ the trailing limit notice) and continued there with `--resume` and a neutral "co
 has room, it's the session's own account, which is where a built-in subagent would have run. The same
 applies when the room an agent was admitted for is gone by the time it starts. Only when every account,
 the session's own included, is at its limit does the caller get the limit as an error. The pane shows each
-move. `HEADROOM_LIVE_FAILOVER=1 swift test --filter testLiveAnAgentAtItsLimit` checks a move between
+move. `LASTDROP_LIVE_FAILOVER=1 swift test --filter testLiveAnAgentAtItsLimit` checks a move between
 two real accounts with Haiku.
 
 Other failures never fall back: admission failures are Agent errors, and execution failures are explicit
-`Headroom agent failed: ...` reports with a failed pane entry. The native task may finish normally while
+`lastdrop agent failed: ...` reports with a failed pane entry. The native task may finish normally while
 carrying that failure report.
 The runner validates Claude Code's init before announcing `started`, and checks that the native id is
-preserved. `Headroom --agent-selftest` retains the ready-process start, resume and stop checks once per
-Claude Code version. The pane, status line, warm pool and remote logs remain Headroom's.
+preserved. `lastdrop --agent-selftest` retains the ready-process start, resume and stop checks once per
+Claude Code version. The pane, status line, warm pool and remote logs remain lastdrop's.
 
 Earlier versions denied the native spawn, fabricated `async_launched` and submitted notifications through
 `$.prompt.submit`; print runs could exit before those reports arrived. Commit `2867474` then rejected all
@@ -59,7 +59,7 @@ remain removed. See the [native task adapter](#native-task-adapter-2026-10-27) f
 Startup: a cold `claude -p` on the Pro account took 11.2 s before doing anything (12.5 s with the MCP
 servers), the agent's own work 4 s. A process started with `--input-format stream-json` waits for its
 prompt; given one 15 s later, it took its first step after 1.8 s. So the plugin asks the app to start one
-(`Headroom --agent-warm`) on each prompt the user sends, and a runner claims it over a Unix socket, receiving
+(`lastdrop --agent-warm`) on each prompt the user sends, and a runner claims it over a Unix socket, receiving
 its pipes with SCM_RIGHTS. In a real run the first step came 4.4 s after launch instead of 13. Each ready
 process uses about 300 MB, plus about 450 MB of MCP servers here.
 
@@ -119,10 +119,10 @@ The stop chunk carries the remote model and token usage, with cache reads and ca
 The native transcript contains the report or handback, not the remote tool transcript. Remote progress
 and tool results stay in the existing pane and logs; native tool-use counters count native calls only.
 Auto mode can attach its own notice that the server-side safety classifier was unavailable for the
-synthetic handback. Headroom leaves that native review behavior intact and does not alter the report's
+synthetic handback. lastdrop leaves that native review behavior intact and does not alter the report's
 payload to hide it.
 
-`next.signal` calls `Headroom --agent-stop <nativeId>` and the process stream's cancellation ends the
+`next.signal` calls `lastdrop --agent-stop <nativeId>` and the process stream's cancellation ends the
 runner. A runner's signal cleanup also stops processes handed to that runner by the warm pool, which are
 not necessarily its children. Testing exposed an older PID-registration gap during permission/model
 switches: a fake warm process observed `late` before the fix and `early` after it. The runner now registers
@@ -130,10 +130,10 @@ a claimed PID before sending switches, and a cold PID before writing its prompt,
 it. It terminates a claimed process that cannot switch before starting a replacement.
 
 Validation and live evidence are recorded below. All probes used this worktree, `--plugin-dir` and its
-development binary; `/Applications/Headroom.app` was not replaced. Drivers used tiny prompts and Haiku.
+development binary; `/Applications/lastdrop.app` was not replaced. Drivers used tiny prompts and Haiku.
 Main was at its weekly limit, so it could not be used as a real model driver for Pro:
 
-- A real Haiku driver on Pro exercised the enabled Codex-backed `headroom:sol` type for background,
+- A real Haiku driver on Pro exercised the enabled Codex-backed `lastdrop:sol` type for background,
   foreground, SendMessage, TaskStop and ListAgents, both with plain input and stream-json input held open.
   All ten runs passed. The final outputs handled the native reports; SendMessage reused the same native
   id; ListAgents showed that native id while running; TaskStop executed the abort listener's stop command.
@@ -154,7 +154,7 @@ repository tsconfig exists; a supplementary source-only `tsc --noEmit` check pas
 
 The native desktop UI and its ctrl+b key handling were not operated live; the SDK-equivalent open-input
 runs exercise their task lifecycle. The plugin no longer overrides the native tool row or background
-button. Full remote transcripts remain in Headroom's pane rather than the native transcript.
+button. Full remote transcripts remain in lastdrop's pane rather than the native transcript.
 
 ## Earlier design: one app copy per account
 
@@ -171,17 +171,17 @@ avoids all four.
 - **Signing a copy in.** The app finishes sign-in through a `claude://` link, and macOS hands it to the copy
   that is already running. So the main app has to be closed while a new copy signs in. After that each copy
   keeps and renews its own sign-in.
-- **Opening the right copy.** macOS treats every copy as one app. Headroom finds each running copy by the
+- **Opening the right copy.** macOS treats every copy as one app. lastdrop finds each running copy by the
   `--user-data-dir` in its arguments (`KERN_PROCARGS2`) and activates that process, or starts a new instance
   with the argument.
 - **Usage.** The app's own sign-in is encrypted with the "Claude Safe Storage" key, which only Claude.app may
-  read. Headroom reads a Claude Code terminal sign-in instead: Main's is `~/.claude` (keychain item
+  read. lastdrop reads a Claude Code terminal sign-in instead: Main's is `~/.claude` (keychain item
   `Claude Code-credentials`); another account's is its own `CLAUDE_CONFIG_DIR` (`~/.claude-accounts/<name>`,
   keychain item `Claude Code-credentials-<first 8 hex of sha256(folder)>`, as Claude Code 2.1.310 names it).
 - **Sharing.** Every copy's Code tab runs Claude Code on `~/.claude`, so settings, hooks, skills, agents,
   plugins, CLAUDE.md, MCP servers and memory are shared. Separate: each copy's session list and what Anthropic
   keeps per account. Session presets (`ccd-session-presets.json`, keyed by account UUID; a preset is a folder,
-  model, effort and worktree switch) are synced by Headroom: union across copies, the most recently written
+  model, effort and worktree switch) are synced by lastdrop: union across copies, the most recently written
   file wins per preset, deletions tracked against the last sync, and only written to copies that aren't
   running.
 - **Which account for new sessions:** the first in the order whose Session and Weekly use are below the
@@ -189,12 +189,12 @@ avoids all four.
 
 ## Goal
 
-- Connect several Claude accounts in Headroom (for example a $20 Pro and a Max).
+- Connect several Claude accounts in lastdrop (for example a $20 Pro and a Max).
 - Put them in a priority order. Claude Code uses the first account that has room. When its Session (5 h) or
   Weekly limit runs out, the next one takes over without you noticing. When the first one resets, it is
   used again.
 - Nothing changes in the Claude app: same sign-in, sessions, chats and settings. The switching shows only in
-  Headroom.
+  lastdrop.
 
 The case this is for: Pro first, Max second. Pro uses its windows early and Max covers the rest, so you are
 never left on Pro alone at the end of the week.
@@ -220,7 +220,7 @@ Swapping Claude Code's keychain item (`Claude Code-credentials`) does not work e
 ## The design: a local relay that picks the account per request
 
 Every Claude Code request goes to Anthropic's API with an `Authorization: Bearer sk-ant-oat01-…` OAuth
-token. If Claude Code sends its requests to Headroom on `127.0.0.1` instead, Headroom can forward each one
+token. If Claude Code sends its requests to lastdrop on `127.0.0.1` instead, lastdrop can forward each one
 with the token of whichever account should take it. Your conversations live on disk (`~/.claude/projects`),
 not with the account, so changing accounts between two requests, even in the middle of a turn, is safe.
 
@@ -228,7 +228,7 @@ not with the account, so changing accounts between two requests, even in the mid
 Claude Code (Code tab or terminal)
    │  POST /<secret>/v1/messages  (Bearer <the app's own token>)
    ▼
-Headroom relay, 127.0.0.1:<port>
+lastdrop relay, 127.0.0.1:<port>
    │  choose an account → replace Authorization → stream the response back unchanged
    │  read the rate-limit headers of every response → update that account's state
    │  429 "limit reached" before any byte was sent → replay the same request on the next account
@@ -263,18 +263,18 @@ environment set `ANTHROPIC_BASE_URL=https://api.anthropic.com`, the way the Code
 
 - **Main account, no extra sign-in.** The token Claude Code sends already belongs to an account. The relay
   looks it up once (`/api/oauth/profile`, cached by token hash) and calls that account "Main". When Main
-  is the one to use, the request goes through unchanged with Claude Code's own token. Headroom never stores
+  is the one to use, the request goes through unchanged with Claude Code's own token. lastdrop never stores
   or refreshes that token.
-- **Detected or picked by hand.** Headroom shows which account the Claude app is signed in to
+- **Detected or picked by hand.** lastdrop shows which account the Claude app is signed in to
   (`lastKnownAccountUuid` in `~/Library/Application Support/Claude/config.json`) and which one the terminal
   `claude` uses (`oauthAccount.accountUuid` in `~/.claude.json`). Both are matched to connected accounts by
   account UUID. You can also mark any account as Main by hand; it is then just an ordinary connected
   account.
-- **Other accounts: Headroom's own sign-in.** Add account opens a sign-in window with an empty, throwaway
+- **Other accounts: lastdrop's own sign-in.** Add account opens a sign-in window with an empty, throwaway
   web session (like `ZAISignInWindow`, a non-persistent `WKWebsiteDataStore`). You can sign in there with a
   different email than the one your browser and the Claude app use. It runs the same OAuth PKCE flow as
   `claude /login`, with the same scopes (details in result 5). The tokens go in the keychain under service
-  `Headroom`, like the Antigravity, Z.ai and OpenRouter logins. Headroom refreshes them itself. They are a
+  `lastdrop`, like the Antigravity, Z.ai and OpenRouter logins. lastdrop refreshes them itself. They are a
   separate sign-in from any the Claude app has, so nothing competes over refresh tokens.
 
 ### Choosing the account (per request)
@@ -305,7 +305,7 @@ Rules on top of that:
   others keep using it.
 - **No flapping.** It only moves on at a real limit, never on a percentage, and only goes back after the
   stated reset. An optional "switch early at 98%" can come later if replays turn out to be visible.
-- **Fail open.** If Headroom has no usable data, a sign-in fails to refresh, or any error happens inside the
+- **Fail open.** If lastdrop has no usable data, a sign-in fails to refresh, or any error happens inside the
   relay, the request goes through unchanged with Claude Code's own token. The worst case is today's
   behaviour.
 
@@ -317,17 +317,17 @@ Session window. It happens once per switch, not per request.
 
 If the relay isn't listening, every Claude Code request fails. So:
 
-- The relay is the same binary in a headless mode (`Headroom --relay`, next to the existing `--print`),
+- The relay is the same binary in a headless mode (`lastdrop --relay`, next to the existing `--print`),
   started by a LaunchAgent with `KeepAlive`. It keeps working if the menu bar app quits or crashes. The app
   talks to it over a Unix socket (state, switch events, "use this account now").
 - Turning routing off, or uninstalling, removes the `env.ANTHROPIC_BASE_URL` key from `settings.json` and
-  unloads the agent. Headroom only edits that key and keeps the rest of the file as it was, formatting
+  unloads the agent. lastdrop only edits that key and keeps the rest of the file as it was, formatting
   included where possible.
 - A session already running keeps the base URL it started with. Turning routing on applies to new
   sessions. Turning it off while sessions run means the relay keeps passing their requests through until
   they end, so the agent stops once no request has come in for a while.
 
-## In Headroom
+## In lastdrop
 
 - **Claude section, one row per account,** in priority order: email, plan, Session and Weekly left, resets.
   A badge marks the account Claude Code is using now, and "Main" marks the account the Claude app is
@@ -337,10 +337,10 @@ If the relay isn't listening, every Claude Code request fails. So:
 - **Menu bar:** the Claude item shows the account in use. Optionally a small dot when it isn't the first in
   the list, so you can see Max has taken over.
 - **Settings → Claude:** list of accounts you can drag to reorder; Add account; Remove; "Main" (detected, or
-  picked by hand); "Allow extra usage" per account; "Route Claude Code through Headroom" toggle, which
+  picked by hand); "Allow extra usage" per account; "Route Claude Code through lastdrop" toggle, which
   explains the `settings.json` key it writes.
 - **Usage polling** stays as it is (`/api/oauth/usage` every 5 minutes) but runs once per account. Between
-  polls the relay's response headers keep the numbers current, so Headroom gets more accurate without
+  polls the relay's response headers keep the numbers current, so lastdrop gets more accurate without
   extra calls.
 
 ## Fit with the code
@@ -351,8 +351,8 @@ If the relay isn't listening, every Claude Code request fails. So:
 | `Model/ClaudeAccounts.swift` | Account list, priority, Main, per-account limit state. The choosing logic is a pure function, tested like `ProviderMappingTests`. |
 | `Relay/` | `NWListener` on loopback, HTTP/1.1 with streamed (SSE) pass-through, request buffering for replay, header parsing. |
 | `Providers/ClaudeProvider.swift` | One snapshot per account (`ProviderID.claude` becomes a section with several accounts). |
-| `HeadroomApp.swift` | `--relay` entry point; LaunchAgent install/remove. |
-| README | The "Headroom only reads usage" paragraph gets a second exception: the relay, and the one `settings.json` key. |
+| `lastdropApp.swift` | `--relay` entry point; LaunchAgent install/remove. |
+| README | The "lastdrop only reads usage" paragraph gets a second exception: the relay, and the one `settings.json` key. |
 
 ## Spike results (2026-10-26)
 
@@ -370,7 +370,7 @@ test, and restored byte for byte afterwards.
   still had `ANTHROPIC_BASE_URL=https://api.anthropic.com`, and none of its requests reached the relay. The
   app sets that variable itself when it starts Claude Code, and the app's value wins. `API_TIMEOUT_MS` behaves
   the same: `settings.json` says 3000000, Code-tab sessions run with 900000.
-- **New keys do get through.** A variable the app doesn't set (`HEADROOM_PROBE=1`) reached Code-tab sessions,
+- **New keys do get through.** A variable the app doesn't set (`LASTDROP_PROBE=1`) reached Code-tab sessions,
   even one already running: Claude Code re-reads `settings.json` while it runs. The app's own `--settings`
   flag contains no `env` (only `fastMode` and `deniedMcpServers`), and the sessions run with
   `--setting-sources=user,project,local`.
@@ -379,11 +379,11 @@ What this changes:
 
 - **Terminal:** the design stands.
 - **Code tab:** the only route left that doesn't touch the app is a variable the app doesn't set, which means
-  `HTTPS_PROXY` (tested in result 3: it works). Headroom would run a proxy that tunnels every host unchanged except `api.anthropic.com`. For
+  `HTTPS_PROXY` (tested in result 3: it works). lastdrop would run a proxy that tunnels every host unchanged except `api.anthropic.com`. For
   that host it would decrypt the traffic to swap the token, which needs a local certificate authority that
   Claude Code trusts (`NODE_EXTRA_CA_CERTS`). Two catches, both untested:
   - Bash, git, npm and MCP servers run by those sessions inherit `HTTPS_PROXY` (they inherited
-    `HEADROOM_PROBE`). All their traffic would go through Headroom, and nothing works if Headroom is down.
+    `LASTDROP_PROBE`). All their traffic would go through lastdrop, and nothing works if lastdrop is down.
   - Whether Claude Code picks up `NODE_EXTRA_CA_CERTS` from `settings.json`, or only when it starts.
 - The other routes all break the rules set at the top: swapping the app's own sign-in, managed settings
   (needs admin rights, and might be ignored the same way), or redirecting `api.anthropic.com` for the whole
@@ -450,7 +450,7 @@ unchanged. A new Code-tab session was then started.
   the empty value reaches running sessions live, and it can then be removed. That is how the spike
   cleaned up.
 
-What this means for Headroom:
+What this means for lastdrop:
 
 - `HTTPS_PROXY` + a local CA is a route for the Code tab that doesn't touch the app's sign-in, its sessions
   or `config.json`. It also covers the terminal `claude`, so one mechanism does both.
@@ -462,7 +462,7 @@ What this means for Headroom:
 - **The relay must stay up while the keys are set.** If it isn't listening, every HTTPS request from every
   Claude Code session and its tools fails, not only inference. That makes the LaunchAgent with `KeepAlive`
   a requirement, not an option.
-- The CA is Headroom's own: generated on first use, key in the keychain, trusted only through
+- The CA is lastdrop's own: generated on first use, key in the keychain, trusted only through
   `NODE_EXTRA_CA_CERTS`, never added to the system trust settings. Give it a name constraint for
   `api.anthropic.com`, so a leaked key can't be used to impersonate any other site to Claude Code.
 - Also set `NO_PROXY=localhost,127.0.0.1,::1`, so tools that call local dev servers over HTTPS don't go
@@ -564,23 +564,23 @@ optionally `refresh_token_expires_in`, and `scope`.
 ```
 
 The reply may contain a **new** `refresh_token`; if it doesn't, the old one stays valid. Claude Code always
-keeps whichever it gets back. Headroom must save it in the keychain *before* using the new access token, so
+keeps whichever it gets back. lastdrop must save it in the keychain *before* using the new access token, so
 that a crash can't leave a refresh token that has already been used.
 
 **4. Who signed in.** Call `/api/oauth/profile` once: account UUID, email, organisation UUID and plan. That
 UUID is what gets matched to `lastKnownAccountUuid` in the Claude app and to `oauthAccount.accountUuid` in
 `~/.claude.json`.
 
-**The flow in Headroom:**
+**The flow in lastdrop:**
 
 1. Settings → Claude → Add account. Optional email field, sent as `login_hint`.
-2. Headroom makes the PKCE verifier and challenge plus a `state`, and opens a one-shot listener on
+2. lastdrop makes the PKCE verifier and challenge plus a `state`, and opens a one-shot listener on
    `127.0.0.1:<random port>`. The `LoopbackListener` in `GoogleOAuth.swift` already does this.
 3. It opens the authorize URL in an **empty, throwaway browser session**, not the default browser. Your
    default browser and the Claude app are signed in to the main account, and claude.ai would simply
    approve that one again. Two ways to do it:
    - `ASWebAuthenticationSession` with `prefersEphemeralWebBrowserSession = true`: the system's own sign-in
-     sheet. Google sign-in works in it. Headroom cancels the sheet once the listener has the code. Needs a
+     sheet. Google sign-in works in it. lastdrop cancels the sheet once the listener has the code. Needs a
      check that a `localhost` redirect completes inside the sheet.
    - A `WKWebView` with a non-persistent data store, like `ZAISignInWindow`, catching the
      `localhost/callback` navigation itself. Easiest to control, but Google refuses sign-in from embedded web
@@ -590,7 +590,7 @@ UUID is what gets matched to `lastKnownAccountUuid` in the Claude app and to `oa
 4. The listener gets `?code=…&state=…`, checks `state`, and answers with a "you can close this" page.
 5. Exchange the code (step 2), fetch the profile (step 4), and save
    `{refresh_token, access_token, expires_at, scopes, account_uuid, email, org_uuid, plan}` in the keychain
-   under service `Headroom`, with the account UUID as the keychain account.
+   under service `lastdrop`, with the account UUID as the keychain account.
 6. If the profile's UUID is already connected, or it is the Main account, say so and keep the existing
    entry. Main always uses passthrough (result 3), so it never needs a second sign-in, and no sign-in of the
    Claude app or the terminal `claude` is ever replaced.
@@ -602,14 +602,14 @@ or to Main.
 
 **Why not `setup-token`-style tokens:** a one-year `user:inference` token needs no refresh, which is
 appealing. But Claude Code itself notes that such tokens are rejected by endpoints that need `user:profile`.
-That means no profile lookup, and probably no `/api/oauth/usage` for Headroom's per-account meters. Use the
+That means no profile lookup, and probably no `/api/oauth/usage` for lastdrop's per-account meters. Use the
 normal scopes.
 
 **What a second sign-in does to the Claude app:** an extra account has no other sign-in, so nothing can
 conflict. Signing in the *main* account a second time is avoided by design, so whether it would sign the app
 out doesn't need testing.
 
-**Terms:** Headroom would use Claude Code's own client ID. The tokens are only ever sent on Claude Code's own
+**Terms:** lastdrop would use Claude Code's own client ID. The tokens are only ever sent on Claude Code's own
 requests, so Anthropic sees normal Claude Code traffic. But a third-party app taking part in Claude Code's sign-in is exactly
 the kind of thing Anthropic's terms on subscription tokens restrict, and it fits under the same warning as
 the automatic switching (see Terms).
@@ -618,15 +618,15 @@ the automatic switching (see Terms).
 
 | Piece | Where |
 | --- | --- |
-| Account list, order, routing flags | `Accounts/Accounts.swift` (every provider's pool), `Accounts/ClaudeAccounts.swift` (the Claude pool), `~/Library/Application Support/Headroom/accounts.json`, migrated from `claude-accounts.json` |
+| Account list, order, routing flags | `Accounts/Accounts.swift` (every provider's pool), `Accounts/ClaudeAccounts.swift` (the Claude pool), `~/Library/Application Support/lastdrop/accounts.json`, migrated from `claude-accounts.json` |
 | Sign-in (system sheet, private mode, loopback redirect) | `Accounts/ClaudeOAuth.swift`, `Support/LoopbackReceiver.swift` |
-| Tokens, refresh under a cross-process lock | `Accounts/ClaudeTokens.swift`, keychain service `Headroom`, account `claude.<uuid>` |
+| Tokens, refresh under a cross-process lock | `Accounts/ClaudeTokens.swift`, keychain service `lastdrop`, account `claude.<uuid>` |
 | Proxy, tunnel, splice to the TLS listener | `Relay/RelayServer.swift` (port 47812) |
 | Account choice, token swap, replay on a limit | `Relay/RelayEngine.swift`, `Relay/Router.swift`, `Relay/RateLimit.swift` |
 | Which process connected, and when it started | `Relay/ClientProcess.swift` (`proc_pidinfo`, no `lsof`) |
-| CA and leaf | `Relay/LocalCA.swift`, `/usr/bin/openssl`, files in `…/Headroom/relay/` |
+| CA and leaf | `Relay/LocalCA.swift`, `/usr/bin/openssl`, files in `…/lastdrop/relay/` |
 | `settings.json` edits, LaunchAgent, on and off | `Relay/SettingsFile.swift`, `Relay/RelayInstaller.swift` |
-| State the relay shares with the app | `…/Headroom/relay-state.json`, written every few seconds |
+| State the relay shares with the app | `…/lastdrop/relay-state.json`, written every few seconds |
 | Panel, menu bar, Settings | `Views/ClaudeAccountsSection.swift`, `Views/SettingsView.swift`, `Model/AppModel+Claude.swift` |
 
 Differences from the design:
@@ -704,7 +704,7 @@ request through the Swift relay (pinned to Main, warm for 60 minutes).
 
 ## Still to check
 
-1. Probably fine to send every Claude Code session's subprocess traffic through Headroom (not decided yet).
+1. Probably fine to send every Claude Code session's subprocess traffic through lastdrop (not decided yet).
    What it costs: the relay has to be very reliable, and every connection goes through one more local hop.
 2. The first real limit-reached 429 (log it), to confirm it matches result 4.
 3. That an ephemeral `ASWebAuthenticationSession` completes a `localhost` redirect (a UI test, no account
@@ -717,4 +717,4 @@ request through the Swift relay (pinned to Main, warm for 60 minutes).
 Anthropic's terms allow more than one account, but forbid "bypassing any of our systems or protective
 measures". Rotating between accounts automatically to get past usage limits could be read that way, and
 Anthropic could act on the accounts. claude-account-switcher keeps its auto-switch off by default for this
-reason. Headroom should do the same: routing is off until you turn it on, and the toggle says what it does.
+reason. lastdrop should do the same: routing is off until you turn it on, and the toggle says what it does.

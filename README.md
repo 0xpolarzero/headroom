@@ -1,11 +1,11 @@
-# Headroom
+# lastdrop
 
-Headroom is a macOS menu bar app that lets Claude Code use **all your Claude accounts** and **your other AI
+lastdrop is a macOS menu bar app that lets Claude Code use **all your Claude accounts** and **your other AI
 subscriptions as agents**. Subagents run on whichever Claude account has room left, and agents backed by
 **Codex**, **Antigravity**, **Z.ai** or **OpenRouter** show up in Claude Code next to its own. It works in
 the Claude Code CLI and in the Claude desktop app, and the menu bar shows what is left of every limit.
 
-<img src="docs/images/panel.png" width="346" alt="The Headroom panel: Claude Max and Pro accounts, Codex, Antigravity, Z.ai and OpenRouter, each with what is left and when it resets">
+<img src="docs/images/panel.png" width="346" alt="The lastdrop panel: Claude Max and Pro accounts, Codex, Antigravity, Z.ai and OpenRouter, each with what is left and when it resets">
 
 ## Why use it
 
@@ -21,38 +21,38 @@ the Claude Code CLI and in the Claude desktop app, and the menu bar shows what i
 You need macOS 15 or later on Apple silicon or Intel. The Claude Code features need
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed.
 
-1. Download `Headroom.zip` from the [latest release](https://github.com/0xpolarzero/headroom/releases/latest)
+1. Download `lastdrop.zip` from the [latest release](https://github.com/amontlabs/lastdrop/releases/latest)
    and unzip it.
-2. Move `Headroom.app` to Applications.
+2. Move `lastdrop.app` to Applications.
 3. The app isn't notarized, so macOS blocks it the first time. Clear the download flag, then open it:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Headroom.app
+xattr -dr com.apple.quarantine /Applications/lastdrop.app
 ```
 
 ```sh
-open /Applications/Headroom.app
+open /Applications/lastdrop.app
 ```
 
 To build it yourself instead, you need the Swift 6 toolchain (Command Line Tools are enough):
 
 ```sh
-git clone https://github.com/0xpolarzero/headroom.git
-cd headroom
+git clone https://github.com/amontlabs/lastdrop.git
+cd lastdrop
 ./script/build_app.sh
-cp -R dist/Headroom.app /Applications/
-open /Applications/Headroom.app
+cp -R dist/lastdrop.app /Applications/
+open /Applications/lastdrop.app
 ```
 
-Headroom appears in the menu bar. If you don't see it on a Mac with a notch, macOS hid it for lack of
+lastdrop appears in the menu bar. If you don't see it on a Mac with a notch, macOS hid it for lack of
 space: ⌘-drag other items away, or turn off providers you don't need in Settings.
 
 ## Turn on providers
 
-Headroom picks up the logins you already have. Open **Settings** (gear icon) to turn providers on or off,
+lastdrop picks up the logins you already have. Open **Settings** (gear icon) to turn providers on or off,
 change their order, choose what the menu bar shows, and sign in where needed.
 
-| Provider | How Headroom signs in |
+| Provider | How lastdrop signs in |
 | --- | --- |
 | Claude | Your Claude Code login. If it expired, run `claude`. |
 | Codex | Your Codex CLI login (`~/.codex/auth.json`). Sign in with `codex`. |
@@ -60,7 +60,7 @@ change their order, choose what the menu bar shows, and sign in where needed.
 | Z.ai | **Sign in** in Settings, or `ZAI_API_KEY`. |
 | OpenRouter | An API key in Settings, or `OPENROUTER_API_KEY`. A management key also shows spend per key. |
 
-Headroom only reads usage. The one exception: it renews an expiring Codex token the way the Codex CLI does
+lastdrop only reads usage. The one exception: it renews an expiring Codex token the way the Codex CLI does
 and writes it back to `auth.json`. Its own logins are kept in the keychain.
 
 ## Several Claude accounts
@@ -75,7 +75,7 @@ The panel and the menu bar then show every account's limits.
 
 ## Subagents on accounts with room
 
-Turn on **Run subagents on accounts with room**. This installs Headroom's Claude Code plugin for all your
+Turn on **Run subagents on accounts with room**. This installs lastdrop's Claude Code plugin for all your
 sessions. Nothing changes in how you use Claude Code: when Claude starts a subagent and another of your
 accounts has room, the subagent runs there. When none has room, Claude uses its normal subagents.
 
@@ -88,7 +88,7 @@ accounts has room, the subagent runs there. When none has room, Claude uses its 
   status line says where it runs, and `/agents-elsewhere` lists each one's steps.
 - Forks, teammates and subagents started by a subagent stay on the session's own account.
 
-Logs are in `~/Library/Logs/Headroom/subagents.log`. How it works, with the tests behind it:
+Logs are in `~/Library/Logs/lastdrop/subagents.log`. How it works, with the tests behind it:
 [docs/claude-accounts.md](docs/claude-accounts.md).
 
 ## Agents on other providers
@@ -97,7 +97,7 @@ Logs are in `~/Library/Logs/Headroom/subagents.log`. How it works, with the test
 
 In **Settings → Agents**, click **Add agent** and choose a name, a description, a provider (Codex, Z.ai,
 OpenRouter, Antigravity, or one of your Claude accounts), a model and an effort. Claude sees each enabled
-agent as `headroom:<name>` next to its built-in agent types and picks one by its description, so write
+agent as `lastdrop:<name>` next to its built-in agent types and picks one by its description, so write
 the description for Claude: what the agent is good at.
 
 - This needs the plugin, so turn on **Run subagents on accounts with room** too.
@@ -113,15 +113,15 @@ Design and details: [docs/agents.md](docs/agents.md).
 
 ## Refresh and alerts
 
-Usage refreshes every 5 minutes, when you open the panel, and on ⌘R. After a failure Headroom keeps the
+Usage refreshes every 5 minutes, when you open the panel, and on ⌘R. After a failure lastdrop keeps the
 last good numbers and shows a warning icon; after 10 minutes without a refresh it marks the provider
 **Outdated**. You get one notification when a Session or Weekly limit reaches 100%.
 
 ## Development
 
 ```sh
-swift run Headroom           # run without building the app bundle
-swift run Headroom --print   # fetch every provider once and print it
+swift run lastdrop           # run without building the app bundle
+swift run lastdrop --print   # fetch every provider once and print it
 swift test
 ```
 
