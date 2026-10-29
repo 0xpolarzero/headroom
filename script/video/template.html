@@ -37,6 +37,8 @@
   #termtitle { margin-left: 14px; font-family: var(--mono); font-size: 16px; color: var(--faint); }
   #save { position: absolute; right: 18px; top: 10px; height: 32px; border-radius: 16px; padding: 0 8px 0 14px; display: flex; align-items: center;
     gap: 10px; font-size: 16px; font-weight: 500; color: var(--dim); background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); }
+  .call { position: absolute; left: 36px; font-family: var(--mono); font-size: 21px; white-space: pre; color: var(--text); }
+  .call b { font-weight: 500; color: var(--shallow); }
   .ring { position: absolute; left: 18px; right: 18px; border-radius: 14px; border: 2px solid rgba(143,208,255,.85); box-shadow: 0 0 30px rgba(90,155,255,.35); }
   .ring span { position: absolute; left: 50%; bottom: -15px; transform: translateX(-50%); padding: 2px 12px; border-radius: 10px; background: #13314F; color: #8FD0FF;
     font-size: 15px; font-weight: 600; white-space: nowrap; }
@@ -123,8 +125,10 @@
     <div id="l4" class="line" style="top: 414px"><span class="bullet">⏺</span> lastdrop:flash<span class="muted">(Write the tests)</span></div>
     <div id="c4" class="chip" style="top: 410px">__ZAI__Z.ai <span>glm-5.3-flash</span></div>
     <div id="s4" class="sub" style="top: 456px">  ⎿ Running on Z.ai · <span id="n4">0</span> tool uses</div>
-    <div id="ringA" class="ring" style="top: 202px; height: 90px"><span>Built-in subagent</span></div>
-    <div id="ringB" class="ring" style="top: 302px; height: 90px"><span>Your Codex plan</span></div>
+    <div id="callTag" class="abs" style="left: 36px; top: 196px; font-size: 15px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint)">What Claude sends</div>
+    <div id="k2" class="call" style="top: 238px">Agent<span class="muted">(subagent_type: </span><b>"Explore"</b><span class="muted">,        prompt: "Map the billing module")</span></div>
+    <div id="k3" class="call" style="top: 290px">Agent<span class="muted">(subagent_type: </span><b>"lastdrop:sol"</b><span class="muted">,   prompt: "Review the diff")</span></div>
+    <div id="k4" class="call" style="top: 342px">Agent<span class="muted">(subagent_type: </span><b>"lastdrop:flash"</b><span class="muted">, prompt: "Write the tests")</span></div>
   </div>
 
   <div id="cols" class="abs" style="left: 0; top: 0; width: 1920px; height: 1080px">
@@ -133,22 +137,20 @@
   </div>
   <svg id="streams" class="abs" width="1920" height="1080" style="left: 0; top: 0"></svg>
 
-  <div id="cap1" class="cap">Call any agent <em>by name</em>.</div>
-  <div id="cap2" class="cap">Subagents draw from your <em>other Claude accounts</em>.</div>
-  <div id="cap3" class="cap">Agents draw from your <em>other AI plans</em>.</div>
-  <div id="cap4" class="cap">Exactly like built-in subagents. <em>Same tool, same rows.</em></div>
+  <div id="cap1" class="cap">To Claude, they're its own subagents. <em>Same Agent tool.</em></div>
+  <div id="cap2" class="cap">They run on your <em>other Claude accounts and AI plans</em>.</div>
 
   <!-- Save Claude usage, off and on -->
   <div id="saveTitle" class="abs" style="left: 0; width: 1920px; top: 108px; text-align: center; font-size: 56px; font-weight: 600; letter-spacing: -0.03em">Save Claude usage</div>
   <div id="cardOff" class="card" style="left: 140px"><div class="cardbar"><span>Off</span><div class="sw" style="background: rgba(255,255,255,.16)"><div class="kn" id="knOff"></div></div></div><div id="off0" class="cl" style="top: 92px"><span class="bullet">›</span> Add rate limiting to the API</div><div id="off1" class="cl" style="top: 144px"><span class="bullet">⏺</span> Read<span class="muted">(src/api/server.ts)</span></div><div id="off2" class="cl" style="top: 196px"><span class="bullet">⏺</span> Edit<span class="muted">(src/api/limits.ts)</span></div><div id="off3" class="cl" style="top: 248px"><span class="bullet">⏺</span> Edit<span class="muted">(src/api/server.ts)</span></div><div id="off4" class="cl" style="top: 300px"><span class="bullet">⏺</span> Bash<span class="muted">(npm test)</span></div><div id="off5" class="cl" style="top: 352px"><span style="color:#4ADE80">✓</span> Rate limiting is in.</div><div class="ml" style="top: 556px"><span>Claude Max</span><span id="offMaxv"></span></div><div class="meter" style="top: 586px"><i id="offMax" style="background: linear-gradient(90deg,#F0872B,#FFC27A)"></i></div></div>
   <div id="cardOn" class="card" style="left: 990px"><div class="cardbar"><span>On</span><div class="sw" style="background: #5A9BFF"><div class="kn" id="knOn"></div></div></div><div id="on0" class="cl" style="top: 92px"><span class="bullet">›</span> Add rate limiting to the API</div><div id="on1" class="cl" style="top: 144px"><span class="bullet">⏺</span> lastdrop:flash<span class="muted">(Implement rate limiting)</span></div><div id="on2" class="cl" style="top: 196px"><span class="bullet">⏺</span> lastdrop:sol<span class="muted">(Review the change)</span></div><div id="on3" class="cl" style="top: 248px"><span class="bullet">⏺</span> Read<span class="muted">(src/api/limits.ts)</span></div><div id="on4" class="cl" style="top: 300px"><span class="bullet">⏺</span> Bash<span class="muted">(npm test)</span></div><div id="on5" class="cl" style="top: 352px"><span style="color:#4ADE80">✓</span> Reviewed. Tests pass.</div><div class="ml" style="top: 440px"><span>Claude Max</span><span id="onMaxv"></span></div><div class="meter" style="top: 470px"><i id="onMax" style="background: linear-gradient(90deg,#F0872B,#FFC27A)"></i></div><div class="ml" style="top: 498px"><span>Codex</span><span id="onCodexv"></span></div><div class="meter" style="top: 528px"><i id="onCodex" style="background: linear-gradient(90deg,#2B6FE6,#8FD0FF)"></i></div><div class="ml" style="top: 556px"><span>Z.ai</span><span id="onZaiv"></span></div><div class="meter" style="top: 586px"><i id="onZai" style="background: linear-gradient(90deg,#2B6FE6,#8FD0FF)"></i></div></div>
   <div id="capOff" class="cap">Off: Claude does the work itself.</div>
-  <div id="capOn" class="cap">On: Claude delegates to your agents <em>and saves its plan</em>.</div>
+  <div id="capOn" class="cap">On: Claude hands the work <em>to your agents</em>.</div>
 
   <!-- Menu bar -->
   <div id="menubar" class="abs">
     <div id="glyphbox">
-      <svg width="22" height="22" viewBox="0 0 100 100"><defs><mask id="gm"><rect width="100" height="100" fill="#fff"/><path d="M22 59 C32 52 42 64 52 58 C62 52 70 62 80 56" fill="none" stroke="#000" stroke-width="9" stroke-linecap="round"/></mask></defs><path d="M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z" fill="#fff" mask="url(#gm)"/></svg>
+      <svg id="mbdrop" width="22" height="22" viewBox="0 0 100 100"><defs><mask id="gm"><rect width="100" height="100" fill="#fff"/><path d="M22 59 C32 52 42 64 52 58 C62 52 70 62 80 56" fill="none" stroke="#000" stroke-width="9" stroke-linecap="round"/></mask></defs><path d="M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z" fill="#fff" mask="url(#gm)"/></svg>
       <div class="mbitem">__CLAUDEW__<div class="stack"><span>19%</span><span>54%</span></div><div class="stack"><span>88%</span><span>77%</span></div></div>
       <div class="mbitem">__CODEXW__<div class="stack"><span>66%</span><span>82%</span></div></div>
       <div class="mbitem">__ZAIW__<span>79%</span></div>
@@ -184,10 +186,10 @@ function show(el, o, dy = 0, s = 1) { el.style.opacity = o; el.style.transform =
 
 /* Columns: what's left of each account, as water. */
 const COLS = [
-  { key: 'claude', name: 'Max', sub: 'This session', x: 1250, from: .19, to: .19, low: true, inAt: 3.6 },
-  { key: 'claude', name: 'Team', sub: 'Next', x: 1400, from: .88, to: .79, drain: [6.0, 8.6], inAt: 3.7, next: true },
-  { key: 'codex', name: 'Codex', sub: 'Pro 200', x: 1550, from: .66, to: .57, drain: [9.2, 12.4], inAt: 8.5 },
-  { key: 'zai', name: 'Z.ai', sub: 'GLM Coding', x: 1700, from: .79, to: .69, drain: [9.8, 12.8], inAt: 8.65 },
+  { key: 'claude', name: 'Max', sub: 'This session', x: 1250, from: .19, to: .19, low: true, inAt: 9.6 },
+  { key: 'claude', name: 'Team', sub: 'Next', x: 1400, from: .88, to: .79, drain: [10.6, 13.6], inAt: 9.7, next: true },
+  { key: 'codex', name: 'Codex', sub: 'Pro 200', x: 1550, from: .66, to: .57, drain: [10.8, 14.0], inAt: 9.8 },
+  { key: 'zai', name: 'Z.ai', sub: 'GLM Coding', x: 1700, from: .79, to: .69, drain: [11.0, 14.2], inAt: 9.9 },
 ];
 const COL_TOP = 300, COL_H = 420, COL_W = 104;
 function logoSVG(key, size, fill) {
@@ -225,9 +227,9 @@ function wavePath(c, i, t, lv) {
 
 /* Streams: from a row's chip to its account's column. */
 const STREAMS = [
-  { row: 210, col: 1, on: [5.8, 8.8] },
-  { row: 310, col: 2, on: [9.0, 12.8] },
-  { row: 410, col: 3, on: [9.6, 13.1] },
+  { row: 210, col: 1, on: [10.4, 14.3] },
+  { row: 310, col: 2, on: [10.6, 14.4] },
+  { row: 410, col: 3, on: [10.8, 14.5] },
 ];
 function buildStreams() {
   const svg = $('streams');
@@ -275,12 +277,17 @@ function render(t) {
   $('typed').innerHTML = prompt.slice(0, typed).replace(/\b(sol|flash)\b/g, '<span style="color: #8FD0FF; font-weight: 600">$1</span>');
   $('caret').style.opacity = (t < 5.4 && Math.floor(t * 2.4) % 2 === 0) || (t >= 4.0 && t < 5.1) ? 1 : 0;
   const rowIn = (id, at) => { const p = outCubic(seg(t, at, at + .4)); show($(id), p, (1 - p) * 10); };
-  rowIn('l1', 5.3); rowIn('l2', 5.7); rowIn('c2', 5.85); rowIn('s2', 6.1);
-  rowIn('l3', 9.0); rowIn('c3', 9.15); rowIn('s3', 9.35);
-  rowIn('l4', 9.6); rowIn('c4', 9.75); rowIn('s4', 9.95);
-  ['ringA', 'ringB'].forEach((id, k) => { const o = win(t, 12.3 + k * .25, 14.9, .4, .4); show($(id), o, 0, lerp(1.03, 1, outCubic(seg(t, 12.3 + k * .25, 12.8 + k * .25)))); });
+  rowIn('l1', 5.3);
+  /* The calls Claude makes: one shape, only the name differs. Then they render as rows. */
+  const callOut = inCubic(seg(t, 9.0, 9.4));
+  { const p = outCubic(seg(t, 5.9, 6.3)); show($('callTag'), p * (1 - callOut), (1 - p) * 8); }
+  ['k2', 'k3', 'k4'].forEach((id, k) => { const p = outCubic(seg(t, 6.0 + k * .3, 6.4 + k * .3)); show($(id), p * (1 - callOut), (1 - p) * 10 - callOut * 8); });
+  ['k2', 'k3', 'k4'].forEach((id, k) => { const g = Math.sin(seg(t, 7.4 + k * .2, 8.4 + k * .2) * Math.PI); $(id).querySelector('b').style.textShadow = `0 0 ${g * 16}px rgba(143,208,255,.9)`; });
+  rowIn('l2', 9.35); rowIn('c2', 9.9); rowIn('s2', 10.1);
+  rowIn('l3', 9.45); rowIn('c3', 10.05); rowIn('s3', 10.25);
+  rowIn('l4', 9.55); rowIn('c4', 10.2); rowIn('s4', 10.4);
   const count = (id, a, b, n) => $(id).textContent = Math.round(n * seg(t, a, b));
-  count('n2', 6.1, 8.6, 14); count('n3', 9.35, 12.4, 9); count('n4', 9.95, 12.8, 17);
+  count('n2', 10.1, 13.6, 14); count('n3', 10.25, 14.0, 9); count('n4', 10.4, 14.2, 17);
 
   /* Columns */
   const colsOut = inCubic(seg(t, 14.7, 15.2));
@@ -311,7 +318,7 @@ function render(t) {
 
   /* Captions */
   const cap = (id, a, b) => { const o = win(t, a, b, .45, .4); show($(id), o, (1 - outCubic(seg(t, a, a + .45))) * 16); };
-  cap('cap1', 4.6, 6.9); cap('cap2', 7.0, 9.0); cap('cap3', 9.1, 12.1); cap('cap4', 12.2, 14.9);
+  cap('cap1', 6.2, 9.6); cap('cap2', 10.2, 14.8);
 
   /* Save Claude usage: the same task, off and on. */
   const sIn = outCubic(seg(t, 15.2, 15.8)), sOut = inCubic(seg(t, 22.8, 23.2));
@@ -338,7 +345,9 @@ function render(t) {
   box.style.background = click ? 'rgba(255,255,255,.16)' : 'transparent';
   /* Cursor travels to the drop and clicks. */
   const cur = $('cursor'); const cm = inOutCubic(seg(u, 15.8, 16.65));
-  const gx = 1920 - 28 - 132 - 26 - (box.getBoundingClientRect().width) + 14, gy = 14;
+  // Aim the arrow's tip (6, 3 in its 32-unit box) at the middle of the drop.
+  const dr = $('mbdrop').getBoundingClientRect(), tip = 34 / 32;
+  const gx = dr.left + dr.width / 2 - 6 * tip, gy = 23 - 3 * tip;
   cur.style.left = lerp(1180, gx, cm) + 'px'; cur.style.top = lerp(620, gy, cm) + 'px';
   const press = Math.sin(seg(u, 16.65, 16.9) * Math.PI);
   cur.style.transform = `scale(${1 - press * .18})`; cur.style.transformOrigin = '20% 10%';

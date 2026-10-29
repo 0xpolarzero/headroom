@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/media/lastdrop.mp4"><img src="docs/images/video-poster.png" width="800" alt="Watch the lastdrop video: in Claude Code, a prompt names the sol and flash agents, which run on Codex and Z.ai next to a built-in subagent on the Claude account with room"></a>
+  <a href="docs/media/lastdrop.mp4"><img src="docs/images/video-poster.png" width="800" alt="Watch the lastdrop video: Claude Code calls lastdrop agents with the same Agent tool as its built-in subagents, and they run on other Claude accounts, Codex and Z.ai"></a>
 </p>
 
 <p align="center">
