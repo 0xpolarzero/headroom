@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 enum WindowPresenter {
     private static var windows: [String: NSWindow] = [:]
+    private static var closeObservers: [String: NSObjectProtocol] = [:]
 
     static func settings(_ model: AppModel, page: SettingsPage? = nil) {
         if let page { model.settingsPage = page }
@@ -19,8 +20,7 @@ enum WindowPresenter {
 
     private static func show(_ name: String, title: String, size: NSSize, resizable: Bool = true, content: () -> some View) {
         if let window = windows[name] {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            bringForward(window)
             return
         }
         var style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
@@ -37,8 +37,26 @@ enum WindowPresenter {
         window.contentMinSize = NSSize(width: 600, height: 420)
         window.center()
         windows[name] = window
+        closeObservers[name] = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
+            MainActor.assumeIsolated { windowClosed(name) }
+        }
+        bringForward(window)
+    }
+
+    /// A menu bar app can't take the front by itself (macOS keeps it behind the active app), so while one
+    /// of its windows is open it acts as a regular app, with a Dock icon, and it comes forward.
+    private static func bringForward(_ window: NSWindow) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        window.orderFrontRegardless()
+    }
+
+    /// Back to the menu bar alone once its last window closes.
+    private static func windowClosed(_ name: String) {
+        if let observer = closeObservers.removeValue(forKey: name) { NotificationCenter.default.removeObserver(observer) }
+        windows[name] = nil
+        if windows.values.allSatisfy({ !$0.isVisible }) { NSApp.setActivationPolicy(.accessory) }
     }
 }
 
