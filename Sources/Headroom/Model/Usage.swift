@@ -54,6 +54,16 @@ actor HourlyCache<Value: Sendable> {
     }
 }
 
+/// What an account can spend once its plan's limits are used up: Codex credits, Claude extra usage.
+struct ExtraCredits: Hashable, Sendable, Codable {
+    /// "47,074 credits", "$12.40 of $50.00".
+    var amount: String
+    /// The limits are used up and this is what the account runs on now.
+    var inUse = false
+    /// "About 11,769 to 61,197 messages".
+    var detail: String?
+}
+
 /// Everything a provider (or one account of a provider) reports in one refresh.
 struct UsageSnapshot: Hashable, Sendable, Codable {
     var title: String           // "Claude", "Codex", "Antigravity", "Z.ai", "OpenRouter"
@@ -64,6 +74,7 @@ struct UsageSnapshot: Hashable, Sendable, Codable {
     /// Replaces the Session/Weekly percentages in the menu bar ("$37.66").
     var menuBarText: String?
     var resets: LimitResets?
+    var credits: ExtraCredits?
     var fetchedAt: Date = .now
 }
 

@@ -154,6 +154,9 @@ private struct AccountRow: View {
                 status
             }
             content.padding(.leading, 20)
+            if let credits = info.state.snapshot?.credits {
+                CreditsLine(credits: credits).padding(.leading, 20)
+            }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 7)
@@ -194,6 +197,22 @@ private struct AccountRow: View {
     }
 }
 
+/// What the account spends past its limits, and whether it's spending it now.
+private struct CreditsLine: View {
+    let credits: ExtraCredits
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "creditcard").foregroundStyle(.secondary)
+            Text(credits.amount).monospacedDigit()
+            if credits.inUse {
+                Text("In use").font(.caption2.weight(.semibold)).foregroundStyle(.blue)
+            }
+        }
+        .font(.caption)
+    }
+}
+
 /// "Session 91%", a thin bar of what's left, and when it resets.
 private struct CompactMeter: View {
     let window: UsageWindow
@@ -229,6 +248,13 @@ private struct AccountDetail: View {
             }
             if let snapshot = info.state.snapshot {
                 ForEach(snapshot.windows, id: \.label) { WindowRow(window: $0, now: now) }
+                if let credits = snapshot.credits {
+                    VStack(alignment: .leading, spacing: 2) {
+                        CreditsLine(credits: credits)
+                        Caption(credits.inUse ? "The limits are used up: this is what it runs on now." : "Spent once a limit is used up.")
+                        if let detail = credits.detail { Caption(detail) }
+                    }
+                }
                 if !snapshot.keys.isEmpty {
                     Divider()
                     ForEach(snapshot.keys.prefix(6), id: \.self) { KeyRow(key: $0) }

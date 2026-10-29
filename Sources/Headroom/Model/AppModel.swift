@@ -312,10 +312,10 @@ final class AppModel {
         }
     }
 
-    /// "Codex Session limit reached, resets at 14:00", or "Claude (Pro) Weekly 90% used, resets …".
+    /// "Codex Session limit reached, resets at 14:00", or "Claude (Pro) Weekly: 10% left, resets …".
     static func alertText(provider: ProviderID, name: String?, window: UsageWindow, used: Double) -> String {
-        var text = "\(provider.displayName)\(name.map { " (\($0))" } ?? "") \(window.label) "
-        text += used >= 100 ? "limit reached" : "\(Int(used.rounded()))% used"
+        var text = "\(provider.displayName)\(name.map { " (\($0))" } ?? "") \(window.label)"
+        text += used >= 100 ? " limit reached" : ": \(Int((100 - used).rounded()))% left"
         if let reset = window.resetsAt { text += ", resets at \(Format.clock(reset))" }
         return text
     }

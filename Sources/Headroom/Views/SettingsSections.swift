@@ -106,12 +106,12 @@ struct AccountsSections: View {
                 Picker("Notify", selection: Binding(get: { info.account.notifyAt }, set: { model.setNotify(info.id, $0) })) {
                     Text("Off").tag(Double?.none)
                     Divider()
-                    ForEach(Account.notifyChoices, id: \.self) { Text("At \(Int($0 * 100))%").tag(Double?.some($0)) }
+                    ForEach(Account.notifyChoices, id: \.self) { Text(Account.notifyTitle($0)).tag(Double?.some($0)) }
                 }
                 .labelsHidden()
                 .fixedSize()
             }
-            .help("Notify when its session or weekly limit reaches this much used")
+            .help("Notify when this little is left of its session or weekly limit")
             Menu {
                 Button("Rename…") { newName = info.name; renaming = info }
                 if count > 1 {
@@ -270,19 +270,20 @@ struct ClaudeAccountsSection: View {
     var body: some View {
         if model.agentsEnabled && model.accounts(.claude).count > 1 {
             Section {
-                threshold("Use until its session is", \.sessionThreshold) { model.setThresholds(session: $0) }
-                threshold("Use until its week is", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
+                threshold("Use until its session has", \.sessionThreshold) { model.setThresholds(session: $0) }
+                threshold("Use until its week has", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
             } header: {
                 Text("Claude accounts")
             } footer: {
-                Caption("A subagent runs on the account with the most room, and skips one past either limit. A session never sends subagents to its own account.")
+                Caption("A subagent runs on the account with the most left, and skips one with less left than this. A session never sends subagents to its own account.")
             }
         }
     }
 
     private func threshold(_ title: String, _ key: KeyPath<AccountsConfig, Double>, set: @escaping (Double) -> Void) -> some View {
         Picker(title, selection: Binding(get: { model.accountsConfig[keyPath: key] }, set: set)) {
-            ForEach([0.5, 0.75, 0.9, 0.95], id: \.self) { Text("\(Int($0 * 100))% used").tag($0) }
+            // Stored as the share used, shown as what's left.
+            ForEach([0.5, 0.75, 0.9, 0.95], id: \.self) { Text("\(Int(((1 - $0) * 100).rounded()))% left").tag($0) }
         }
     }
 }

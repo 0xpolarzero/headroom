@@ -195,4 +195,25 @@ final class PanelSplitTests: XCTestCase {
         XCTAssertEqual(credits.main.map(\.label), ["Credits"])
         XCTAssertTrue(credits.more.isEmpty)
     }
+
+    private func obj(_ json: String) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+    }
+
+    func testCodexCreditsAndWhetherTheyreInUse() throws {
+        let root = obj(#"{"rate_limit":{"limit_reached":true},"credits":{"has_credits":true,"unlimited":false,"overage_limit_reached":false,"balance":"47074.2524","approx_local_messages":[11769,61197]}}"#)
+        let credits = try XCTUnwrap(CodexProvider.credits(from: root))
+        XCTAssertEqual(credits.amount, "\(47074.formatted()) credits")
+        XCTAssertTrue(credits.inUse)
+        XCTAssertEqual(credits.detail, "About \(11769.formatted()) to \(61197.formatted()) messages")
+        XCTAssertNil(CodexProvider.credits(from: obj(#"{"credits":{"has_credits":false,"balance":"0"}}"#)))
+        XCTAssertFalse(CodexProvider.credits(from: obj(#"{"rate_limit":{"limit_reached":false},"credits":{"has_credits":true,"balance":"10"}}"#))!.inUse)
+    }
+
+    func testClaudeExtraUsageOnlyWhenEnabled() {
+        XCTAssertNil(ClaudeProvider.extraUsage(from: obj(#"{"spend":{"enabled":false,"used":{"amount_minor":0,"currency":"USD","exponent":2}}}"#), limitReached: true))
+        let on = ClaudeProvider.extraUsage(from: obj(#"{"spend":{"enabled":true,"used":{"amount_minor":1240,"currency":"USD","exponent":2},"limit":{"amount_minor":5000,"currency":"USD","exponent":2}}}"#), limitReached: true)
+        XCTAssertEqual(on?.amount, "\(12.4.formatted(.currency(code: "USD"))) of \(50.0.formatted(.currency(code: "USD")))")
+        XCTAssertEqual(on?.inUse, true)
+    }
 }

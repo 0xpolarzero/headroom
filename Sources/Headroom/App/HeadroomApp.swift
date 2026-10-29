@@ -35,6 +35,7 @@ enum Entry {
                         let reset = w.resetsAt.map { Format.resets($0) } ?? "no reset"
                         print("  \(w.label): \(Format.left(w)), \(reset)")
                     }
+                    if let c = s.credits { print("  Credits: \(c.amount)\(c.inUse ? " (in use)" : "")\(c.detail.map { ", \($0)" } ?? "")") }
                 } catch {
                     print("\(name): \(error.localizedDescription)")
                 }

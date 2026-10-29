@@ -24,12 +24,13 @@ struct ClaudeProvider: UsageProvider {
         if let expiry = creds.expiresAt, expiry.timeIntervalSinceNow < 60 {
             throw ProviderError.unauthorized(expired)
         }
-        let windows = try await Self.usageWindows(accessToken: creds.accessToken, expired: expired)
+        let (windows, credits) = try await Self.usage(accessToken: creds.accessToken, expired: expired)
         // After a successful usage fetch, so the token is known to work; a failure only costs the badge.
         let token = creds.accessToken
         let resets = await Self.resetCache.value(configDir ?? "main") { try await Self.resetGrants(accessToken: token) }
         var snapshot = UsageSnapshot(title: "Claude", plan: creds.plan, windows: windows)
         snapshot.resets = resets
+        snapshot.credits = credits
         return snapshot
     }
 
@@ -65,7 +66,7 @@ struct ClaudeProvider: UsageProvider {
     }
 
     /// Usage of the account `accessToken` belongs to.
-    static func usageWindows(accessToken: String, expired: String) async throws -> [UsageWindow] {
+    static func usage(accessToken: String, expired: String) async throws -> ([UsageWindow], ExtraCredits?) {
         let headers = ["Authorization": "Bearer \(accessToken)", "Accept": "application/json",
                        "anthropic-beta": "oauth-2025-04-20", "User-Agent": "Headroom"]
         let (body, http) = try await HTTP.json(HTTP.request(usageURL, headers: headers))
@@ -73,7 +74,22 @@ struct ClaudeProvider: UsageProvider {
         if http.statusCode == 429 { throw ProviderError.rateLimited("Claude usage is rate limited. Retrying in 5 minutes.") }
         guard (200..<300).contains(http.statusCode) else { throw ProviderError.http(http.statusCode) }
         guard let root = body as? [String: Any] else { throw ProviderError.invalidResponse }
-        return windows(from: root)
+        let windows = windows(from: root)
+        return (windows, extraUsage(from: root, limitReached: windows.contains { ($0.usedPercent ?? 0) >= 100 }))
+    }
+
+    /// Extra usage, which covers the account past its plan's limits: `spend: {"enabled", "used": {"amount_minor",
+    /// "currency", "exponent"}, "limit": {…} | null, "balance": {…} | null}`. Nil while it's off.
+    static func extraUsage(from root: [String: Any], limitReached: Bool) -> ExtraCredits? {
+        guard let spend = root.dict("spend"), spend["enabled"] as? Bool == true else { return nil }
+        func money(_ value: Any?) -> String? {
+            guard let money = value as? [String: Any], let minor = money.double("amount_minor") else { return nil }
+            let amount = minor / pow(10, money.double("exponent") ?? 2)
+            return amount.formatted(.currency(code: money.string("currency") ?? "USD"))
+        }
+        let used = money(spend["used"]) ?? 0.0.formatted(.currency(code: "USD"))
+        let amount = money(spend["limit"]).map { "\(used) of \($0)" } ?? money(spend["balance"]).map { "\($0) left" } ?? "\(used) used"
+        return ExtraCredits(amount: amount, inUse: limitReached, detail: "Extra usage")
     }
 
     // MARK: Mapping (pure)

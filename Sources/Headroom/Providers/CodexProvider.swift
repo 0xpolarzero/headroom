@@ -58,7 +58,23 @@ struct CodexProvider: UsageProvider {
         let token = current.accessToken ?? "", account = current.accountID
         let listed = await Self.resetCache.value(account ?? "codex") { try await Self.requestResetCredits(token: token, account: account) }
         snapshot.resets = listed ?? embedded
+        snapshot.credits = Self.credits(from: root)
         return snapshot
+    }
+
+    /// `credits: {"has_credits", "unlimited", "overage_limit_reached", "balance": "47074.25",
+    /// "approx_local_messages": [low, high]}`: what Codex spends once a limit is reached. Nil without any.
+    static func credits(from root: [String: Any]) -> ExtraCredits? {
+        guard let block = root.dict("credits"), block["has_credits"] as? Bool == true else { return nil }
+        let reached = root.dict("rate_limit")?["limit_reached"] as? Bool == true
+        let inUse = reached && block["overage_limit_reached"] as? Bool != true
+        if block["unlimited"] as? Bool == true { return ExtraCredits(amount: "Unlimited credits", inUse: inUse) }
+        guard let balance = block.string("balance").flatMap(Double.init) ?? block.double("balance") else { return nil }
+        var credits = ExtraCredits(amount: "\(Int(balance).formatted()) credits", inUse: inUse)
+        if let range = (block["approx_local_messages"] as? [Any])?.compactMap({ ($0 as? NSNumber)?.intValue }), range.count == 2 {
+            credits.detail = "About \(range[0].formatted()) to \(range[1].formatted()) messages"
+        }
+        return credits
     }
 
     private static let resetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
