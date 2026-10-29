@@ -4,6 +4,7 @@ import SwiftUI
 struct SetupView: View {
     @Bindable var model: AppModel
     @State private var step: Step
+    @State private var adding = false
 
     enum Step: Int, CaseIterable { case accounts, agents }
 
@@ -24,36 +25,73 @@ struct SetupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.largeTitle.weight(.bold))
-                Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title).font(.largeTitle.weight(.bold))
+                    Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if step == .accounts { Button("Add account…") { model.connectStatus = .idle; adding = true } }
             }
             .padding(.horizontal, 32)
-            .padding(.top, 36)
+            .padding(.top, 48)
+            // The list takes the room there is and scrolls; what's below stays in view.
             Form {
                 switch step {
                 case .accounts:
                     AccountsSections(model: model, listsOthers: true)
-                    LoginSection(model: model)
                 case .agents:
                     AgentsSwitchSection(model: model)
-                    if model.agentsEnabled { AgentsSections(model: model) }
+                    if model.agentsEnabled {
+                        SuggestedAgentsSection(model: model)
+                        AgentsSections(model: model)
+                    }
                 }
             }
             .formStyle(.grouped)
             .padding(.horizontal, 12)
+            .frame(maxHeight: .infinity)
+            if step == .accounts {
+                LoginSwitch(model: model)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+                    .padding(.horizontal, 32)
+                    .padding(.bottom, 16)
+            }
             Divider()
             HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    ForEach(steps, id: \.self) { Circle().fill($0 == step ? Color.primary : Color.secondary.opacity(0.35)).frame(width: 6, height: 6) }
-                }
+                steps(current: step)
                 Spacer()
                 if step != .accounts { Button("Back") { move(-1) } }
                 Button(step == steps.last ? "Done" : "Continue") { move(1) }.keyboardShortcut(.defaultAction)
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .frame(height: 52)
         }
-        .frame(width: 600, height: 560)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(edges: .top)
+        .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
+    }
+
+    /// "1 Accounts › 2 Agents", the current one in full color.
+    private func steps(current: Step) -> some View {
+        HStack(spacing: 6) {
+            ForEach(Array(steps.enumerated()), id: \.element) { index, step in
+                if index > 0 { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
+                HStack(spacing: 5) {
+                    Text("\(index + 1)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(step == current ? Color.white : .secondary)
+                        .frame(width: 16, height: 16)
+                        .background(step == current ? Color.accentColor : Color.secondary.opacity(0.2), in: Circle())
+                    Text(step == .accounts ? "Accounts" : "Agents")
+                        .font(.callout)
+                        .foregroundStyle(step == current ? .primary : .secondary)
+                }
+            }
+        }
     }
 
     private var title: String {

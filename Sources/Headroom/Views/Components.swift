@@ -132,3 +132,22 @@ struct SettingLabel: View {
         }
     }
 }
+
+/// A setting with a switch. The switch stands apart from the label: inside a Toggle's label, the ⓘ never
+/// gets the pointer, so its tip never shows.
+struct SettingSwitch: View {
+    let label: SettingLabel
+    @Binding var isOn: Bool
+    var disabled = false
+
+    var body: some View {
+        HStack {
+            label.opacity(disabled ? 0.5 : 1)
+            Spacer()
+            Toggle(label.title, isOn: $isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .disabled(disabled)
+        }
+    }
+}

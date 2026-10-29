@@ -9,11 +9,18 @@ struct LoginSection: View {
 
     var body: some View {
         Section {
-            Toggle(isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) })) {
-                SettingLabel(icon: "power", title: "Open at login", detail: model.launchAtLoginError, detailColor: .orange)
-            }
-            .disabled(!AppModel.isBundled)
+            LoginSwitch(model: model)
         }
+    }
+}
+
+/// The open-at-login switch, for a form row or setup's own card.
+struct LoginSwitch: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        SettingSwitch(label: SettingLabel(icon: "power", title: "Open at login", detail: model.launchAtLoginError, detailColor: .orange),
+                      isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }), disabled: !AppModel.isBundled)
     }
 }
 
@@ -49,8 +56,8 @@ struct AccountsSections: View {
                 }
             }
             let others = ProviderID.allCases.filter { !model.connectedProviders.contains($0) }
-            if listsOthers {
-                Section(others.isEmpty ? "" : "Not connected") {
+            if listsOthers && !others.isEmpty {
+                Section("Not connected") {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(others) { provider in
                             HStack(spacing: 10) {
@@ -63,12 +70,6 @@ struct AccountsSections: View {
                                 Button(provider.signsInWithBrowser ? "Sign in…" : "Add key…") { model.connectStatus = .idle; connecting = provider }
                             }
                         }
-                        // The last row: add a second account of a connected plan.
-                        HStack {
-                            Spacer()
-                            Button("Add another account…") { model.connectStatus = .idle; adding = true }
-                        }
-                        .padding(.top, 2)
                     }
                     .padding(.vertical, 4)
                 }
@@ -167,12 +168,10 @@ struct AgentsSwitchSection: View {
 
     var body: some View {
         Section {
-            Toggle(isOn: Binding(get: { model.agentsEnabled }, set: { model.setAgents($0) })) {
-                SettingLabel(icon: "sparkle", color: ProviderID.claude.brandColors[0], title: "Agents in Claude Code",
-                             tip: "Subagents run on whichever Claude account has the most left, and your other plans become agents Claude can call. Adds Headroom's plugin to Claude Code.",
-                             detail: model.claudeError ?? status, detailColor: model.claudeError == nil && version != "" ? .secondary : .orange)
-            }
-            .disabled(version == "")
+            SettingSwitch(label: SettingLabel(icon: "sparkle", color: ProviderID.claude.brandColors[0], title: "Agents in Claude Code",
+                                              tip: "Subagents run on whichever Claude account has the most left, and your other plans become agents Claude can call. Adds Headroom's plugin to Claude Code.",
+                                              detail: model.claudeError ?? status, detailColor: model.claudeError == nil && version != "" ? .secondary : .orange),
+                          isOn: Binding(get: { model.agentsEnabled }, set: { model.setAgents($0) }), disabled: version == "")
         }
         .task { version = await Task.detached { SubagentRunner.executable().map(SelfTest.version) ?? "" }.value }
     }
@@ -196,11 +195,10 @@ struct AgentsSections: View {
     var body: some View {
         Group {
             Section {
-                Toggle(isOn: Binding(get: { catalog.saveClaude }, set: { on in change { $0.saveClaude = on } })) {
-                    SettingLabel(icon: "leaf.fill", color: .green, title: "Save Claude usage",
-                                 tip: catalog.enabled.isEmpty ? "Add an agent first." : SaveClaudeToggle.about)
-                }
-                .disabled(catalog.enabled.isEmpty && !catalog.saveClaude)
+                SettingSwitch(label: SettingLabel(icon: "leaf.fill", color: .green, title: "Save Claude usage",
+                                                  tip: catalog.enabled.isEmpty ? "Add an agent first." : SaveClaudeToggle.about),
+                              isOn: Binding(get: { catalog.saveClaude }, set: { on in change { $0.saveClaude = on } }),
+                              disabled: catalog.enabled.isEmpty && !catalog.saveClaude)
                 HStack {
                     SettingLabel(icon: "text.quote", title: "Prompt", detail: catalog.saveClaudeText == nil ? "Default" : "Custom")
                     Spacer()
@@ -221,6 +219,7 @@ struct AgentsSections: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .agentCatalogChanged)) { _ in catalog = AgentCatalog.load() }
         .sheet(item: $editing) { agent in
             AgentEditor(agent: agent, catalog: catalog) { saved in
                 change { next in
@@ -300,4 +299,72 @@ struct ClaudeAccountsSection: View {
             ForEach([0.5, 0.75, 0.9, 0.95], id: \.self) { Text("\(Int(((1 - $0) * 100).rounded()))% left").tag($0) }
         }
     }
+}
+
+/// Setup's suggested agents for the connected plans; each is checked against the provider's models when added.
+struct SuggestedAgentsSection: View {
+    @Bindable var model: AppModel
+    @State private var catalog = AgentCatalog.load()
+    @State private var adding: String?
+    @State private var problems: [String: String] = [:]
+
+    var body: some View {
+        let suggestions = AgentSuggestions.available(catalog: catalog) { provider in
+            !model.accounts(provider.usageID).isEmpty && model.agentProblem(provider) == nil
+        }
+        if !suggestions.isEmpty {
+            Section {
+                ForEach(suggestions) { agent in
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(agent.name).fontWeight(.medium)
+                                InfoTip(agent.description)
+                            }
+                            AgentBadges(agent: agent).padding(.top, 2)
+                            if let problem = problems[agent.name] { Text(problem).font(.caption).foregroundStyle(.orange) }
+                        }
+                        Spacer()
+                        if adding == agent.name {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Add") { Task { await add(agent) } }
+                        }
+                    }
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("Suggested for your plans")
+                    InfoTip("Ready-made agents for the plans you connected. Edit or remove them any time in Settings.")
+                }
+            }
+        }
+    }
+
+    /// Adds the agent once its provider still offers the model.
+    private func add(_ agent: AgentDefinition) async {
+        adding = agent.name
+        defer { adding = nil }
+        do {
+            let models = try await agent.provider.backend.models()
+            guard models.isEmpty || models.contains(where: { $0.id == agent.model }) else {
+                problems[agent.name] = "\(agent.provider.displayName) no longer offers \(agent.model)."
+                return
+            }
+            var next = AgentCatalog.load()
+            var added = agent
+            added.id = UUID()
+            next.agents.append(added)
+            try next.save()
+            catalog = AgentCatalog.load()
+            NotificationCenter.default.post(name: .agentCatalogChanged, object: nil)
+        } catch {
+            problems[agent.name] = "Couldn't check \(agent.provider.displayName)'s models: \(error.localizedDescription)"
+        }
+    }
+}
+
+extension Notification.Name {
+    /// The agents list changed outside the view showing it.
+    static let agentCatalogChanged = Notification.Name("HeadroomAgentCatalogChanged")
 }
