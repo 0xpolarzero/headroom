@@ -4,6 +4,8 @@ import Foundation
 /// Codex (ChatGPT subscription) limits, read with the login the Codex CLI already stored.
 struct CodexProvider: UsageProvider {
     var id: ProviderID { .codex }
+    /// The account's `CODEX_HOME`; nil finds the Codex CLI's own login as Codex does.
+    var home: String?
 
     private static let usageURL = "https://chatgpt.com/backend-api/wham/usage"
     private static let keychainService = "Codex Auth"
@@ -25,7 +27,7 @@ struct CodexProvider: UsageProvider {
     }
 
     func fetch() async throws -> UsageSnapshot {
-        guard let creds = Self.loadCredentials() else {
+        guard let creds = Self.loadCredentials(home: home) else {
             throw ProviderError.notConfigured("Run `codex` to sign in.")
         }
         guard creds.accessToken != nil else {
@@ -194,6 +196,8 @@ struct CodexProvider: UsageProvider {
 
     // MARK: Credential loading
 
+    static func hasCredentials(home: String?) -> Bool { loadCredentials(home: home) != nil }
+
     private static func codexHome() -> String {
         if let env = ProcessInfo.processInfo.environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespaces), !env.isEmpty {
             return (env as NSString).expandingTildeInPath
@@ -211,14 +215,14 @@ struct CodexProvider: UsageProvider {
         return paths
     }
 
-    private static func loadCredentials() -> Credentials? {
-        for path in authPaths() {
+    private static func loadCredentials(home given: String?) -> Credentials? {
+        for path in given.map({ [$0 + "/auth.json"] }) ?? authPaths() {
             if let json = readJSON(path: path), hasAuth(json) {
                 return Credentials(source: .file(path), json: json)
             }
         }
         // Keychain item: account "cli|" + first 16 hex of sha256(realpath(home)).
-        let home = codexHome()
+        let home = given ?? codexHome()
         let real = home.withCString { p -> String in
             guard let r = realpath(p, nil) else { return home }
             defer { free(r) }

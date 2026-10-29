@@ -19,21 +19,21 @@ enum Entry {
         app.run()
     }
 
-    /// `Headroom --print`: fetch every provider once and print the result, for debugging.
+    /// `Headroom --print`: fetch every account once and print the result, for debugging.
     private static func printUsage() {
         let done = DispatchSemaphore(value: 0)
         Task.detached {
-            let providers: [any UsageProvider] = [ClaudeProvider(), CodexProvider(), AntigravityProvider(), ZAIProvider(), OpenRouterProvider()]
-            for provider in providers {
+            for account in AccountsConfig.load().accounts {
+                let name = account.provider.displayName + (account.isMain ? "" : " · \(account.key)")
                 do {
-                    let s = try await provider.fetch()
-                    print("\(s.title) [\(s.plan ?? "no plan")]")
+                    let s = try await account.usageProvider.fetch()
+                    print("\(name) [\(s.plan ?? "no plan")]")
                     for w in s.windows {
                         let reset = w.resetsAt.map { Format.resets($0) } ?? "no reset"
                         print("  \(w.label): \(Format.left(w)), \(reset)")
                     }
                 } catch {
-                    print("\(provider.id.displayName): \(error.localizedDescription)")
+                    print("\(name): \(error.localizedDescription)")
                 }
             }
             done.signal()

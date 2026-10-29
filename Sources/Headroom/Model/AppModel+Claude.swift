@@ -28,7 +28,7 @@ extension AppModel {
 
     var claudeRows: [ClaudeAccountRow] {
         claudeConfig.ordered.map { account -> ClaudeAccountRow in
-            let s = account.isMain ? state(.claude) : claudeAccountStates[account.id] ?? ProviderState()
+            let s = state(of: Account(provider: .claude, key: account.id))
             let cli = ClaudeProvider.signedInAccount(configDir: account.cliConfigDir)
             let plan = s.snapshot?.plan
             let name = account.isMain ? plan.map { String($0.split(separator: " ")[0]) } ?? "Main" : account.id
@@ -43,13 +43,12 @@ extension AppModel {
 
     // MARK: Ticks
 
-    /// Every 15 s and when the panel opens: the account list, whether the server is registered, due usage.
-    func claudeTick(panelOpened: Bool = false) async {
-        let fresh = ClaudeAccountsConfig.load()
-        if fresh != claudeConfig { claudeConfig = fresh }
-        let installed = SubagentInstaller.isInstalled()
-        if installed != subagentsInstalled { subagentsInstalled = installed }
-        await refreshClaudeAccounts(force: false, throttle: panelOpened ? Self.openThrottle : nil)
+    /// Every 15 s and when the panel opens: the account list, whether the plugin is installed, and the
+    /// Claude accounts' usage for the subagent runner.
+    func claudeTick() async {
+        let fresh = AccountsConfig.load()
+        if fresh != accountsConfig { accountsConfig = fresh }
+        syncPlugin()
         writeUsageStatus()
     }
 
@@ -57,7 +56,7 @@ extension AppModel {
     private func writeUsageStatus() {
         var status: [String: SubagentUsage.Status] = [:]
         for row in claudeRows {
-            let s = row.isMain ? state(.claude) : claudeAccountStates[row.id] ?? ProviderState()
+            let s = state(of: Account(provider: .claude, key: row.id))
             // Kept through errors (rate limited, say): when it was read goes with it.
             guard let at = s.lastSuccess, s.snapshot != nil else { continue }
             status[row.id] = .init(session: row.used("Session"), weekly: row.used("Weekly"), at: at)
@@ -66,48 +65,6 @@ extension AppModel {
         // A runner may have read an account more recently than the app.
         for (id, entry) in saved where (status[id]?.at ?? .distantPast) < entry.at { status[id] = entry }
         if status != saved { SubagentUsage.writeStatus(status) }
-    }
-
-    func refreshClaudeAccounts(force: Bool, throttle: TimeInterval? = nil) async {
-        guard isEnabled(.claude) else { return }
-        let now = Date()
-        let due = claudeConfig.accounts.filter { account in
-            let s = claudeAccountStates[account.id] ?? ProviderState()
-            guard !s.isLoading else { return false }
-            guard !force, let last = s.lastAttempt else { return true }
-            return now.timeIntervalSince(last) >= (throttle.map { s.error == nil ? $0 : s.retryDelay } ?? s.retryDelay)
-        }
-        await withTaskGroup(of: Void.self) { group in
-            for account in due { group.addTask { await self.refreshClaudeAccount(account) } }
-        }
-    }
-
-    private func refreshClaudeAccount(_ account: ClaudeAccount) async {
-        let id = account.id
-        claudeAccountStates[id, default: ProviderState()].isLoading = true
-        claudeAccountStates[id]?.lastAttempt = .now
-        do {
-            var snapshot: UsageSnapshot
-            do {
-                snapshot = try await ClaudeProvider(configDir: account.cliConfigDir).fetch()
-            } catch ProviderError.unauthorized where !account.isMain && Date().timeIntervalSince(renewedAt[id] ?? .distantPast) > 600 {
-                // Unused for a while: Claude Code renews the sign-in when started.
-                renewedAt[id] = Date()
-                guard let renewed = await ClaudeSignIn.renew(account) else { throw ProviderError.unauthorized("Claude Code sign-in expired. Run `claude` to refresh it.") }
-                snapshot = renewed
-            }
-            claudeAccountStates[id]?.snapshot = snapshot
-            claudeAccountStates[id]?.error = nil
-            claudeAccountStates[id]?.notConfigured = false
-            claudeAccountStates[id]?.rateLimited = false
-            claudeAccountStates[id]?.lastSuccess = .now
-            checkLimits(.claude, snapshot, account: id)
-        } catch {
-            claudeAccountStates[id]?.error = error.localizedDescription
-            if case ProviderError.notConfigured = error { claudeAccountStates[id]?.notConfigured = true }
-            if case ProviderError.rateLimited = error { claudeAccountStates[id]?.rateLimited = true }
-        }
-        claudeAccountStates[id]?.isLoading = false
     }
 
     // MARK: Accounts
@@ -146,7 +103,7 @@ extension AppModel {
             config.accounts.removeAll { $0.id == id }
             config.normalize()
         }
-        claudeAccountStates[id] = nil
+        forgetUsage(Account(provider: .claude, key: id))
     }
 
     func moveClaudeAccount(_ id: String, by offset: Int) {
@@ -163,24 +120,14 @@ extension AppModel {
         }
     }
 
-    func setSubagentsInstalled(_ on: Bool) {
-        claudeError = nil
-        Task {
-            do {
-                try await on ? SubagentInstaller.install() : SubagentInstaller.uninstall()
-            } catch {
-                claudeError = error.localizedDescription
-            }
-            subagentsInstalled = SubagentInstaller.isInstalled()
-        }
-    }
+    func setSubagentsInstalled(_ on: Bool) { setFeature(.agents, on) }
 
     private func updateConfig(_ change: (inout ClaudeAccountsConfig) -> Void) {
         var config = ClaudeAccountsConfig.load()
         change(&config)
         do {
             try config.save()
-            claudeConfig = config
+            accountsConfig = AccountsConfig.load()
         } catch {
             claudeError = "Could not save the account list: \(error.localizedDescription)"
         }

@@ -3,6 +3,10 @@ import Foundation
 /// Antigravity quota via the Google Cloud Code API, using the OAuth token Antigravity keeps in the keychain.
 struct AntigravityProvider: UsageProvider {
     var id: ProviderID { .antigravity }
+    /// The keychain account of Headroom's own Google login for this account.
+    var login = Self.loginAccount
+    /// Falls back to the token the Antigravity app keeps: the main account only.
+    var usesAppLogin = true
 
     private static let hosts = ["https://cloudcode-pa.googleapis.com", "https://daily-cloudcode-pa.googleapis.com"]
     private static let summaryPath = "/v1internal:retrieveUserQuotaSummary"
@@ -25,7 +29,7 @@ struct AntigravityProvider: UsageProvider {
     static let loginService = "Headroom", loginAccount = "antigravity-login"
 
     func fetch() async throws -> UsageSnapshot {
-        let stored = try Self.storedToken()
+        let stored = try Self.storedToken(login: login, usesAppLogin: usesAppLogin)
         var token = try await Self.accessToken(stored, forceRefresh: false)
         var outcome = await Self.fetchSummaries(token: token)
         if case .authFailed = outcome, stored.refresh != nil {
@@ -44,12 +48,17 @@ struct AntigravityProvider: UsageProvider {
 
     private static let expiredMessage = "Antigravity sign-in expired. Sign in again in Settings."
 
-    private static func storedToken() throws -> KeychainToken {
-        if let raw = Keychain.readOwn(service: loginService, account: loginAccount),
+    static func hasCredentials(login: String, usesAppLogin: Bool) -> Bool {
+        (try? storedToken(login: login, usesAppLogin: usesAppLogin)) != nil
+    }
+
+    private static func storedToken(login: String, usesAppLogin: Bool) throws -> KeychainToken {
+        if let raw = Keychain.readOwn(service: loginService, account: login),
            let json = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
            let refresh = json.string("refresh_token") {
             return KeychainToken(access: nil, refresh: refresh, expiry: nil)
         }
+        guard usesAppLogin else { throw ProviderError.notConfigured("Sign in with Google in Settings.") }
         guard let raw = Keychain.read(service: "gemini", account: "antigravity") else {
             throw ProviderError.notConfigured("Sign in with Google in Settings, or open Antigravity.")
         }

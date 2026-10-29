@@ -6,10 +6,14 @@ struct OpenRouterProvider: UsageProvider {
     var id: ProviderID { .openrouter }
 
     static let keyService = "Headroom", keyAccount = "openrouter-api-key"
+    /// The keychain account of this account's key.
+    var keyItem = Self.keyAccount
+    /// Falls back to `OPENROUTER_API_KEY`: the main account only.
+    var usesEnvironment = true
     private static let base = "https://openrouter.ai/api/v1"
 
     func fetch() async throws -> UsageSnapshot {
-        guard let key = Self.apiKey() else { throw ProviderError.notConfigured("Add your OpenRouter API key in Settings.") }
+        guard let key = Self.apiKey(keyItem: keyItem, usesEnvironment: usesEnvironment) else { throw ProviderError.notConfigured("Add your OpenRouter API key in Settings.") }
         let headers = ["Authorization": "Bearer \(key)", "Accept": "application/json"]
         func get(_ path: String) async throws -> (Int, [String: Any]) {
             let (object, http) = try await HTTP.json(HTTP.request(Self.base + path, headers: headers))
@@ -101,9 +105,12 @@ struct OpenRouterProvider: UsageProvider {
         return data["is_management_key"] as? Bool == true || data["is_provisioning_key"] as? Bool == true
     }
 
-    static func apiKey() -> String? {
-        if let k = Keychain.readOwn(service: keyService, account: keyAccount), !k.isEmpty { return k }
-        if let k = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+    /// The main account's key, which agents use.
+    static func apiKey() -> String? { apiKey(keyItem: keyAccount, usesEnvironment: true) }
+
+    static func apiKey(keyItem: String, usesEnvironment: Bool) -> String? {
+        if let k = Keychain.readOwn(service: keyService, account: keyItem), !k.isEmpty { return k }
+        if usesEnvironment, let k = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !k.isEmpty { return k }
         return nil
     }

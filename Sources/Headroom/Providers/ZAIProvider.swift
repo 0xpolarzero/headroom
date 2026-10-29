@@ -3,12 +3,17 @@ import Foundation
 /// Z.ai (GLM Coding Plan) usage, authenticated with an API key.
 struct ZAIProvider: UsageProvider {
     var id: ProviderID { .zai }
+    /// The keychain accounts of this account's website session and Coding Plan key.
+    var sessionItem = Self.sessionAccount
+    var keyItem = Self.keyAccount
+    /// Falls back to `~/.config/zai/key.json`, `ZAI_API_KEY` and `GLM_API_KEY`: the main account only.
+    var usesFallbacks = true
 
     private static let quotaURL = "https://api.z.ai/api/monitor/usage/quota/limit"
     private static let subscriptionURL = "https://api.z.ai/api/biz/subscription/list"
 
     func fetch() async throws -> UsageSnapshot {
-        guard let auth = Self.authorization() else { throw ProviderError.notConfigured("Sign in to Z.ai in Settings.") }
+        guard let auth = Self.authorization(sessionItem: sessionItem, keyItem: keyItem, usesFallbacks: usesFallbacks) else { throw ProviderError.notConfigured("Sign in to Z.ai in Settings.") }
         let headers = ["Authorization": auth.header, "Accept": "application/json"]
 
         let (body, http) = try await HTTP.json(HTTP.request(Self.quotaURL, headers: headers))
@@ -79,9 +84,9 @@ struct ZAIProvider: UsageProvider {
     static let service = "Headroom", sessionAccount = "zai-session", keyAccount = "zai-api-key"
 
     /// The web session from Settings → Sign in, else an API key.
-    private static func authorization() -> (header: String, isSession: Bool)? {
-        if let header = Keychain.readOwn(service: service, account: sessionAccount), !header.isEmpty { return (header, true) }
-        return apiKey().map { ("Bearer \($0)", false) }
+    static func authorization(sessionItem: String, keyItem: String, usesFallbacks: Bool) -> (header: String, isSession: Bool)? {
+        if let header = Keychain.readOwn(service: service, account: sessionItem), !header.isEmpty { return (header, true) }
+        return apiKey(keyItem: keyItem, usesFallbacks: usesFallbacks).map { ("Bearer \($0)", false) }
     }
 
     /// The first candidate token that the quota endpoint accepts, as a full `Authorization` value.
@@ -97,8 +102,12 @@ struct ZAIProvider: UsageProvider {
         return nil
     }
 
-    static func apiKey() -> String? {
-        if let k = Keychain.readOwn(service: service, account: keyAccount), !k.isEmpty { return k }
+    /// The main account's key, which agents use.
+    static func apiKey() -> String? { apiKey(keyItem: keyAccount, usesFallbacks: true) }
+
+    static func apiKey(keyItem: String, usesFallbacks: Bool) -> String? {
+        if let k = Keychain.readOwn(service: service, account: keyItem), !k.isEmpty { return k }
+        guard usesFallbacks else { return nil }
         if let k = keyFromFile() { return k }
         for name in ["ZAI_API_KEY", "GLM_API_KEY"] {
             if let k = envValue(name) { return k }

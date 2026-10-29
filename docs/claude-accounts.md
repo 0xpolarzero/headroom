@@ -618,7 +618,7 @@ the automatic switching (see Terms).
 
 | Piece | Where |
 | --- | --- |
-| Account list, order, routing flags | `Accounts/ClaudeAccounts.swift`, `~/Library/Application Support/Headroom/claude-accounts.json` |
+| Account list, order, routing flags | `Accounts/Accounts.swift` (every provider's pool), `Accounts/ClaudeAccounts.swift` (the Claude pool), `~/Library/Application Support/Headroom/accounts.json`, migrated from `claude-accounts.json` |
 | Sign-in (system sheet, private mode, loopback redirect) | `Accounts/ClaudeOAuth.swift`, `Support/LoopbackReceiver.swift` |
 | Tokens, refresh under a cross-process lock | `Accounts/ClaudeTokens.swift`, keychain service `Headroom`, account `claude.<uuid>` |
 | Proxy, tunnel, splice to the TLS listener | `Relay/RelayServer.swift` (port 47812) |

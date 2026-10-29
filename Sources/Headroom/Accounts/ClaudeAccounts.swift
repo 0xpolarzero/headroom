@@ -6,6 +6,9 @@ enum HeadroomPaths {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("Headroom", isDirectory: true)
     }()
+    /// Every provider's accounts (`AccountsConfig`).
+    static let accountsConfig = support.appendingPathComponent("accounts.json")
+    /// The Claude account list from before `accounts.json`; read once to migrate, never written.
     static let accounts = support.appendingPathComponent("claude-accounts.json")
     static let agents = support.appendingPathComponent("subagents.json")
     static let agentsLock = support.appendingPathComponent("subagents.lock")
@@ -40,7 +43,7 @@ struct ClaudeAccount: Codable, Hashable, Sendable, Identifiable {
     var isMain: Bool { id == Self.mainID }
 
     /// `CLAUDE_CONFIG_DIR` for this account; nil for Main (the default `~/.claude`).
-    var cliConfigDir: String? { isMain ? nil : NSHomeDirectory() + "/.claude-accounts/\(id)" }
+    var cliConfigDir: String? { Account(provider: .claude, key: id).folder }
 
     init(id: String) { self.id = id }
 
@@ -50,15 +53,11 @@ struct ClaudeAccount: Codable, Hashable, Sendable, Identifiable {
         addedAt = try c.decodeIfPresent(Date.self, forKey: .addedAt) ?? Date()
     }
 
-    /// "Pro" → "Pro"; "my work" → "my-work". Letters, digits, "-" and "_" only.
-    static func slug(_ name: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let parts = name.trimmingCharacters(in: .whitespaces).components(separatedBy: allowed.inverted)
-        return parts.filter { !$0.isEmpty }.joined(separator: "-")
-    }
+    static func slug(_ name: String) -> String { Account.slug(name) }
 }
 
-/// The account list and its order, in Headroom's support folder.
+/// The Claude pool of `AccountsConfig`, as the subagent runner and the Claude settings use it. Its Codable
+/// shape is the old `claude-accounts.json`, kept for migrating it.
 struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
     /// Accounts besides Main.
     var accounts: [ClaudeAccount] = []
@@ -96,16 +95,42 @@ struct ClaudeAccountsConfig: Codable, Equatable, Sendable {
         for a in accounts where !seen.contains(a.id) { order.append(a.id) }
     }
 
-    static func load() -> ClaudeAccountsConfig {
-        guard let data = try? Data(contentsOf: HeadroomPaths.accounts),
-              var config = try? JSONDecoder.headroom.decode(ClaudeAccountsConfig.self, from: data) else { return .init() }
-        config.normalize()
-        return config
+    /// The Claude pool and the thresholds of `all`.
+    init(_ all: AccountsConfig) {
+        let pool = all.pool(.claude)
+        accounts = pool.filter { !$0.isMain }.map { account in
+            var claude = ClaudeAccount(id: account.key)
+            claude.addedAt = account.addedAt
+            return claude
+        }
+        order = pool.map(\.key)
+        sessionThreshold = all.sessionThreshold
+        weeklyThreshold = all.weeklyThreshold
+        normalize()
     }
 
+    static func load() -> ClaudeAccountsConfig { ClaudeAccountsConfig(AccountsConfig.load()) }
+
+    /// Puts this Claude pool and these thresholds into the saved `AccountsConfig`, leaving other providers alone.
     func save() throws {
-        HeadroomPaths.ensure(HeadroomPaths.support)
-        try JSONEncoder.headroom.encode(self).write(to: HeadroomPaths.accounts, options: .atomic)
+        var all = AccountsConfig.load()
+        all.replaceClaudePool(with: self)
+        try all.save()
+    }
+}
+
+extension AccountsConfig {
+    /// The Claude pool becomes `claude`'s accounts and order, where the Claude pool was.
+    mutating func replaceClaudePool(with claude: ClaudeAccountsConfig) {
+        var claude = claude
+        claude.normalize()
+        let at = accounts.firstIndex { $0.provider == .claude } ?? 0
+        let pool = claude.ordered.map { Account(provider: .claude, key: $0.id, addedAt: $0.isMain ? .distantPast : $0.addedAt) }
+        accounts.removeAll { $0.provider == .claude }
+        accounts.insert(contentsOf: pool, at: min(at, accounts.count))
+        sessionThreshold = claude.sessionThreshold
+        weeklyThreshold = claude.weeklyThreshold
+        normalize()
     }
 }
 

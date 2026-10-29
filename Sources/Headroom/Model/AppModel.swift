@@ -50,7 +50,12 @@ final class AppModel {
     /// Notifications and login items need a real app bundle, not `swift run`.
     static let isBundled = Bundle.main.bundleIdentifier != nil
 
-    private(set) var states: [ProviderID: ProviderState] = [:]
+    /// Each account's latest usage, by `Account.id`.
+    private(set) var states: [String: ProviderState] = [:]
+    /// What Headroom does; see `Feature`.
+    private(set) var features: Set<Feature> {
+        didSet { defaults.set(features.map(\.rawValue).sorted(), forKey: "features") }
+    }
     var showingSettings = false
     var settingsTab = SettingsTab.general
     var order: [ProviderID] {
@@ -80,24 +85,23 @@ final class AppModel {
     private(set) var hasOpenRouterKey = false
     private(set) var hasZAIKey = false
     private var signInTask: Task<Void, Never>?
+    /// Every provider's accounts, as saved; reloaded on each tick, since agent runners read it too.
+    var accountsConfig = AccountsConfig.load()
     // Claude accounts (AppModel+Claude.swift)
-    var claudeConfig = ClaudeAccountsConfig.load()
-    /// Usage of the accounts besides Main, by account ID.
-    var claudeAccountStates: [String: ProviderState] = [:]
+    var claudeConfig: ClaudeAccountsConfig { ClaudeAccountsConfig(accountsConfig) }
     /// Headroom's Claude Code plugin is installed and enabled (`~/.claude/settings.json`).
     var subagentsInstalled = false
     var claudeError: String?
     /// When Headroom last started Claude Code to renew an account's expired sign-in.
     @ObservationIgnored var renewedAt: [String: Date] = [:]
+    /// The plugin is being installed or removed; until it's done, its state says nothing about the feature.
+    @ObservationIgnored private var changingPlugin = false
 
     /// Windows already announced as full; an entry clears once usage drops below 100%.
     private var alerted: Set<String> {
         didSet { defaults.set(Array(alerted), forKey: "alertedLimits") }
     }
     let defaults = UserDefaults.standard
-    private let providers: [ProviderID: any UsageProvider] = [
-        .claude: ClaudeProvider(), .codex: CodexProvider(), .openrouter: OpenRouterProvider(), .antigravity: AntigravityProvider(), .zai: ZAIProvider(),
-    ]
     private var loop: Task<Void, Never>?
 
     init() {
@@ -107,6 +111,12 @@ final class AppModel {
         menuBarMode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
+        if let saved = defaults.stringArray(forKey: "features") {
+            features = Set(saved.compactMap(Feature.init))
+        } else {
+            features = Feature.initial(pluginInstalled: SubagentInstaller.isInstalled())
+            defaults.set(features.map(\.rawValue).sorted(), forKey: "features")
+        }
         loadAccounts()
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
     }
@@ -115,15 +125,23 @@ final class AppModel {
 
     var enabledProviders: [ProviderID] { order.filter { !disabled.contains($0) } }
 
-    func state(_ id: ProviderID) -> ProviderState { states[id] ?? ProviderState() }
+    /// The provider's main account's usage.
+    func state(_ id: ProviderID) -> ProviderState { state(of: .main(id)) }
 
-    var lastUpdated: Date? { enabledProviders.compactMap { states[$0]?.lastSuccess }.max() }
+    func state(of account: Account) -> ProviderState { states[account.id] ?? ProviderState() }
 
-    var isRefreshing: Bool { enabledProviders.contains { states[$0]?.isLoading == true } }
+    /// Every account of the enabled providers, which are the ones Headroom reads.
+    var enabledAccounts: [Account] { enabledProviders.flatMap { accountsConfig.pool($0) } }
 
-    /// Enabled providers that get a menu bar item: all but those with nothing to show yet.
+    var lastUpdated: Date? { enabledAccounts.compactMap { states[$0.id]?.lastSuccess }.max() }
+
+    var isRefreshing: Bool { enabledAccounts.contains { states[$0.id]?.isLoading == true } }
+
+    /// Enabled providers that get a menu bar item: all but those with nothing to show yet, and none
+    /// without the limits feature, which leaves the plain gauge.
     var menuBarProviders: [ProviderID] {
-        enabledProviders.filter { id in
+        guard features.contains(.limits) else { return [] }
+        return enabledProviders.filter { id in
             let s = state(id)
             return s.snapshot != nil || !s.notConfigured
         }
@@ -146,8 +164,8 @@ final class AppModel {
     /// Every 5 minutes, or 60 s after a failure.
     private func refreshDue() async {
         let now = Date()
-        await refresh(enabledProviders.filter { id in
-            let s = state(id)
+        await refresh(enabledAccounts.filter { account in
+            let s = state(of: account)
             guard let last = s.lastAttempt else { return true }
             return now.timeIntervalSince(last) >= s.retryDelay
         })
@@ -155,39 +173,43 @@ final class AppModel {
 
     func panelOpened() {
         let now = Date()
-        let ids = enabledProviders.filter { id in
-            let s = state(id)
+        let due = enabledAccounts.filter { account in
+            let s = state(of: account)
             guard let last = s.lastAttempt else { return true }
             return now.timeIntervalSince(last) >= (s.error == nil ? Self.openThrottle : s.retryDelay)
         }
-        Task { await refresh(ids) }
-        Task { await claudeTick(panelOpened: true) }
+        Task { await refresh(due) }
+        Task { await claudeTick() }
     }
 
     func refreshAll() {
-        Task { await refresh(enabledProviders) }
-        Task { await refreshClaudeAccounts(force: true) }
+        Task { await refresh(enabledAccounts) }
     }
 
+    /// Every account of these providers.
     func refresh(_ ids: [ProviderID]) async {
-        let ids = ids.filter { states[$0]?.isLoading != true }
+        await refresh(ids.flatMap { accountsConfig.pool($0) })
+    }
+
+    func refresh(_ accounts: [Account]) async {
+        let accounts = accounts.filter { states[$0.id]?.isLoading != true }
         await withTaskGroup(of: Void.self) { group in
-            for id in ids { group.addTask { await self.refreshOne(id) } }
+            for account in accounts { group.addTask { await self.refreshOne(account) } }
         }
     }
 
-    private func refreshOne(_ id: ProviderID) async {
-        guard let provider = providers[id] else { return }
+    private func refreshOne(_ account: Account) async {
+        let id = account.id
         states[id, default: ProviderState()].isLoading = true
         states[id]?.lastAttempt = .now
         do {
-            let snapshot = try await provider.fetch()
+            let snapshot = try await fetch(account)
             states[id]?.snapshot = snapshot   // keep the last good data on failure
             states[id]?.error = nil
             states[id]?.notConfigured = false
             states[id]?.rateLimited = false
             states[id]?.lastSuccess = .now
-            checkLimits(id, snapshot)
+            checkLimits(account.provider, snapshot, account: account.isMain ? nil : account.key)
         } catch {
             states[id]?.error = error.localizedDescription
             if case ProviderError.notConfigured = error { states[id]?.notConfigured = true }
@@ -196,7 +218,48 @@ final class AppModel {
         states[id]?.isLoading = false
     }
 
+    private func fetch(_ account: Account) async throws -> UsageSnapshot {
+        do {
+            return try await account.usageProvider.fetch()
+        } catch ProviderError.unauthorized where account.provider == .claude && !account.isMain
+                    && Date().timeIntervalSince(renewedAt[account.key] ?? .distantPast) > 600 {
+            // Unused for a while: Claude Code renews the sign-in when started.
+            renewedAt[account.key] = Date()
+            guard let renewed = await ClaudeSignIn.renew(ClaudeAccount(id: account.key)) else {
+                throw ProviderError.unauthorized("Claude Code sign-in expired. Run `claude` to refresh it.")
+            }
+            return renewed
+        }
+    }
+
     // MARK: Settings
+
+    /// Turning agents on installs Headroom's Claude Code plugin; turning them off removes it.
+    func setFeature(_ feature: Feature, _ on: Bool) {
+        if on { features.insert(feature) } else { features.remove(feature) }
+        guard feature == .agents else { return }
+        claudeError = nil
+        changingPlugin = true
+        Task {
+            do {
+                try await on ? SubagentInstaller.install() : SubagentInstaller.uninstall()
+            } catch {
+                claudeError = error.localizedDescription
+            }
+            changingPlugin = false
+            syncPlugin()
+        }
+    }
+
+    /// The plugin is what makes agents work, so the feature follows it, also when it was changed in Claude Code.
+    func syncPlugin() {
+        guard !changingPlugin else { return }
+        let installed = SubagentInstaller.isInstalled()
+        if installed != subagentsInstalled { subagentsInstalled = installed }
+        if installed != features.contains(.agents) {
+            if installed { features.insert(.agents) } else { features.remove(.agents) }
+        }
+    }
 
     func isEnabled(_ id: ProviderID) -> Bool { !disabled.contains(id) }
 
@@ -307,10 +370,13 @@ final class AppModel {
         reset(.openrouter)
     }
 
-    /// Drops what a provider showed and fetches it again with the new credentials.
+    /// Drops what a removed account showed.
+    func forgetUsage(_ account: Account) { states[account.id] = nil }
+
+    /// Drops what a provider's main account showed and fetches it again with the new credentials.
     private func reset(_ id: ProviderID) {
-        states[id] = nil
-        Task { await refresh([id]) }
+        states[Account.main(id).id] = nil
+        Task { await refresh([Account.main(id)]) }
     }
 
     func setLaunchAtLogin(_ on: Bool) {
