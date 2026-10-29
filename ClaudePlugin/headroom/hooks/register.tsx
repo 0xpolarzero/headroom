@@ -39,7 +39,9 @@ let revision: number | undefined
 let saveClaude = false
 
 const SAVING_CONTEXT = 'headroomSaveClaude'
+/** The instruction when Headroom sends none (an older app): Headroom sends its default, or the user's edit. */
 const SAVING_INSTRUCTION = "Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to Headroom's agents (headroom:*), picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no Headroom agent fits."
+let savingInstruction = SAVING_INSTRUCTION
 let nativeTasks: boolean | undefined
 
 const TYPE_PREFIX = 'headroom:'
@@ -62,7 +64,9 @@ async function syncCatalog($: EngineInterface): Promise<void> {
   for await (const chunk of $.process.spawn({ argv: [await runner($), '--agent-catalog'] })) {
     if (chunk.stream === 'stdout') text += chunk.text
   }
-  const parsed = JSON.parse(text.trim() || '{}') as { revision?: number; agents?: Defined[]; saveClaude?: boolean; nativeTasks?: boolean }
+  const parsed = JSON.parse(text.trim() || '{}') as {
+    revision?: number; agents?: Defined[]; saveClaude?: boolean; saveClaudeText?: string; nativeTasks?: boolean
+  }
   nativeTasks = parsed.nativeTasks === true
   if (parsed.revision !== undefined && parsed.revision === revision) return
   const next = new Map((parsed.agents ?? []).map(agent => [`${TYPE_PREFIX}${agent.name}`, agent] as const))
@@ -74,6 +78,7 @@ async function syncCatalog($: EngineInterface): Promise<void> {
   catalog = next
   revision = parsed.revision
   saveClaude = parsed.saveClaude === true
+  savingInstruction = parsed.saveClaudeText?.trim() || SAVING_INSTRUCTION
   $.ui.invalidate('tool.describe')
 }
 
@@ -421,8 +426,8 @@ export const register: Register = on => {
     const answer = await next(e)
     const blocks = answer.blocks.filter(block => block.name !== SAVING_CONTEXT)
     $.ui.invalidate('prompt.context')
-    $.ui.log(`headroom: Save Claude usage context: ${saveClaude ? SAVING_INSTRUCTION : '(absent)'}`, { to: 'debug' })
-    return { ...answer, blocks: saveClaude ? [...blocks, { name: SAVING_CONTEXT, text: SAVING_INSTRUCTION }] : blocks }
+    $.ui.log(`headroom: Save Claude usage context: ${saveClaude ? savingInstruction : '(absent)'}`, { to: 'debug' })
+    return { ...answer, blocks: saveClaude ? [...blocks, { name: SAVING_CONTEXT, text: savingInstruction }] : blocks }
   })
 
   // The mode built-in subagents inherit; the classic hook events carry it.

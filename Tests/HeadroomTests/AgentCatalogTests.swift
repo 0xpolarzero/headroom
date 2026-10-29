@@ -71,4 +71,15 @@ final class AgentCatalogTests: XCTestCase {
         XCTAssertEqual(agents.count, 1)
         XCTAssertEqual(AgentCatalog().pluginJSON()["saveClaude"] as? Bool, false)
     }
+
+    func testTheSavingInstructionIsTheDefaultUntilRewritten() throws {
+        var catalog = AgentCatalog()
+        XCTAssertEqual(catalog.pluginJSON()["saveClaudeText"] as? String, AgentCatalog.defaultSavingInstruction)
+        catalog.saveClaudeText = "Delegate everything you can."
+        XCTAssertEqual(catalog.pluginJSON()["saveClaudeText"] as? String, "Delegate everything you can.")
+        catalog.saveClaudeText = "   "
+        XCTAssertEqual(catalog.savingInstruction, AgentCatalog.defaultSavingInstruction)
+        let old = try JSONDecoder.headroom.decode(AgentCatalog.self, from: Data(#"{"agents":[],"revision":3,"saveClaude":true}"#.utf8))
+        XCTAssertNil(old.saveClaudeText)
+    }
 }

@@ -453,6 +453,15 @@ test('turning saving off removes its context on the next prompt without changing
   expect(stubs.invalidated.filter(event => event === 'prompt.context').length).toBe(2)
 })
 
+test('an edited saving instruction replaces the default from the next prompt', async ($, on) => {
+  let catalog: object = { revision: 10, saveClaude: true, saveClaudeText: 'Delegate everything you can.', agents: [] }
+  engine([$, on], { liveCatalog: () => catalog })
+  context(on)
+  expect((await $.prompt.context({ blocks: [] })).blocks[0]?.text).toBe('Delegate everything you can.')
+  catalog = { revision: 11, saveClaude: true, saveClaudeText: '  ', agents: [] }
+  expect((await $.prompt.context({ blocks: [] })).blocks[0]?.text).toContain('Claude usage is being saved')
+})
+
 test('older catalogs add no saving instruction', async ($, on) => {
   engine([$, on])
   context(on)

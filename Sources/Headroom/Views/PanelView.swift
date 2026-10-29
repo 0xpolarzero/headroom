@@ -270,13 +270,11 @@ struct AgentsPanel: View {
                 }
                 ForEach(catalog.agents) { agent in
                     HStack(spacing: 8) {
-                        ProviderLogo(id: agent.provider.usageID, size: 13)
-                        VStack(alignment: .leading, spacing: 1) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(agent.name).font(.subheadline.weight(.medium))
+                            AgentBadges(agent: agent, compact: true).help(agent.summary)
                             if let problem = model.agentProblem(agent.provider) {
                                 Text(problem).font(.caption).foregroundStyle(.orange)
-                            } else {
-                                Caption(agent.summary)
                             }
                         }
                         Spacer()
@@ -316,6 +314,7 @@ struct SaveClaudeToggle: View {
     let catalog: AgentCatalog
     var compact = false
     var onChange: (() -> Void)?
+    @State private var editing = false
 
     var body: some View {
         let hasAgents = !catalog.enabled.isEmpty
@@ -326,6 +325,10 @@ struct SaveClaudeToggle: View {
                 Text(hasAgents ? "Claude plans and checks the work, and hands the coding, searching and research to your agents on other plans."
                                : "Add an agent first: Claude hands work to your agents on other plans.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !compact {
+                    Button(catalog.saveClaudeText == nil ? "See What Claude Is Told…" : "Edit What Claude Is Told (Customized)…") { editing = true }
+                        .buttonStyle(.link).font(.caption).padding(.top, 2)
+                }
             }
             Spacer(minLength: 4)
             Toggle("", isOn: Binding(get: { catalog.saveClaude }, set: { on in
@@ -341,6 +344,46 @@ struct SaveClaudeToggle: View {
         }
         .padding(compact ? 10 : 0)
         .background(compact ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .sheet(isPresented: $editing) { SavingInstructionEditor(catalog: catalog) { onChange?() } }
+    }
+}
+
+/// The text Save Claude usage adds to every prompt, which the user can rewrite or reset.
+struct SavingInstructionEditor: View {
+    let catalog: AgentCatalog
+    let saved: () -> Void
+    @State private var text = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("What Claude Is Told").font(.title3.weight(.semibold))
+            Caption("While Save Claude usage is on, Claude Code adds this to every prompt, in every session. Changes apply from the next prompt.")
+            TextEditor(text: $text)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(minHeight: 150)
+            HStack {
+                Button("Reset to Default") { text = AgentCatalog.defaultSavingInstruction }
+                    .disabled(text == AgentCatalog.defaultSavingInstruction)
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    var next = AgentCatalog.load()
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    next.saveClaudeText = trimmed.isEmpty || trimmed == AgentCatalog.defaultSavingInstruction ? nil : trimmed
+                    try? next.save()
+                    saved()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 500)
+        .onAppear { text = catalog.savingInstruction }
     }
 }
 

@@ -80,8 +80,20 @@ struct AgentCatalog: Codable, Equatable, Sendable {
     var revision = 0
     /// Ask Claude to delegate substantial work to these agents before doing it itself.
     var saveClaude = false
+    /// The user's own wording of that instruction; nil uses `defaultSavingInstruction`.
+    var saveClaudeText: String?
 
-    private enum CodingKeys: String, CodingKey { case agents, revision, saveClaude }
+    /// What Claude reads while saving is on, unless the user rewrote it. The plugin keeps the same text
+    /// for an app that sends none.
+    static let defaultSavingInstruction = "Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to Headroom's agents (headroom:*), picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no Headroom agent fits."
+
+    /// The instruction Claude gets.
+    var savingInstruction: String {
+        let text = saveClaudeText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return text.isEmpty ? Self.defaultSavingInstruction : text
+    }
+
+    private enum CodingKeys: String, CodingKey { case agents, revision, saveClaude, saveClaudeText }
 
     var enabled: [AgentDefinition] { agents.filter(\.enabled) }
 
@@ -114,7 +126,7 @@ struct AgentCatalog: Codable, Equatable, Sendable {
 
     /// What the plugin reads: the revision and the enabled agents as Claude Code registers them.
     func pluginJSON() -> [String: Any] {
-        ["revision": revision, "saveClaude": saveClaude, "nativeTasks": true, "agents": enabled.map { agent in
+        ["revision": revision, "saveClaude": saveClaude, "saveClaudeText": savingInstruction, "nativeTasks": true, "agents": enabled.map { agent in
             ["name": agent.name, "description": agent.description, "provider": agent.provider.rawValue,
              "summary": agent.summary, "prompt": agent.instructions]
         }]
@@ -134,5 +146,6 @@ extension AgentCatalog {
         agents = try values.decode([AgentDefinition].self, forKey: .agents)
         revision = try values.decode(Int.self, forKey: .revision)
         saveClaude = try values.decodeIfPresent(Bool.self, forKey: .saveClaude) ?? false
+        saveClaudeText = try values.decodeIfPresent(String.self, forKey: .saveClaudeText)
     }
 }

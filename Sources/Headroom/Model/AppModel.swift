@@ -73,8 +73,13 @@ final class AppModel {
             if notificationsOn { requestNotificationPermission() }
         }
     }
+    /// What a provider shows when it has no choice of its own: the single choice from before there was one per provider.
     var menuBarMode: MenuBarMode {
         didSet { defaults.set(menuBarMode.rawValue, forKey: "menuBarMode") }
+    }
+    /// Each provider's choice of Session, Weekly or both, by provider.
+    private(set) var menuBarModes: [String: String] {
+        didSet { defaults.set(menuBarModes, forKey: "menuBarModes") }
     }
     private(set) var launchAtLogin = false
     private(set) var launchAtLoginError: String?
@@ -109,6 +114,7 @@ final class AppModel {
         order = saved + ProviderID.allCases.filter { !saved.contains($0) }
         menuBarHidden = Set((defaults.stringArray(forKey: "disabledProviders") ?? []).compactMap(ProviderID.init))
         menuBarMode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
+        menuBarModes = defaults.dictionary(forKey: "menuBarModes") as? [String: String] ?? [:]
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
         if let saved = defaults.stringArray(forKey: "features") {
@@ -273,6 +279,10 @@ final class AppModel {
     }
 
     func showsInMenuBar(_ id: ProviderID) -> Bool { !menuBarHidden.contains(id) }
+
+    func menuBarMode(for id: ProviderID) -> MenuBarMode { MenuBarMode(rawValue: menuBarModes[id.rawValue] ?? "") ?? menuBarMode }
+
+    func setMenuBarMode(_ id: ProviderID, _ mode: MenuBarMode) { menuBarModes[id.rawValue] = mode.rawValue }
 
     func setShowsInMenuBar(_ id: ProviderID, _ on: Bool) {
         if on { menuBarHidden.remove(id) } else { menuBarHidden.insert(id) }

@@ -158,18 +158,22 @@ struct AccountsSections: View {
     }
 }
 
-/// What the menu bar shows, and for which providers.
+/// What each provider shows in the menu bar: Session, Weekly, both, or nothing.
 struct MenuBarSection: View {
     @Bindable var model: AppModel
 
     var body: some View {
         Section {
-            Picker("Shows", selection: $model.menuBarMode) {
-                ForEach(MenuBarMode.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
             ForEach(model.connectedProviders) { provider in
-                Toggle(isOn: Binding(get: { model.showsInMenuBar(provider) }, set: { model.setShowsInMenuBar(provider, $0) })) {
+                Picker(selection: choice(provider)) {
+                    if provider == .openrouter {
+                        Text("Credits").tag("shown")
+                    } else {
+                        ForEach(MenuBarMode.allCases) { Text($0 == .both ? "Session and Weekly" : $0.title).tag($0.rawValue) }
+                    }
+                    Divider()
+                    Text("Hidden").tag("hidden")
+                } label: {
                     HStack(spacing: 8) {
                         ProviderLogo(id: provider, size: 14)
                         Text(provider.displayName)
@@ -179,8 +183,17 @@ struct MenuBarSection: View {
         } header: {
             Text("Menu bar")
         } footer: {
-            Caption("On a Mac with a notch, Headroom shortens the menu bar item, then shows a gauge, when there isn't room for every provider.")
+            Caption("On a Mac with a notch, Headroom shows Session alone, then fewer providers, then a gauge, when there isn't room for everything.")
         }
+    }
+
+    private func choice(_ provider: ProviderID) -> Binding<String> {
+        Binding(get: {
+            model.showsInMenuBar(provider) ? (provider == .openrouter ? "shown" : model.menuBarMode(for: provider).rawValue) : "hidden"
+        }, set: { value in
+            model.setShowsInMenuBar(provider, value != "hidden")
+            if let mode = MenuBarMode(rawValue: value) { model.setMenuBarMode(provider, mode) }
+        })
     }
 }
 
@@ -267,17 +280,15 @@ struct AgentsSections: View {
 
     private func row(_ agent: AgentDefinition) -> some View {
         HStack(spacing: 10) {
-            ProviderLogo(id: agent.provider.usageID, size: 16)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(agent.name).fontWeight(.medium)
                     Text(agent.type).font(.caption.monospaced()).foregroundStyle(.tertiary)
                 }
                 Caption(agent.description)
+                AgentBadges(agent: agent).padding(.top, 2)
                 if let problem = model.agentProblem(agent.provider) {
                     Text(problem).font(.caption).foregroundStyle(.orange)
-                } else {
-                    Caption(agent.summary)
                 }
             }
             Spacer()

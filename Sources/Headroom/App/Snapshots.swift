@@ -19,6 +19,7 @@ enum Snapshots {
                 model.settingsPage = page
                 await capture(SettingsView(model: model), NSSize(width: 720, height: 560), titled: "Headroom Settings", to: folder, "settings-\(page.rawValue)")
             }
+            await capture(SavingInstructionEditor(catalog: AgentCatalog.load()) {}, nil, to: folder, "save-instruction")
             model.panelTab = .limits
             await capture(PanelView(model: model), nil, to: folder, "panel-limits")
             model.panelTab = .agents
