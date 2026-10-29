@@ -1,7 +1,9 @@
 {
   "name": "lastdrop",
   "version": "0.1.0",
-  "description": "Runs Claude Code's subagents on your other Claude accounts that have room, exactly like built-in subagents.",
+  "description": "Runs Claude Code subagents on whichever of your Claude accounts has room, and adds agents on your other AI plans.",
   "license": "MIT",
+  "author": { "name": "amontlabs" },
+  "homepage": "https://github.com/amontlabs/lastdrop",
   "types": "./types/index.d.ts"
 }

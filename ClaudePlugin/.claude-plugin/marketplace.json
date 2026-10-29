@@ -5,7 +5,7 @@
     {
       "name": "lastdrop",
       "source": "./lastdrop",
-      "description": "Runs Claude Code's subagents on your other Claude accounts that have room, exactly like built-in subagents."
+      "description": "Runs Claude Code subagents on whichever of your Claude accounts has room, and adds agents on your other AI plans."
     }
   ]
 }

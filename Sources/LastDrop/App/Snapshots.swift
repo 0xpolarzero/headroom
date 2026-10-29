@@ -13,9 +13,10 @@ enum Snapshots {
         app.appearance = NSAppearance(named: ProcessInfo.processInfo.environment["LASTDROP_APPEARANCE"] == "light" ? .aqua : .darkAqua)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let model = AppModel()
-        model.start()
+        let demo = ProcessInfo.processInfo.environment["LASTDROP_DEMO"] == "1"
+        if demo { model.loadDemo() } else { model.start() }
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(10))   // usage and local checks
+            try? await Task.sleep(for: .seconds(demo ? 1 : 10))   // usage and local checks
             func windowed(_ view: some View) -> some View {
                 view.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(nsColor: .windowBackgroundColor)).ignoresSafeArea(edges: .top)
             }

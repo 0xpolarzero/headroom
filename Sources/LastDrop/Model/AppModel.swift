@@ -314,6 +314,43 @@ final class AppModel {
         order.swapAt(i, i + offset)
     }
 
+    /// Made-up accounts and usage for screenshots and the video (`LASTDROP_DEMO=1` with `--snapshots`): nothing is read
+    /// from or written to this Mac's accounts.
+    func loadDemo() {
+        let now = Date()
+        func w(_ label: String, _ used: Double, _ hours: Double) -> UsageWindow {
+            UsageWindow(label: label, usedPercent: used, resetsAt: now.addingTimeInterval(hours * 3600))
+        }
+        var config = AccountsConfig()
+        config.update("claude.main") { $0.menuBar = .both }
+        config.append(Account(provider: .claude, key: "work", name: "Team", menuBar: .both))
+        config.update("codex.main") { $0.menuBar = .both }
+        config.update("zai.main") { $0.menuBar = .session }
+        config.update("antigravity.main") { $0.notifyAt = 0.9 }
+        accountsConfig = config
+        let usage: [String: UsageSnapshot] = [
+            "claude.main": UsageSnapshot(title: "Claude", plan: "Max 20x", windows: [w("Session", 81, 1.8), w("Weekly", 46, 92), w("Fable Weekly", 30, 92)]),
+            "claude.work": UsageSnapshot(title: "Claude", plan: "Team", windows: [w("Session", 12, 4.2), w("Weekly", 23, 121)]),
+            "codex.main": {
+                var s = UsageSnapshot(title: "Codex", plan: "Pro 200", windows: [w("Session", 34, 3.1), w("Weekly", 18, 140)])
+                s.credits = ExtraCredits(amount: "12,480 credits", detail: "About 3,100 to 16,200 messages")
+                return s
+            }(),
+            "antigravity.main": UsageSnapshot(title: "Antigravity", plan: "Ultra", windows: [w("Session", 8, 4.6), w("Weekly", 15, 110)]),
+            "zai.main": UsageSnapshot(title: "Z.ai", plan: "GLM Coding Pro", windows: [w("Session", 21, 2.4), w("Weekly", 37, 70)]),
+            "openrouter.main": UsageSnapshot(title: "OpenRouter", plan: nil, windows: [UsageWindow(label: "Credits", usedPercent: 38, detail: "$124.00 of $200.00 left")],
+                                             menuBarText: "$124"),
+        ]
+        for (id, snapshot) in usage {
+            states[id] = ProviderState(snapshot: snapshot, lastAttempt: now, lastSuccess: now)
+        }
+        let emails = ["claude.main": "you@example.com", "claude.work": "you@company.com", "antigravity.main": "you@example.com"]
+        localChecks = Dictionary(uniqueKeysWithValues: config.accounts.map { ($0.id, LocalCheck(connected: true, email: emails[$0.id], agents: .ready)) })
+        agentsEnabled = true
+        subagentsInstalled = true
+        launchAtLogin = true
+    }
+
     /// Drops what a removed account showed.
     func forgetUsage(_ account: Account) { states[account.id] = nil }
 
