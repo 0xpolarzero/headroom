@@ -11,6 +11,8 @@ enum AgentSuggestions {
                         provider: .antigravity, model: "gemini-3.8-flash", effort: "low"),
         AgentDefinition(name: "flash", description: "Implementation and exploration on a cheaper model.",
                         provider: .zai, model: "glm-5.3-flash"),
+        AgentDefinition(name: "terra-cu", description: "Computer use: operating macOS app windows.",
+                        provider: .codex, model: "gpt-6.1-terra", effort: "low"),
     ]
 
     /// The suggestions not in the list yet whose plan can run them.
