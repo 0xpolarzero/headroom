@@ -37,6 +37,9 @@
   #termtitle { margin-left: 14px; font-family: var(--mono); font-size: 16px; color: var(--faint); }
   #save { position: absolute; right: 18px; top: 10px; height: 32px; border-radius: 16px; padding: 0 8px 0 14px; display: flex; align-items: center;
     gap: 10px; font-size: 16px; font-weight: 500; color: var(--dim); background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); }
+  .ring { position: absolute; left: 18px; right: 18px; border-radius: 14px; border: 2px solid rgba(143,208,255,.85); box-shadow: 0 0 30px rgba(90,155,255,.35); }
+  .ring span { position: absolute; left: 50%; bottom: -15px; transform: translateX(-50%); padding: 2px 12px; border-radius: 10px; background: #13314F; color: #8FD0FF;
+    font-size: 15px; font-weight: 600; white-space: nowrap; }
   .sw { width: 38px; height: 22px; border-radius: 11px; position: relative; }
   .kn { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
   .card { position: absolute; top: 210px; width: 790px; height: 620px; border-radius: 20px; background: rgba(14,26,38,.92); border: 1px solid rgba(255,255,255,.09);
@@ -120,13 +123,8 @@
     <div id="l4" class="line" style="top: 414px"><span class="bullet">⏺</span> lastdrop:flash<span class="muted">(Write the tests)</span></div>
     <div id="c4" class="chip" style="top: 410px">__ZAI__Z.ai <span>glm-5.3-flash</span></div>
     <div id="s4" class="sub" style="top: 456px">  ⎿ Running on Z.ai · <span id="n4">0</span> tool uses</div>
-    <div id="types" style="position: absolute; left: 24px; right: 24px; top: 512px; height: 104px; border-radius: 14px; background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.08); padding: 16px 18px; font-family: var(--mono)">
-      <div style="font-size: 16px; color: var(--faint); margin-bottom: 12px">Agent types Claude can use</div>
-      <div style="display: flex; gap: 22px; font-size: 20px; flex-wrap: nowrap">
-        <span class="muted">general-purpose</span><span class="muted">Explore</span><span class="muted">Plan</span>
-        <span id="ty1" style="color: var(--shallow)">lastdrop:sol</span><span id="ty2" style="color: var(--shallow)">lastdrop:flash</span><span id="ty3" style="color: var(--shallow)">lastdrop:argon</span>
-      </div>
-    </div>
+    <div id="ringA" class="ring" style="top: 202px; height: 90px"><span>Built-in subagent</span></div>
+    <div id="ringB" class="ring" style="top: 302px; height: 90px"><span>Your Codex plan</span></div>
   </div>
 
   <div id="cols" class="abs" style="left: 0; top: 0; width: 1920px; height: 1080px">
@@ -135,17 +133,17 @@
   </div>
   <svg id="streams" class="abs" width="1920" height="1080" style="left: 0; top: 0"></svg>
 
-  <div id="cap1" class="cap">Name an agent in your prompt. <em>Claude calls it.</em></div>
-  <div id="cap2" class="cap">Built-in subagents go to the Claude account <em>with room</em>.</div>
-  <div id="cap3" class="cap">Agents on your other plans <em>run like Claude's own</em>.</div>
-  <div id="cap4" class="cap">Right next to Claude's built-in agents. <em>Nothing new to learn.</em></div>
+  <div id="cap1" class="cap">Call any agent <em>by name</em>.</div>
+  <div id="cap2" class="cap">Subagents draw from your <em>other Claude accounts</em>.</div>
+  <div id="cap3" class="cap">Agents draw from your <em>other AI plans</em>.</div>
+  <div id="cap4" class="cap">Exactly like built-in subagents. <em>Same tool, same rows.</em></div>
 
   <!-- Save Claude usage, off and on -->
   <div id="saveTitle" class="abs" style="left: 0; width: 1920px; top: 108px; text-align: center; font-size: 56px; font-weight: 600; letter-spacing: -0.03em">Save Claude usage</div>
   <div id="cardOff" class="card" style="left: 140px"><div class="cardbar"><span>Off</span><div class="sw" style="background: rgba(255,255,255,.16)"><div class="kn" id="knOff"></div></div></div><div id="off0" class="cl" style="top: 92px"><span class="bullet">›</span> Add rate limiting to the API</div><div id="off1" class="cl" style="top: 144px"><span class="bullet">⏺</span> Read<span class="muted">(src/api/server.ts)</span></div><div id="off2" class="cl" style="top: 196px"><span class="bullet">⏺</span> Edit<span class="muted">(src/api/limits.ts)</span></div><div id="off3" class="cl" style="top: 248px"><span class="bullet">⏺</span> Edit<span class="muted">(src/api/server.ts)</span></div><div id="off4" class="cl" style="top: 300px"><span class="bullet">⏺</span> Bash<span class="muted">(npm test)</span></div><div id="off5" class="cl" style="top: 352px"><span style="color:#4ADE80">✓</span> Rate limiting is in.</div><div class="ml" style="top: 556px"><span>Claude Max</span><span id="offMaxv"></span></div><div class="meter" style="top: 586px"><i id="offMax" style="background: linear-gradient(90deg,#F0872B,#FFC27A)"></i></div></div>
   <div id="cardOn" class="card" style="left: 990px"><div class="cardbar"><span>On</span><div class="sw" style="background: #5A9BFF"><div class="kn" id="knOn"></div></div></div><div id="on0" class="cl" style="top: 92px"><span class="bullet">›</span> Add rate limiting to the API</div><div id="on1" class="cl" style="top: 144px"><span class="bullet">⏺</span> lastdrop:flash<span class="muted">(Implement rate limiting)</span></div><div id="on2" class="cl" style="top: 196px"><span class="bullet">⏺</span> lastdrop:sol<span class="muted">(Review the change)</span></div><div id="on3" class="cl" style="top: 248px"><span class="bullet">⏺</span> Read<span class="muted">(src/api/limits.ts)</span></div><div id="on4" class="cl" style="top: 300px"><span class="bullet">⏺</span> Bash<span class="muted">(npm test)</span></div><div id="on5" class="cl" style="top: 352px"><span style="color:#4ADE80">✓</span> Reviewed. Tests pass.</div><div class="ml" style="top: 440px"><span>Claude Max</span><span id="onMaxv"></span></div><div class="meter" style="top: 470px"><i id="onMax" style="background: linear-gradient(90deg,#F0872B,#FFC27A)"></i></div><div class="ml" style="top: 498px"><span>Codex</span><span id="onCodexv"></span></div><div class="meter" style="top: 528px"><i id="onCodex" style="background: linear-gradient(90deg,#2B6FE6,#8FD0FF)"></i></div><div class="ml" style="top: 556px"><span>Z.ai</span><span id="onZaiv"></span></div><div class="meter" style="top: 586px"><i id="onZai" style="background: linear-gradient(90deg,#2B6FE6,#8FD0FF)"></i></div></div>
-  <div id="capOff" class="cap">Off: Claude writes the code itself, <em>on your Claude plan</em>.</div>
-  <div id="capOn" class="cap">On: your agents write it. <em>Claude just plans and checks.</em></div>
+  <div id="capOff" class="cap">Off: Claude does the work itself.</div>
+  <div id="capOn" class="cap">On: Claude delegates to your agents <em>and saves its plan</em>.</div>
 
   <!-- Menu bar -->
   <div id="menubar" class="abs">
@@ -280,8 +278,7 @@ function render(t) {
   rowIn('l1', 5.3); rowIn('l2', 5.7); rowIn('c2', 5.85); rowIn('s2', 6.1);
   rowIn('l3', 9.0); rowIn('c3', 9.15); rowIn('s3', 9.35);
   rowIn('l4', 9.6); rowIn('c4', 9.75); rowIn('s4', 9.95);
-  { const p = outCubic(seg(t, 12.2, 12.7)); show($('types'), p, (1 - p) * 16); }
-  ['ty1', 'ty2', 'ty3'].forEach((id, k) => { const g = Math.sin(seg(t, 12.6 + k * .15, 13.6 + k * .15) * Math.PI); $(id).style.textShadow = `0 0 ${g * 18}px rgba(143,208,255,.9)`; });
+  ['ringA', 'ringB'].forEach((id, k) => { const o = win(t, 12.3 + k * .25, 14.9, .4, .4); show($(id), o, 0, lerp(1.03, 1, outCubic(seg(t, 12.3 + k * .25, 12.8 + k * .25)))); });
   const count = (id, a, b, n) => $(id).textContent = Math.round(n * seg(t, a, b));
   count('n2', 6.1, 8.6, 14); count('n3', 9.35, 12.4, 9); count('n4', 9.95, 12.8, 17);
 
