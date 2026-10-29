@@ -90,8 +90,15 @@ final class AppModel {
     }
     let defaults = UserDefaults.standard
     private var loop: Task<Void, Never>?
+    /// Nothing from an earlier run, judged before this run writes anything: first-launch setup shows.
+    let isFreshInstall: Bool
 
     init() {
+        // Any saved setting (older versions saved some only when changed) or file means it ran before.
+        let earlier = defaults.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "Headroom") ?? [:]
+        isFreshInstall = earlier.isEmpty
+            && !FileManager.default.fileExists(atPath: HeadroomPaths.accounts.path)
+            && !FileManager.default.fileExists(atPath: HeadroomPaths.accountsConfig.path)
         let saved = (defaults.stringArray(forKey: "providerOrder") ?? []).compactMap(ProviderID.init)
         order = saved + ProviderID.allCases.filter { !saved.contains($0) }
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
@@ -104,7 +111,7 @@ final class AppModel {
     /// once, so an existing install looks as it did. A new install shows the icon alone and notifies at 100%.
     private func migrateAccountSettings() {
         guard !defaults.bool(forKey: "accountSettingsMigrated") else { return }
-        let existing = defaults.object(forKey: "providerOrder") != nil
+        let existing = !isFreshInstall
         let hidden = Set(defaults.stringArray(forKey: "disabledProviders") ?? [])
         let mode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
         let modes = defaults.dictionary(forKey: "menuBarModes") as? [String: String] ?? [:]

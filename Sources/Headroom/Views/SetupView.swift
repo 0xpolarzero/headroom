@@ -16,12 +16,8 @@ struct SetupView: View {
 
     /// Shows setup on a fresh install. An install from before setup existed counts as set up.
     static func showIfNeeded(_ model: AppModel) {
-        let defaults = model.defaults
-        guard !defaults.bool(forKey: doneKey) else { return }
-        let existing = defaults.object(forKey: "providerOrder") != nil
-            || FileManager.default.fileExists(atPath: HeadroomPaths.accounts.path)
-            || FileManager.default.fileExists(atPath: HeadroomPaths.accountsConfig.path)
-        if existing { defaults.set(true, forKey: doneKey) } else { WindowPresenter.setup(model) }
+        guard !model.defaults.bool(forKey: doneKey) else { return }
+        if model.isFreshInstall { WindowPresenter.setup(model) } else { model.defaults.set(true, forKey: doneKey) }
     }
 
     private var steps: [Step] { Step.allCases }
