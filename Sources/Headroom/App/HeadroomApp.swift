@@ -55,9 +55,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let model = AppModel()
         model.start()
         self.model = model
+        NSApp.mainMenu = Self.mainMenu()
         statusBar = StatusBarController(model: model)
         SetupView.showIfNeeded(model)
         WarmPoolServer.shared.start()
+    }
+
+    /// Text fields only get ⌘V, ⌘C, ⌘A and undo through an Edit menu; the menus show while a window is open.
+    private static func mainMenu() -> NSMenu {
+        let menu = NSMenu()
+        func submenu(_ title: String, _ items: [NSMenuItem]) {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: title)
+            items.forEach(sub.addItem)
+            item.submenu = sub
+            menu.addItem(item)
+        }
+        func item(_ title: String, _ action: Selector, _ key: String, _ modifiers: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            return item
+        }
+        submenu("Headroom", [item("Quit Headroom", #selector(NSApplication.terminate(_:)), "q")])
+        submenu("Edit", [
+            item("Undo", Selector(("undo:")), "z"),
+            item("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            item("Cut", #selector(NSText.cut(_:)), "x"),
+            item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Paste", #selector(NSText.paste(_:)), "v"),
+            item("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ])
+        submenu("Window", [
+            item("Close", #selector(NSWindow.performClose(_:)), "w"),
+            item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
+        ])
+        return menu
     }
 
     func applicationWillTerminate(_ notification: Notification) {
