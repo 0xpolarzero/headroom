@@ -23,7 +23,7 @@ enum Design {
     /// Where the sidebar's rows start: below the window's buttons.
     static let titleBar: CGFloat = 52
     /// A page's title bar, its title level with the window's buttons.
-    static let pageBar: CGFloat = 32
+    static let pageBar: CGFloat = 52
     static let hairline = Color.primary.opacity(0.08)
     static let ring = Color.primary.opacity(0.1)
 
@@ -72,7 +72,7 @@ struct Page<Content: View, Action: View>: View {
             VStack(alignment: .leading, spacing: Design.sectionGap) { content() }
                 .frame(maxWidth: Design.column, alignment: .leading)
                 .padding(.horizontal, Design.pageInset)
-                .padding(.top, 20)
+                .padding(.top, 4)
                 .padding(.bottom, Design.pageInset)
                 .frame(maxWidth: .infinity)
         }
@@ -216,16 +216,13 @@ struct RowSwitch: View {
     }
 }
 
-/// The nest: the one boxed container, for a list's items. A thin ring, no fill, its rows without lines between them.
+/// A list's items, straight on the page: no box, so they get the column's whole width.
 struct Nest<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content() }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(RoundedRectangle(cornerRadius: Design.nestRadius, style: .continuous).strokeBorder(Design.ring, lineWidth: 1))
     }
 }
 
@@ -239,7 +236,26 @@ struct NestLabel: View {
             Text(text).font(.caption.weight(.medium)).foregroundStyle(.secondary)
             if let info { InfoTip(info) }
         }
-        .padding(.top, 8)
+        .padding(.top, 10)
+    }
+}
+
+/// The window's three buttons, centered on the 52pt title line (as on macOS 26's sidebar windows) instead of AppKit's
+/// 28pt one, so they sit inside the inset sidebar with room around them. Placed again after a resize or full screen.
+@MainActor
+enum TrafficLights {
+    static let spacing: CGFloat = 20
+
+    static func place(_ window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen),
+              let close = window.standardWindowButton(.closeButton),
+              let container = close.superview?.superview else { return }
+        let height = Design.titleBar
+        container.frame = NSRect(x: container.frame.minX, y: window.frame.height - height, width: container.frame.width, height: height)
+        let inset = ((height - close.frame.height) / 2).rounded()
+        for (i, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+            window.standardWindowButton(kind)?.setFrameOrigin(NSPoint(x: inset + CGFloat(i) * spacing, y: inset))
+        }
     }
 }
 

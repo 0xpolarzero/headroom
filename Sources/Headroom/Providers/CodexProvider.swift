@@ -170,7 +170,45 @@ struct CodexProvider: UsageProvider {
 
     /// Session (18000 s) and Weekly (604800 s) windows, classified by length with slot order as fallback.
     static func windows(from root: [String: Any], now: Date = .now) -> [UsageWindow] {
-        let rate = root.dict("rate_limit")
+        mainWindows(root.dict("rate_limit"), now: now) + extraWindows(from: root, now: now)
+    }
+
+    /// Limits beside the main one, shown on hover: code review, and `additional_rate_limits` (per model, such as Spark).
+    /// Their exact shape isn't documented, so each entry is read loosely: a name (`limit_name`, `name`, `metered_feature`,
+    /// `model`, else its key) and its windows (`rate_limit.primary_window`/`secondary_window`, or the same at its top).
+    static func extraWindows(from root: [String: Any], now: Date = .now) -> [UsageWindow] {
+        var entries: [(String, [String: Any])] = []
+        if let review = root.dict("code_review_rate_limit") { entries.append(("Code review", review)) }
+        switch root["additional_rate_limits"] {
+        case let list as [[String: Any]]:
+            for (i, entry) in list.enumerated() { entries.append((extraName(entry) ?? "Limit \(i + 1)", entry)) }
+        case let map as [String: Any]:
+            for key in map.keys.sorted() {
+                guard let entry = map[key] as? [String: Any] else { continue }
+                entries.append((extraName(entry) ?? key, entry))
+            }
+        default: break
+        }
+        return entries.flatMap { name, entry in
+            mainWindows(entry.dict("rate_limit") ?? entry, now: now).map { window in
+                var window = window
+                window.label = "\(name) \(window.label)"
+                return window
+            }
+        }
+    }
+
+    /// "gpt-6-spark" → "Spark"; "code_review" → "Code review".
+    private static func extraName(_ entry: [String: Any]) -> String? {
+        guard let raw = ["limit_name", "name", "metered_feature", "model", "limit_id"].lazy.compactMap({ entry.string($0) })
+            .first(where: { !$0.isEmpty }) else { return nil }
+        let words = raw.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ").filter { !$0.hasPrefix("gpt") && Double($0) == nil }
+        let name = words.joined(separator: " ")
+        return name.isEmpty ? raw : name.prefix(1).uppercased() + name.dropFirst()
+    }
+
+    private static func mainWindows(_ rate: [String: Any]?, now: Date) -> [UsageWindow] {
         // (window, label the slot would get when its length is unknown)
         let slots: [([String: Any]?, String)] = [(rate?.dict("primary_window"), "Session"),
                                                  (rate?.dict("secondary_window"), "Weekly")]

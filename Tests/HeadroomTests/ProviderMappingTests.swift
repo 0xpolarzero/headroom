@@ -216,4 +216,11 @@ final class PanelSplitTests: XCTestCase {
         XCTAssertEqual(on?.amount, "\(12.4.formatted(.currency(code: "USD"))) of \(50.0.formatted(.currency(code: "USD")))")
         XCTAssertEqual(on?.inUse, true)
     }
+
+    func testCodexExtraLimitsShowUnderTheirOwnNames() {
+        let root = obj(#"{"rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000}},"code_review_rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":604800}},"additional_rate_limits":[{"limit_name":"gpt-6-spark","rate_limit":{"primary_window":{"used_percent":40,"limit_window_seconds":18000},"secondary_window":{"used_percent":20,"limit_window_seconds":604800}}}]}"#)
+        let labels = CodexProvider.windows(from: root).map(\.label)
+        XCTAssertEqual(labels, ["Session", "Code review Weekly", "Spark Session", "Spark Weekly"])
+        XCTAssertEqual(CodexProvider.windows(from: obj(#"{"additional_rate_limits":null}"#)).count, 0)
+    }
 }

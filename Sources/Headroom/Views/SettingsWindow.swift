@@ -6,6 +6,7 @@ import SwiftUI
 enum WindowPresenter {
     private static var window: NSWindow?
     private static var closeObserver: NSObjectProtocol?
+    private static var placeObservers: [NSObjectProtocol] = []
     static let size = NSSize(width: 780, height: 600)
 
     static func settings(_ model: AppModel, page: SettingsPage? = nil) {
@@ -43,6 +44,13 @@ enum WindowPresenter {
         closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
             MainActor.assumeIsolated { windowClosed() }
         }
+        // AppKit puts the buttons back on a resize and on leaving full screen.
+        placeObservers = [NSWindow.didResizeNotification, NSWindow.didExitFullScreenNotification, NSWindow.didBecomeKeyNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { TrafficLights.place(window) }
+            }
+        }
+        TrafficLights.place(window)
         bringForward(window)
     }
 
@@ -59,6 +67,8 @@ enum WindowPresenter {
     private static func windowClosed() {
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         closeObserver = nil
+        placeObservers.forEach(NotificationCenter.default.removeObserver)
+        placeObservers = []
         window = nil
         NSApp.setActivationPolicy(.accessory)
     }

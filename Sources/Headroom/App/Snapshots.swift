@@ -61,6 +61,7 @@ enum Snapshots {
         window.setContentSize(size ?? host.view.fittingSize)
         window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         window.orderFrontRegardless()
+        if title != nil { TrafficLights.place(window) }
         try? await Task.sleep(for: .seconds(1.5))
         if size == nil { window.setContentSize(host.view.fittingSize); try? await Task.sleep(for: .seconds(0.5)) }
         guard let frameView = window.contentView?.superview else { return }
