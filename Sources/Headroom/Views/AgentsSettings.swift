@@ -21,7 +21,10 @@ struct AgentEditor: View {
                               prompt: Text("Reviews code, plans and diffs that need strong reasoning."), axis: .vertical)
                         .lineLimit(2...4)
                 } footer: {
-                    Caption("Claude calls it \(agent.type.isEmpty ? "" : "headroom:\(AgentDefinition.slug(agent.name))") and picks it by this description, so write it for Claude.")
+                    HStack(spacing: 4) {
+                        Caption("Claude calls it headroom:\(AgentDefinition.slug(agent.name)).")
+                        InfoTip("Claude picks agents by their description, so write it for Claude.")
+                    }
                 }
                 Section("Runs on") {
                     Picker("Provider", selection: $agent.provider) {
@@ -59,7 +62,7 @@ struct AgentEditor: View {
                 if let error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(isNew ? "Add Agent" : "Save", action: commit).keyboardShortcut(.defaultAction)
+                Button(isNew ? "Add agent" : "Save", action: commit).keyboardShortcut(.defaultAction)
             }
             .padding(16)
         }

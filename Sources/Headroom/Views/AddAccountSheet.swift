@@ -17,21 +17,32 @@ extension ProviderID {
 
     var signInTitle: String {
         switch self {
-        case .claude: "Sign In with Claude"
-        case .codex: "Sign In with ChatGPT"
-        case .antigravity: "Sign In with Google"
+        case .claude: "Sign in with Claude"
+        case .codex: "Sign in with ChatGPT"
+        case .antigravity: "Sign in with Google"
         case .zai, .openrouter: "Connect"
         }
     }
 
-    /// What happens when the account connects, in a sentence.
+    /// What to do, in a few words.
     var connectHint: String {
         switch self {
-        case .claude: "Your browser opens claude.ai. Sign in with the account you want to add. It gets its own sign-in and sessions, and shares your Claude Code settings, skills, agents and plugins."
-        case .codex: "Your browser opens ChatGPT. Sign in with the account you want to add."
-        case .antigravity: "Your browser opens Google. Sign in with the account that has your Antigravity plan."
-        case .zai: "Paste a Coding Plan API key: z.ai → API Keys. Standard keys bill your balance instead of the plan."
-        case .openrouter: "Paste an API key from openrouter.ai/keys. A regular key also runs agents; a management key only reads spending."
+        case .claude: "Sign in on claude.ai with the account to add."
+        case .codex: "Sign in on ChatGPT with the account to add."
+        case .antigravity: "Sign in with the Google account that has the plan."
+        case .zai: "Paste a Coding Plan API key."
+        case .openrouter: "Paste an API key."
+        }
+    }
+
+    /// The rest, for the ⓘ.
+    var connectDetail: String {
+        switch self {
+        case .claude: "It gets its own sign-in and sessions, and shares your Claude Code settings, skills, agents and plugins."
+        case .codex: "It gets its own Codex sign-in, and shares your Codex settings."
+        case .antigravity: "Headroom reads the plan's limits with this sign-in."
+        case .zai: "Find it at z.ai → API Keys. Standard keys bill your balance, not the plan."
+        case .openrouter: "Find it at openrouter.ai/keys. A management key only reads spending and can't run agents."
         }
     }
 }
@@ -56,8 +67,7 @@ struct AddAccountSheet: View {
 
     private var picker: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Add an Account").font(.title3.weight(.semibold))
-            Caption("Headroom reads the account's limits and, with agents on, runs agents on it.")
+            Text("Add an account").font(.title3.weight(.semibold))
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                 ForEach(ProviderID.allCases) { id in
                     Button { model.connectStatus = .idle; model.lastConnected = nil; provider = id } label: {
@@ -99,7 +109,7 @@ struct ConnectProvider: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 ProviderTile(id: provider)
-                Text(finished == nil ? "Add a \(provider.displayName) Account" : "\(provider.displayName) Connected").font(.title3.weight(.semibold))
+                Text(finished == nil ? "Add a \(provider.displayName) account" : "\(provider.displayName) connected").font(.title3.weight(.semibold))
             }
             if let info = finished {
                 result(info)
@@ -134,7 +144,10 @@ struct ConnectProvider: View {
     }
 
     @ViewBuilder private var form: some View {
-        Caption(provider.connectHint)
+        HStack(spacing: 4) {
+            Text(provider.connectHint).foregroundStyle(.secondary)
+            InfoTip(provider.connectDetail)
+        }
         if !provider.signsInWithBrowser {
             SecureField("API key", text: $key).textFieldStyle(.roundedBorder).onSubmit { started = true; model.connect(provider, key: key) }
         }
@@ -150,8 +163,11 @@ struct ConnectProvider: View {
             EmptyView()
         }
         if provider == .zai {
-            Button("Sign in on the website instead (limits only)") { started = true; model.connectZAIWebsite() }
-                .buttonStyle(.link).font(.caption)
+            HStack(spacing: 4) {
+                Button("Use the website instead") { started = true; model.connectZAIWebsite() }
+                    .buttonStyle(.link).font(.caption)
+                InfoTip("Shows limits only: agents need a key.")
+            }
         }
     }
 

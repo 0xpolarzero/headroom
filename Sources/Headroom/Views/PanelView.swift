@@ -292,7 +292,7 @@ struct AgentsPanel: View {
             }
             section("Agents") {
                 if catalog.agents.isEmpty {
-                    Caption("Add agents that run on your other plans in Settings → Claude Code.")
+                    Caption("No agents yet. Add them in Settings.")
                 }
                 ForEach(catalog.agents) { agent in
                     HStack(spacing: 8) {
@@ -344,19 +344,14 @@ struct SaveClaudeToggle: View {
 
     var body: some View {
         let hasAgents = !catalog.enabled.isEmpty
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "leaf.fill").foregroundStyle(.green).font(compact ? .callout : .title3)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Save Claude usage").font(compact ? .subheadline.weight(.semibold) : .body.weight(.medium))
-                Text(hasAgents ? "Claude plans and checks the work, and hands the coding, searching and research to your agents on other plans."
-                               : "Add an agent first: Claude hands work to your agents on other plans.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if !compact {
-                    Button(catalog.saveClaudeText == nil ? "See What Claude Is Told…" : "Edit What Claude Is Told (Customized)…") { editing = true }
-                        .buttonStyle(.link).font(.caption).padding(.top, 2)
-                }
-            }
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "leaf.fill").foregroundStyle(.green)
+            Text("Save Claude usage").font(compact ? .subheadline.weight(.semibold) : .body)
+            InfoTip(hasAgents ? "Claude plans and checks the work, and hands coding, searching and research to your agents on other plans."
+                              : "Add an agent first.")
+            if !compact && catalog.saveClaudeText != nil { PlanChip(text: "Custom") }
             Spacer(minLength: 4)
+            if !compact { Button("Edit prompt") { editing = true }.controlSize(.small) }
             Toggle("", isOn: Binding(get: { catalog.saveClaude }, set: { on in
                 var next = AgentCatalog.load()
                 next.saveClaude = on
@@ -383,8 +378,10 @@ struct SavingInstructionEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("What Claude Is Told").font(.title3.weight(.semibold))
-            Caption("While Save Claude usage is on, Claude Code adds this to every prompt, in every session. Changes apply from the next prompt.")
+            HStack(spacing: 4) {
+                Text("Prompt").font(.title3.weight(.semibold))
+                InfoTip("Added to every prompt in Claude Code while Save Claude usage is on. Changes apply from the next prompt.")
+            }
             TextEditor(text: $text)
                 .font(.body)
                 .scrollContentBackground(.hidden)
@@ -392,7 +389,7 @@ struct SavingInstructionEditor: View {
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .frame(minHeight: 150)
             HStack {
-                Button("Reset to Default") { text = AgentCatalog.defaultSavingInstruction }
+                Button("Reset to default") { text = AgentCatalog.defaultSavingInstruction }
                     .disabled(text == AgentCatalog.defaultSavingInstruction)
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)

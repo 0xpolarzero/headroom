@@ -22,9 +22,10 @@ struct AccountsSections: View {
                         row(info, index: index, count: accounts.count)
                     }
                 } header: {
-                    Text(provider.displayName)
-                } footer: {
-                    if accounts.count > 1 && model.showsAgents { Caption(footer(provider)) }
+                    HStack(spacing: 4) {
+                        Text(provider.displayName)
+                        if accounts.count > 1 && model.showsAgents { InfoTip(footer(provider)) }
+                    }
                 }
             }
             let others = ProviderID.allCases.filter { !model.connectedProviders.contains($0) }
@@ -38,7 +39,7 @@ struct AccountsSections: View {
                                 Caption(provider.planHint)
                             }
                             Spacer()
-                            Button(provider.signsInWithBrowser ? "Sign In…" : "Add Key…") { model.connectStatus = .idle; connecting = provider }
+                            Button(provider.signsInWithBrowser ? "Sign in…" : "Add key…") { model.connectStatus = .idle; connecting = provider }
                         }
                         .padding(.vertical, 2)
                     }
@@ -46,16 +47,15 @@ struct AccountsSections: View {
             }
             Section {
                 HStack {
-                    Caption(model.connectedProviders.isEmpty ? "Add the plans you use: Claude, Codex, Antigravity, Z.ai or OpenRouter."
-                                                             : "Add another plan, or a second account of one you have.")
+                    if model.connectedProviders.isEmpty { Caption("No accounts yet.") }
                     Spacer()
-                    Button("Add Account…") { model.connectStatus = .idle; adding = true }
+                    Button("Add account…") { model.connectStatus = .idle; adding = true }
                 }
             }
         }
         .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
         .sheet(item: $connecting) { provider in AddAccountSheet(model: model, provider: provider) }
-        .alert("Rename Account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+        .alert("Rename account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
             Button("Rename") { if let renaming { model.rename(renaming.id, to: newName) } }
             Button("Cancel", role: .cancel) {}
@@ -64,9 +64,9 @@ struct AccountsSections: View {
 
     private func footer(_ provider: ProviderID) -> String {
         switch provider {
-        case .claude: "Subagents run on the account with the most room. This order breaks ties."
-        case .antigravity: "Agents use the first account: the Antigravity CLI signs in one account per Mac."
-        default: "Agents run on the account with the most room. This order breaks ties."
+        case .claude: "Subagents go to the account with the most left. Ties follow this order."
+        case .antigravity: "Agents use the first account: the Antigravity CLI signs in only one."
+        default: "Agents go to the account with the most left. Ties follow this order."
         }
     }
 
@@ -94,13 +94,13 @@ struct AccountsSections: View {
                     if info.account.provider == .openrouter {
                         Text("Credits").tag(MenuBarMode?.some(.session))
                     } else {
-                        ForEach(MenuBarMode.allCases) { Text($0 == .both ? "Session and Weekly" : $0.title).tag(MenuBarMode?.some($0)) }
+                        ForEach(MenuBarMode.allCases) { Text($0.title).tag(MenuBarMode?.some($0)) }
                     }
                 }
                 .labelsHidden()
                 .fixedSize()
             }
-            .help("What this account shows in the menu bar")
+            .help("Menu bar")
             HStack(spacing: 4) {
                 Image(systemName: info.account.notifyAt == nil ? "bell.slash" : "bell").foregroundStyle(.secondary)
                 Picker("Notify", selection: Binding(get: { info.account.notifyAt }, set: { model.setNotify(info.id, $0) })) {
@@ -111,19 +111,19 @@ struct AccountsSections: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            .help("Notify when this little is left of its session or weekly limit")
+            .help("Notify")
             Menu {
                 Button("Rename…") { newName = info.name; renaming = info }
                 if count > 1 {
-                    Button("Move Up") { model.moveAccount(info.id, by: -1) }.disabled(index == 0)
-                    Button("Move Down") { model.moveAccount(info.id, by: 1) }.disabled(index == count - 1)
+                    Button("Move up") { model.moveAccount(info.id, by: -1) }.disabled(index == 0)
+                    Button("Move down") { model.moveAccount(info.id, by: 1) }.disabled(index == count - 1)
                 }
                 if info.account.provider == .claude {
-                    Button("Sign In Again in Terminal") { model.signInInTerminal(info.account) }
+                    Button("Sign in again in Terminal") { model.signInInTerminal(info.account) }
                 }
                 if model.canRemove(info.account) {
                     Divider()
-                    Button(info.account.isMain ? "Sign Out" : "Remove", role: .destructive) { model.remove(info.account) }
+                    Button(info.account.isMain ? "Sign out" : "Remove", role: .destructive) { model.remove(info.account) }
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -145,8 +145,10 @@ struct AgentsSwitchSection: View {
         Section {
             Toggle(isOn: Binding(get: { model.agentsEnabled }, set: { model.setAgents($0) })) {
                 Label {
-                    Text("Agents in Claude Code")
-                    Text("Subagents run on whichever Claude account has room, and your other plans become agents Claude can call.")
+                    HStack(spacing: 4) {
+                        Text("Agents in Claude Code")
+                        InfoTip("Subagents run on whichever Claude account has the most left, and your other plans become agents Claude can call. Adds Headroom's plugin to Claude Code.")
+                    }
                 } icon: {
                     Image(systemName: "sparkle").foregroundStyle(ProviderID.claude.brandColors[0])
                 }
@@ -168,14 +170,9 @@ struct AgentsSwitchSection: View {
 
     private var status: String {
         guard let version else { return "Looking for Claude Code…" }
-        if version.isEmpty { return "Claude Code isn't installed. Install it, then come back here." }
+        if version.isEmpty { return "Claude Code not found" }
         let claude = version.replacingOccurrences(of: " (Claude Code)", with: "")
-        guard model.subagentsInstalled else {
-            return "Claude Code \(claude). Turning this on adds Headroom's plugin to ~/.claude/settings.json for all your sessions."
-        }
-        let tested = (try? Data(contentsOf: HeadroomPaths.selfTest)).flatMap { try? JSONDecoder.headroom.decode(SelfTest.Record.self, from: $0) }
-        let test = tested.map { $0.version == version ? " · test passed \(Format.clock($0.at))" : "" } ?? ""
-        return "Plugin installed in Claude Code \(claude)\(test)"
+        return model.subagentsInstalled ? "Plugin installed · Claude Code \(claude)" : "Off · Claude Code \(claude)"
     }
 }
 
@@ -193,19 +190,16 @@ struct AgentsSections: View {
             }
             Section {
                 ForEach(catalog.agents) { agent in row(agent) }
-                if catalog.agents.isEmpty {
-                    Caption("Agents run on your other plans and show up in Claude Code as headroom:<name>, next to its own agents.")
-                }
+                if catalog.agents.isEmpty { Caption("No agents yet.") }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
             } header: {
-                HStack {
+                HStack(spacing: 4) {
                     Text("Agents")
+                    InfoTip("Agents run on your other plans. Claude Code calls them as headroom:<name> and picks one by its description. Changes apply from the next prompt.")
                     Spacer()
-                    Button("New Agent…") { editing = AgentDefinition(name: "", description: "", provider: .codex, model: "") }
+                    Button("New agent…") { editing = AgentDefinition(name: "", description: "", provider: .codex, model: "") }
                         .controlSize(.small)
                 }
-            } footer: {
-                Caption("Claude picks an agent by its description. Changes apply from the next prompt, in every session.")
             }
         }
         .sheet(item: $editing) { agent in
@@ -223,8 +217,8 @@ struct AgentsSections: View {
                 HStack(spacing: 6) {
                     Text(agent.name).fontWeight(.medium)
                     Text(agent.type).font(.caption.monospaced()).foregroundStyle(.tertiary)
+                    InfoTip(agent.description)
                 }
-                Caption(agent.description)
                 AgentBadges(agent: agent).padding(.top, 2)
                 if let problem = model.agentProblem(agent.provider) {
                     Text(problem).font(.caption).foregroundStyle(.orange)
@@ -270,12 +264,13 @@ struct ClaudeAccountsSection: View {
     var body: some View {
         if model.agentsEnabled && model.accounts(.claude).count > 1 {
             Section {
-                threshold("Use until its session has", \.sessionThreshold) { model.setThresholds(session: $0) }
-                threshold("Use until its week has", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
+                threshold("Use until the session has", \.sessionThreshold) { model.setThresholds(session: $0) }
+                threshold("Use until the week has", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
             } header: {
-                Text("Claude accounts")
-            } footer: {
-                Caption("A subagent runs on the account with the most left, and skips one with less left than this. A session never sends subagents to its own account.")
+                HStack(spacing: 4) {
+                    Text("Claude accounts")
+                    InfoTip("Subagents go to the account with the most left, and skip one with less left than this. A session never sends subagents to its own account.")
+                }
             }
         }
     }

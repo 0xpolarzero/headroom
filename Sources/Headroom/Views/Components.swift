@@ -92,3 +92,17 @@ struct AgentBadges: View {
         }
     }
 }
+
+/// An ⓘ that explains on hover, instead of a paragraph on the page.
+struct InfoTip: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Image(systemName: "info.circle")
+            .foregroundStyle(.secondary)
+            .imageScale(.small)
+            .hoverTip(text)
+            .accessibilityLabel(text)
+    }
+}

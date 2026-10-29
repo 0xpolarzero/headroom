@@ -53,8 +53,8 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Under the title: what the page is about.
-    var subtitle: String {
+    /// Beside the title: what the page is about.
+    var about: String {
         switch self {
         case .accounts: "Your plans, what each shows in the menu bar, and when it notifies you."
         case .agents: "In Claude Code: subagents on your other Claude accounts, and agents on your other plans."
@@ -101,16 +101,18 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                 }
                 Spacer()
-                VStack(alignment: .leading, spacing: 8) {
+                Menu {
                     Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                        .toggleStyle(.checkbox)
                         .disabled(!AppModel.isBundled)
-                    if let error = model.launchAtLoginError { Caption(error) }
-                    Button("Run Setup Again…") { WindowPresenter.close("settings"); WindowPresenter.setup(model) }
-                        .buttonStyle(.link)
-                        .help("Walks through accounts and agents again, and reinstalls the plugin if agents are on.")
+                    Divider()
+                    Button("Run setup again…") { WindowPresenter.close("settings"); WindowPresenter.setup(model) }
+                } label: {
+                    Image(systemName: "ellipsis.circle").imageScale(.large).foregroundStyle(.secondary)
                 }
-                .font(.callout)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More")
                 .padding(.horizontal, 8)
                 .padding(.bottom, 14)
             }
@@ -120,9 +122,9 @@ struct SettingsView: View {
             .background(.quaternary.opacity(0.35))
             Divider()
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
                     Text(model.settingsPage.title).font(.title3.weight(.semibold))
-                    Caption(model.settingsPage.subtitle)
+                    InfoTip(model.settingsPage.about)
                 }
                 .padding(.leading, 20)
                 .padding(.top, 18)

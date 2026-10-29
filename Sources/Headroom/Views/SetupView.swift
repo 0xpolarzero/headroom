@@ -67,8 +67,8 @@ struct SetupView: View {
 
     private var detail: String {
         switch step {
-        case .accounts: "Headroom shows what's left of your AI plans. Logins on this Mac are already listed; add the others. Click its icon in the menu bar for every limit, or pick numbers to show there for each account."
-        case .agents: "Optional: more out of your plans in Claude Code. You can change this any time in Settings → Agents."
+        case .accounts: "See what's left of your AI plans. Logins on this Mac are already here."
+        case .agents: "Optional. Get more out of your plans in Claude Code."
         }
     }
 
