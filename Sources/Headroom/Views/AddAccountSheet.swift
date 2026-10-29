@@ -1,0 +1,191 @@
+import SwiftUI
+
+extension ProviderID {
+    /// The plan someone needs, as the add-account list says it.
+    var planHint: String {
+        switch self {
+        case .claude: "Pro, Max or Team"
+        case .codex: "Your ChatGPT plan"
+        case .antigravity: "Google AI Pro or Ultra"
+        case .zai: "GLM Coding Plan"
+        case .openrouter: "Credits, any model"
+        }
+    }
+
+    /// Signs in through the browser; the others take an API key.
+    var signsInWithBrowser: Bool { [.claude, .codex, .antigravity].contains(self) }
+
+    var signInTitle: String {
+        switch self {
+        case .claude: "Sign In with Claude"
+        case .codex: "Sign In with ChatGPT"
+        case .antigravity: "Sign In with Google"
+        case .zai, .openrouter: "Connect"
+        }
+    }
+
+    /// What happens when the account connects, in a sentence.
+    var connectHint: String {
+        switch self {
+        case .claude: "Your browser opens claude.ai. Sign in with the account you want to add. It gets its own sign-in and sessions, and shares your Claude Code settings, skills, agents and plugins."
+        case .codex: "Your browser opens ChatGPT. Sign in with the account you want to add."
+        case .antigravity: "Your browser opens Google. Sign in with the account that has your Antigravity plan."
+        case .zai: "Paste a Coding Plan API key: z.ai → API Keys. Standard keys bill your balance instead of the plan."
+        case .openrouter: "Paste an API key from openrouter.ai/keys. A regular key also runs agents; a management key only reads spending."
+        }
+    }
+}
+
+/// Pick a provider, then sign in or paste a key. Shared by Settings and first-launch setup.
+struct AddAccountSheet: View {
+    @Bindable var model: AppModel
+    @State var provider: ProviderID?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let provider {
+                ConnectProvider(model: model, provider: provider, back: { self.provider = nil; model.cancelConnect() }, done: { dismiss() })
+            } else {
+                picker
+            }
+        }
+        .frame(width: 440)
+        .onDisappear { model.cancelConnect() }
+    }
+
+    private var picker: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add an Account").font(.title3.weight(.semibold))
+            Caption("Headroom reads the account's limits and, with agents on, runs agents on it.")
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                ForEach(ProviderID.allCases) { id in
+                    Button { model.connectStatus = .idle; model.lastConnected = nil; provider = id } label: {
+                        HStack(spacing: 10) {
+                            ProviderTile(id: id)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(id.displayName).fontWeight(.medium)
+                                Caption(id.planHint)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(20)
+    }
+}
+
+/// One provider's sign-in: a button for the browser, or a key field; then what the account unlocked.
+struct ConnectProvider: View {
+    @Bindable var model: AppModel
+    let provider: ProviderID
+    var back: (() -> Void)?
+    let done: () -> Void
+    @State private var key = ""
+    @State private var started = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                ProviderTile(id: provider)
+                Text(finished == nil ? "Add a \(provider.displayName) Account" : "\(provider.displayName) Connected").font(.title3.weight(.semibold))
+            }
+            if let info = finished {
+                result(info)
+            } else {
+                form
+            }
+            HStack {
+                if finished == nil, let back { Button("Back", action: back) }
+                Spacer()
+                if finished != nil {
+                    Button("Done", action: done).keyboardShortcut(.defaultAction)
+                } else if case .working = model.connectStatus {
+                    Button("Cancel", role: .cancel) { model.cancelConnect() }.keyboardShortcut(.cancelAction)
+                } else if provider.signsInWithBrowser {
+                    Button(provider.signInTitle) { started = true; model.connectInBrowser(provider) }.keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Connect") { started = true; model.connect(provider, key: key) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(20)
+    }
+
+    /// The account just added, once its sign-in landed.
+    private var finished: AccountInfo? {
+        guard started, model.connectStatus == .idle, let id = model.lastConnected else { return nil }
+        return model.allAccounts.first { $0.id == id } ?? model.accountsConfig.account(id).map { account in
+            AccountInfo(account: account, name: model.displayName(account, plan: nil), state: model.state(of: account), limits: .pending)
+        }
+    }
+
+    @ViewBuilder private var form: some View {
+        Caption(provider.connectHint)
+        if !provider.signsInWithBrowser {
+            SecureField("API key", text: $key).textFieldStyle(.roundedBorder).onSubmit { started = true; model.connect(provider, key: key) }
+        }
+        switch model.connectStatus {
+        case .working(let text):
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(text).foregroundStyle(.secondary)
+            }
+        case .failed(let text):
+            Text(text).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        case .idle:
+            EmptyView()
+        }
+        if provider == .zai {
+            Button("Sign in on the website instead (limits only)") { started = true; model.connectZAIWebsite() }
+                .buttonStyle(.link).font(.caption)
+        }
+    }
+
+    private func result(_ info: AccountInfo) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(info.name).fontWeight(.medium)
+                if let plan = info.plan, plan != info.name { PlanChip(text: plan) }
+            }
+            if let email = info.email { Caption(email) }
+            VStack(alignment: .leading, spacing: 6) {
+                if model.showsLimits { line("Limits", info.limits, ready: "Headroom reads its limits.") }
+                if let agents = info.agents {
+                    line("Agents", agents, ready: provider == .claude ? "Subagents can run on it." : "Agents can run on it.")
+                } else if model.showsAgents {
+                    line("Agents", .problem("Agents use your first \(provider.displayName) account."), ready: "")
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func line(_ title: String, _ capability: Capability, ready: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            switch capability {
+            case .ready: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .problem: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+            case .pending: ProgressView().controlSize(.mini)
+            }
+            Text(title).fontWeight(.medium)
+            Text(capability.problem ?? (capability == .pending ? "Checking…" : ready)).foregroundStyle(.secondary)
+        }
+        .font(.callout)
+    }
+}

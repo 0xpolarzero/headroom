@@ -24,11 +24,14 @@ struct Account: Codable, Hashable, Sendable, Identifiable {
     var provider: ProviderID
     /// Unique within the provider: "main", or a short name also used in folder and keychain names ("Pro").
     var key: String
+    /// What the panel and Settings call it ("Pro", "Work"); nil uses its plan.
+    var name: String?
     var addedAt = Date()
 
-    init(provider: ProviderID, key: String, addedAt: Date = Date()) {
+    init(provider: ProviderID, key: String, name: String? = nil, addedAt: Date = Date()) {
         self.provider = provider
         self.key = key
+        self.name = name
         self.addedAt = addedAt
     }
 
@@ -129,9 +132,26 @@ struct AccountsConfig: Codable, Equatable, Sendable {
         guard !key.isEmpty, key.lowercased() != Account.mainKey,
               !pool(provider).contains(where: { $0.key.lowercased() == key.lowercased() }) else { return nil }
         let account = Account(provider: provider, key: key)
-        let after = accounts.lastIndex { $0.provider == provider }.map { $0 + 1 } ?? accounts.endIndex
-        accounts.insert(account, at: after)
+        append(account)
         return account
+    }
+
+    /// Puts `account` at the end of its provider's pool.
+    mutating func append(_ account: Account) {
+        let after = accounts.lastIndex { $0.provider == account.provider }.map { $0 + 1 } ?? accounts.endIndex
+        accounts.insert(account, at: after)
+    }
+
+    /// A key no account of the provider has yet, for an account added before its name is known ("codex-2").
+    func newKey(_ provider: ProviderID) -> String {
+        let taken = Set(pool(provider).map { $0.key.lowercased() })
+        return (2...).lazy.map { "\(provider.rawValue)-\($0)" }.first { !taken.contains($0) }!
+    }
+
+    mutating func rename(_ id: String, to name: String) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        accounts[i].name = name.isEmpty ? nil : name
     }
 
     /// Forgets an account. A main account can't be removed: it stands for the login already on the Mac.

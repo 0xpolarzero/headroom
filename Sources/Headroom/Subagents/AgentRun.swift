@@ -618,6 +618,16 @@ enum AgentRegistry {
 
     static func lookup(_ id: String) -> Entry? { withStore { $0.agents[id] } }
 
+    /// Agents whose runner is alive, newest first: read without the lock and without writing, for the panel.
+    static func runningNow() -> [(id: String, entry: Entry)] {
+        guard let store = (try? Data(contentsOf: HeadroomPaths.agents)).flatMap({ try? JSONDecoder.headroom.decode(Store.self, from: $0) })
+        else { return [] }
+        return (store.processes ?? [:]).compactMap { id, p in
+            guard p.claude > 0, kill(p.runner, 0) == 0, let entry = store.agents[id] else { return nil }
+            return (id, entry)
+        }.sorted { $0.entry.at > $1.entry.at }
+    }
+
     static func lacksModel(_ account: String, _ model: String) -> Bool { withStore { $0.lacking[account]?.contains(model) ?? false } }
 
     static func rememberLacking(_ account: String, _ model: String) {

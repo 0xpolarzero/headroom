@@ -12,6 +12,9 @@ enum Entry {
         if CommandLine.arguments.contains("--agent-stop") { AgentRun.stopMain() }
         if CommandLine.arguments.contains("--agent-selftest") { SelfTest.main() }
         if CommandLine.arguments.contains("--agent-catalog") { AgentCatalog.printMain() }
+        if let i = CommandLine.arguments.firstIndex(of: "--snapshots"), i + 1 < CommandLine.arguments.count {
+            Snapshots.main(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -52,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.start()
         self.model = model
         statusBar = StatusBarController(model: model)
+        SetupView.showIfNeeded(model)
         WarmPoolServer.shared.start()
     }
 

@@ -56,14 +56,16 @@ final class AppModel {
     private(set) var features: Set<Feature> {
         didSet { defaults.set(features.map(\.rawValue).sorted(), forKey: "features") }
     }
-    var showingSettings = false
-    var settingsTab = SettingsTab.general
+    /// The panel's tab while both features are on.
+    var panelTab = PanelTab.limits
+    var settingsPage = SettingsPage.accounts
     var order: [ProviderID] {
         didSet { defaults.set(order.map(\.rawValue), forKey: "providerOrder") }
     }
-    /// Stored as the disabled set so providers added later start enabled.
-    private(set) var disabled: Set<ProviderID> {
-        didSet { defaults.set(disabled.map(\.rawValue), forKey: "disabledProviders") }
+    /// Providers left out of the menu bar, stored as the hidden set so providers added later show. Kept under
+    /// the key of the old on/off list, which hid them from the menu bar too.
+    private(set) var menuBarHidden: Set<ProviderID> {
+        didSet { defaults.set(menuBarHidden.map(\.rawValue), forKey: "disabledProviders") }
     }
     var notificationsOn: Bool {
         didSet {
@@ -76,15 +78,12 @@ final class AppModel {
     }
     private(set) var launchAtLogin = false
     private(set) var launchAtLoginError: String?
-    // Accounts
-    private(set) var antigravityEmail: String?
-    private(set) var antigravitySignedIn = false
-    private(set) var antigravitySigningIn = false
-    private(set) var accountError: String?
-    private(set) var zaiSignedIn = false
-    private(set) var hasOpenRouterKey = false
-    private(set) var hasZAIKey = false
-    private var signInTask: Task<Void, Never>?
+    // Accounts (AppModel+Accounts.swift)
+    var localChecks: [String: LocalCheck] = [:]
+    var connectStatus = ConnectStatus.idle
+    /// The account added last, which the add-account sheet shows once it's done.
+    var lastConnected: String?
+    @ObservationIgnored var connectTask: Task<Void, Never>?
     /// Every provider's accounts, as saved; reloaded on each tick, since agent runners read it too.
     var accountsConfig = AccountsConfig.load()
     // Claude accounts (AppModel+Claude.swift)
@@ -107,7 +106,7 @@ final class AppModel {
     init() {
         let saved = (defaults.stringArray(forKey: "providerOrder") ?? []).compactMap(ProviderID.init)
         order = saved + ProviderID.allCases.filter { !saved.contains($0) }
-        disabled = Set((defaults.stringArray(forKey: "disabledProviders") ?? []).compactMap(ProviderID.init))
+        menuBarHidden = Set((defaults.stringArray(forKey: "disabledProviders") ?? []).compactMap(ProviderID.init))
         menuBarMode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
         notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
@@ -117,34 +116,32 @@ final class AppModel {
             features = Feature.initial(pluginInstalled: SubagentInstaller.isInstalled())
             defaults.set(features.map(\.rawValue).sorted(), forKey: "features")
         }
-        loadAccounts()
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
     }
 
     // MARK: Derived
 
-    var enabledProviders: [ProviderID] { order.filter { !disabled.contains($0) } }
+    /// Whether the panel and Settings show anything about agents.
+    var showsAgents: Bool { features.contains(.agents) }
+    var showsLimits: Bool { features.contains(.limits) }
 
     /// The provider's main account's usage.
     func state(_ id: ProviderID) -> ProviderState { state(of: .main(id)) }
 
     func state(of account: Account) -> ProviderState { states[account.id] ?? ProviderState() }
 
-    /// Every account of the enabled providers, which are the ones Headroom reads.
-    var enabledAccounts: [Account] { enabledProviders.flatMap { accountsConfig.pool($0) } }
+    /// Every account Headroom reads: all of them, since agents need the limits even when the menu bar doesn't show them.
+    var enabledAccounts: [Account] { order.flatMap { accountsConfig.pool($0) } }
 
     var lastUpdated: Date? { enabledAccounts.compactMap { states[$0.id]?.lastSuccess }.max() }
 
     var isRefreshing: Bool { enabledAccounts.contains { states[$0.id]?.isLoading == true } }
 
-    /// Enabled providers that get a menu bar item: all but those with nothing to show yet, and none
-    /// without the limits feature, which leaves the plain gauge.
+    /// Providers in the menu bar: those with something to show and not hidden, and none without the limits
+    /// feature, which leaves the plain gauge.
     var menuBarProviders: [ProviderID] {
-        guard features.contains(.limits) else { return [] }
-        return enabledProviders.filter { id in
-            let s = state(id)
-            return s.snapshot != nil || !s.notConfigured
-        }
+        guard showsLimits else { return [] }
+        return connectedProviders.filter { !menuBarHidden.contains($0) && accounts($0).contains { $0.state.snapshot != nil } }
     }
 
     // MARK: Refresh
@@ -152,6 +149,7 @@ final class AppModel {
     func start() {
         guard loop == nil else { return }
         if notificationsOn { requestNotificationPermission() }
+        refreshLocalChecks()
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshDue()
@@ -180,6 +178,7 @@ final class AppModel {
         }
         Task { await refresh(due) }
         Task { await claudeTick() }
+        refreshLocalChecks()
     }
 
     func refreshAll() {
@@ -234,9 +233,10 @@ final class AppModel {
 
     // MARK: Settings
 
-    /// Turning agents on installs Headroom's Claude Code plugin; turning them off removes it.
+    /// Turning agents on installs Headroom's Claude Code plugin; turning them off removes it. One feature
+    /// always stays on.
     func setFeature(_ feature: Feature, _ on: Bool) {
-        if on { features.insert(feature) } else { features.remove(feature) }
+        if on { features.insert(feature) } else if features.count > 1 { features.remove(feature) } else { return }
         guard feature == .agents else { return }
         claudeError = nil
         changingPlugin = true
@@ -261,15 +261,10 @@ final class AppModel {
         }
     }
 
-    func isEnabled(_ id: ProviderID) -> Bool { !disabled.contains(id) }
+    func showsInMenuBar(_ id: ProviderID) -> Bool { !menuBarHidden.contains(id) }
 
-    func setEnabled(_ id: ProviderID, _ on: Bool) {
-        if on {
-            disabled.remove(id)
-            Task { await refresh([id]) }
-        } else {
-            disabled.insert(id)
-        }
+    func setShowsInMenuBar(_ id: ProviderID, _ on: Bool) {
+        if on { menuBarHidden.remove(id) } else { menuBarHidden.insert(id) }
     }
 
     func move(_ id: ProviderID, by offset: Int) {
@@ -277,107 +272,8 @@ final class AppModel {
         order.swapAt(i, i + offset)
     }
 
-    // MARK: Accounts
-
-    private func loadAccounts() {
-        let login = Keychain.readOwn(service: AntigravityProvider.loginService, account: AntigravityProvider.loginAccount)
-        antigravitySignedIn = login != nil
-        antigravityEmail = login.flatMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }?.string("email")
-        zaiSignedIn = Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.sessionAccount) != nil
-            || Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.keyAccount) != nil
-        hasZAIKey = Keychain.readOwn(service: ZAIProvider.service, account: ZAIProvider.keyAccount) != nil
-        hasOpenRouterKey = Keychain.readOwn(service: OpenRouterProvider.keyService, account: OpenRouterProvider.keyAccount) != nil
-    }
-
-    func signInAntigravity() {
-        guard !antigravitySigningIn else { return }
-        antigravitySigningIn = true
-        accountError = nil
-        signInTask = Task {
-            do {
-                let (refreshToken, email) = try await GoogleOAuth.signIn()
-                var login: [String: Any] = ["refresh_token": refreshToken]
-                login["email"] = email
-                let data = try JSONSerialization.data(withJSONObject: login)
-                guard Keychain.writeOwn(service: AntigravityProvider.loginService, account: AntigravityProvider.loginAccount,
-                                        value: String(decoding: data, as: UTF8.self)) else {
-                    throw ProviderError.message("Could not save the login to the Keychain.")
-                }
-                loadAccounts()
-                await refresh([.antigravity])
-            } catch is CancellationError {
-            } catch {
-                accountError = error.localizedDescription
-            }
-            antigravitySigningIn = false
-            NSApp.activate()
-        }
-    }
-
-    func cancelSignIn() { signInTask?.cancel() }
-
-    func signOutAntigravity() {
-        Keychain.delete(service: AntigravityProvider.loginService, account: AntigravityProvider.loginAccount)
-        loadAccounts()
-        reset(.antigravity)
-    }
-
-    func signInZAI() {
-        accountError = nil
-        ZAISignInWindow.present { [weak self] success in
-            guard let self else { return }
-            self.loadAccounts()
-            if success { self.reset(.zai) }
-        }
-    }
-
-    func signOutZAI() {
-        Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.sessionAccount)
-        Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.keyAccount)
-        loadAccounts()
-        reset(.zai)
-    }
-
-    func saveZAIKey(_ key: String) {
-        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return }
-        guard Keychain.writeOwn(service: ZAIProvider.service, account: ZAIProvider.keyAccount, value: key) else {
-            accountError = "Could not save the Coding Plan API key to the Keychain."
-            return
-        }
-        accountError = nil
-        loadAccounts()
-        reset(.zai)
-    }
-
-    func removeZAIKey() {
-        Keychain.delete(service: ZAIProvider.service, account: ZAIProvider.keyAccount)
-        loadAccounts()
-        reset(.zai)
-    }
-
-    func saveOpenRouterKey(_ key: String) {
-        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty,
-              Keychain.writeOwn(service: OpenRouterProvider.keyService, account: OpenRouterProvider.keyAccount, value: key) else { return }
-        loadAccounts()
-        reset(.openrouter)
-    }
-
-    func removeOpenRouterKey() {
-        Keychain.delete(service: OpenRouterProvider.keyService, account: OpenRouterProvider.keyAccount)
-        loadAccounts()
-        reset(.openrouter)
-    }
-
     /// Drops what a removed account showed.
     func forgetUsage(_ account: Account) { states[account.id] = nil }
-
-    /// Drops what a provider's main account showed and fetches it again with the new credentials.
-    private func reset(_ id: ProviderID) {
-        states[Account.main(id).id] = nil
-        Task { await refresh([Account.main(id)]) }
-    }
 
     func setLaunchAtLogin(_ on: Bool) {
         guard Self.isBundled else { return }

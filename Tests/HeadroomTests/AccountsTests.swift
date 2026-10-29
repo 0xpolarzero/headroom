@@ -117,7 +117,7 @@ final class AccountsTests: XCTestCase {
         var config = AccountsConfig.load(from: url, legacy: legacy)
         XCTAssertEqual(keys(config, .claude), ["Pro", "main", "Team"])
 
-        _ = config.add(.codex, name: "work")
+        config.append(Account(provider: .codex, key: "work", addedAt: Date(timeIntervalSince1970: 300)))   // whole seconds survive JSON
         try config.save(to: url)
         XCTAssertEqual(AccountsConfig.load(from: url, legacy: legacy), config)
         XCTAssertEqual(try Data(contentsOf: legacy), Data(legacyJSON.utf8), "the old file stays as it was")

@@ -1,19 +1,37 @@
 import AppKit
 import SwiftUI
 
+/// What the panel shows while both features are on.
+enum PanelTab: String, CaseIterable {
+    case limits = "Limits"
+    case agents = "Agents"
+}
+
 struct PanelView: View {
     @Bindable var model: AppModel
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.showingSettings {
-                CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 80) {
-                    SettingsView(model: model)
+            if model.showsLimits && model.showsAgents {
+                Picker("Show", selection: $model.panelTab) {
+                    ForEach(PanelTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-            } else {
-                TimelineView(.periodic(from: .now, by: 30)) { context in
-                    usage(now: context.date)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+            }
+            // Never taller than the space under the menu bar, or macOS shifts the popover.
+            CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 120) {
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    if tab == .limits {
+                        LimitsList(model: model, now: context.date)
+                    } else {
+                        AgentsPanel(model: model, now: context.date)
+                    }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
             }
             Divider()
             footer
@@ -21,28 +39,8 @@ struct PanelView: View {
         .frame(width: 320)
     }
 
-    @ViewBuilder
-    private func usage(now: Date) -> some View {
-        if model.enabledProviders.isEmpty {
-            Text("No providers enabled.")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(24)
-        } else {
-            // Never taller than the space under the menu bar, or macOS shifts the popover.
-            CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 80) {
-                VStack(spacing: 8) {
-                    ForEach(model.enabledProviders) { id in
-                        if id == .claude && model.showsClaudeAccounts {
-                            ClaudeAccountsSection(model: model, now: now)
-                        } else {
-                            ProviderSection(id: id, state: model.state(id), now: now)
-                        }
-                    }
-                }
-                .padding(10)
-            }
-        }
+    private var tab: PanelTab {
+        model.showsLimits && model.showsAgents ? model.panelTab : model.showsLimits ? .limits : .agents
     }
 
     private var footer: some View {
@@ -59,8 +57,8 @@ struct PanelView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            settingsButton(.agents, icon: "person.2", help: "Agents")
-            settingsButton(.general, icon: "gearshape", help: "Settings")
+            Button { WindowPresenter.settings(model) } label: { Image(systemName: "gearshape") }
+                .help("Settings")
             Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
                 .keyboardShortcut("q")
                 .help("Quit Headroom")
@@ -70,17 +68,6 @@ struct PanelView: View {
         .padding(.vertical, 9)
     }
 
-    /// Opens Settings on `tab`, or closes it when that tab is already showing.
-    private func settingsButton(_ tab: SettingsTab, icon: String, help: String) -> some View {
-        let open = model.showingSettings && model.settingsTab == tab
-        return Button {
-            if open { model.showingSettings = false } else { model.settingsTab = tab; model.showingSettings = true }
-        } label: {
-            Image(systemName: open ? icon + ".fill" : icon)
-        }
-        .help(help)
-    }
-
     private func updatedText(now: Date) -> String {
         guard let last = model.lastUpdated else { return model.isRefreshing ? "Updating…" : "Not updated yet" }
         if now.timeIntervalSince(last) < 60 { return "Updated just now" }
@@ -88,98 +75,275 @@ struct PanelView: View {
     }
 }
 
-struct ProviderSection: View {
-    let id: ProviderID
-    let state: ProviderState
+/// Every connected account, grouped by provider, two meters each.
+struct LimitsList: View {
+    let model: AppModel
     let now: Date
-    /// Whether the extra limits and keys are shown, remembered per provider.
-    @AppStorage private var showMore: Bool
 
-    init(id: ProviderID, state: ProviderState, now: Date) {
-        self.id = id
-        self.state = state
-        self.now = now
-        _showMore = AppStorage(wrappedValue: false, "showMore.\(id.rawValue)")
+    var body: some View {
+        let providers = model.connectedProviders
+        if providers.isEmpty {
+            EmptyPanel(text: "No accounts yet.", action: "Add an Account…") { WindowPresenter.settings(model, page: .accounts) }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(providers) { provider in
+                    ProviderGroup(provider: provider, accounts: model.accounts(provider), now: now,
+                                  showsSubagents: model.showsAgents && model.accounts(.claude).count > 1)
+                }
+            }
+        }
+    }
+}
+
+private struct EmptyPanel: View {
+    let text: String
+    let action: String
+    let perform: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(text).foregroundStyle(.secondary)
+            Button(action, action: perform)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+    }
+}
+
+/// A provider's name and logo, then its accounts. A single account sits on the provider's own line.
+private struct ProviderGroup: View {
+    let provider: ProviderID
+    let accounts: [AccountInfo]
+    let now: Date
+    let showsSubagents: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if accounts.count == 1, let only = accounts.first {
+                AccountRow(info: only, title: provider.displayName, logo: provider, now: now, showsSubagents: false)
+            } else {
+                HStack(spacing: 7) {
+                    ProviderLogo(id: provider, size: 14)
+                    Text(provider.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 6)
+                .padding(.top, 6)
+                ForEach(accounts) { info in
+                    AccountRow(info: info, title: info.name, logo: nil, now: now, showsSubagents: showsSubagents)
+                }
+            }
+        }
+    }
+}
+
+/// One account: name and plan, then Session and Weekly side by side. Hovering shows every limit it has.
+private struct AccountRow: View {
+    let info: AccountInfo
+    let title: String
+    /// The provider's logo, when the row stands for the whole provider.
+    let logo: ProviderID?
+    let now: Date
+    let showsSubagents: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                if let logo { ProviderLogo(id: logo, size: 14) } else { Spacer().frame(width: 14) }
+                Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                if let plan = info.plan, plan != title { PlanChip(text: plan) }
+                ResetBadge(resets: info.state.snapshot?.resets, now: now)
+                Spacer(minLength: 4)
+                status
+            }
+            content.padding(.leading, 20)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 7)
+        .background(hovering ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { hovering = $0 }
+        .hoverTip { AccountDetail(info: info, now: now) }
     }
 
-    /// Session and Weekly show by default; a provider with neither (OpenRouter) shows everything.
-    static func split(_ windows: [UsageWindow]) -> (main: [UsageWindow], more: [UsageWindow]) {
-        let main = windows.filter { $0.label == "Session" || $0.label == "Weekly" }
-        return main.isEmpty ? (windows, []) : (main, windows.filter { !main.contains($0) })
+    @ViewBuilder private var status: some View {
+        if info.state.isLoading {
+            ProgressView().controlSize(.mini)
+        } else if info.state.isStale(now: now) {
+            Text("Outdated").font(.caption2).foregroundStyle(.orange)
+        } else if info.state.error != nil, info.state.snapshot != nil {
+            Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+        } else if showsSubagents && info.takesSubagents {
+            Text("Takes subagents").font(.caption2).foregroundStyle(.blue)
+        }
     }
+
+    @ViewBuilder private var content: some View {
+        if let snapshot = info.state.snapshot {
+            let main = ProviderSection.split(snapshot.windows).main
+            if main.count == 1, let only = main.first {
+                CompactMeter(window: only, now: now)
+            } else {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(main.prefix(2), id: \.label) { CompactMeter(window: $0, now: now) }
+                }
+            }
+        } else if let error = info.state.error {
+            Caption(error)
+        } else {
+            Caption("Loading…")
+        }
+    }
+}
+
+/// "Session 91%", a thin bar of what's left, and when it resets.
+private struct CompactMeter: View {
+    let window: UsageWindow
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(window.label).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text(window.detail ?? Format.left(window)).monospacedDigit()
+            }
+            .font(.caption)
+            Meter(remaining: window.remainingPercent ?? 0, height: 4)
+            if let reset = window.resetsAt {
+                Text(Format.resets(reset, now: now)).font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The hover card: every limit, and the per-key spend for OpenRouter.
+private struct AccountDetail: View {
+    let info: AccountInfo
+    let now: Date
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            header
-            if let snapshot = state.snapshot {
-                if snapshot.windows.isEmpty {
-                    Text("No limits reported.").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(info.name).font(.headline)
+                if let email = info.email { Caption(email) }
+            }
+            if let snapshot = info.state.snapshot {
+                ForEach(snapshot.windows, id: \.label) { WindowRow(window: $0, now: now) }
+                if !snapshot.keys.isEmpty {
+                    Divider()
+                    ForEach(snapshot.keys.prefix(6), id: \.self) { KeyRow(key: $0) }
                 }
-                let windows = Self.split(snapshot.windows)
-                ForEach(windows.main, id: \.label) { window in
-                    WindowRow(window: window, now: now)
-                }
-                if showMore {
-                    ForEach(windows.more, id: \.label) { WindowRow(window: $0, now: now) }
-                    if !snapshot.keys.isEmpty {
-                        Text(snapshot.keys.count == 1 ? "API key" : "API keys (\(snapshot.keys.count))")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        CappedScroll(maxHeight: 220) {
-                            VStack(spacing: 8) {
-                                ForEach(snapshot.keys, id: \.self) { KeyRow(key: $0) }
+            }
+            if let error = info.state.error { Caption(error) }
+        }
+        .padding(12)
+        .frame(width: 260)
+    }
+}
+
+/// Where Claude Code's subagents go, what runs elsewhere now, and the agents list.
+struct AgentsPanel: View {
+    let model: AppModel
+    let now: Date
+
+    var body: some View {
+        let catalog = AgentCatalog.load()
+        let running = AgentRegistry.runningNow()
+        let claude = model.accounts(.claude)
+        VStack(alignment: .leading, spacing: 10) {
+            if claude.count > 1 { routing(claude) }
+            if !running.isEmpty {
+                section("Running elsewhere") {
+                    ForEach(running, id: \.id) { item in
+                        HStack(spacing: 8) {
+                            Circle().fill(.blue).frame(width: 7, height: 7)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.entry.subagentType ?? "Agent").font(.subheadline.weight(.medium)).lineLimit(1)
+                                Caption("\(place(item.entry.account)) · \(Format.duration(now.timeIntervalSince(item.entry.at)))")
                             }
                         }
                     }
                 }
-                if !windows.more.isEmpty || !snapshot.keys.isEmpty {
-                    Caret(isExpanded: showMore) { showMore.toggle() }
-                        .padding(.bottom, -6)
+            }
+            section("Agents") {
+                if catalog.agents.isEmpty {
+                    Caption("Add agents that run on your other plans in Settings → Claude Code.")
                 }
-            } else if let error = state.error {
-                Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                ForEach(catalog.agents) { agent in
+                    HStack(spacing: 8) {
+                        ProviderLogo(id: agent.provider.usageID, size: 13)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(agent.name).font(.subheadline.weight(.medium))
+                            Caption(agent.summary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(get: { agent.enabled }, set: { on in
+                            var next = AgentCatalog.load()
+                            if let i = next.agents.firstIndex(where: { $0.id == agent.id }) { next.agents[i].enabled = on; try? next.save() }
+                        }))
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .labelsHidden()
+                    }
+                }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(id.brandBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(id.brandColors[0].opacity(0.25), lineWidth: 0.5))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
     }
 
-    private var header: some View {
-        HStack(spacing: 6) {
-            Image(nsImage: Logos.image(id))
-                .renderingMode(.template)
-                .resizable()
-                .frame(width: 16, height: 16)
-                .foregroundStyle(LinearGradient(colors: id.brandColors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            Text(id.displayName).font(.headline)
-            if let plan = state.snapshot?.plan {
-                Text(plan)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(.quaternary, in: Capsule())
+    /// The Claude account with the most room: where a subagent from a session on another account goes.
+    private func routing(_ accounts: [AccountInfo]) -> some View {
+        let config = model.accountsConfig
+        let candidates = accounts.map {
+            SubagentAccounts.Candidate(account: ClaudeAccount(id: $0.account.key), name: $0.name,
+                                       sessionUsed: $0.used("Session"), weeklyUsed: $0.used("Weekly"))
+        }
+        let best = SubagentAccounts.pick(candidates, sessionThreshold: config.sessionThreshold, weeklyThreshold: config.weeklyThreshold)
+        let info = accounts.first { $0.account.key == best?.account.id }
+        // A session never uses its own account: sessions on the best one send theirs to the next best.
+        let next = SubagentAccounts.pick(candidates.filter { $0.account.id != best?.account.id },
+                                         sessionThreshold: config.sessionThreshold, weeklyThreshold: config.weeklyThreshold)
+        return VStack(alignment: .leading, spacing: 4) {
+            Caption("Next subagent goes to")
+            HStack(spacing: 6) {
+                ProviderLogo(id: .claude, size: 13)
+                Text(info?.name ?? "No account has room").font(.subheadline.weight(.semibold))
+                if let info, let s = info.used("Session"), let w = info.used("Weekly") {
+                    Caption("\(Int(100 - s))% session · \(Int(100 - w))% week left")
+                }
             }
-            ResetBadge(resets: state.snapshot?.resets, now: now)
-            Spacer()
-            if state.isLoading {
-                ProgressView().controlSize(.mini)
-            }
-            if state.isStale(now: now) {
-                Text("Outdated").font(.caption).foregroundStyle(.orange)
-            }
-            // A missing snapshot already shows the error inline.
-            if let error = state.error, state.snapshot != nil {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .hoverTip(error)
+            if let info {
+                Caption(next.map { "From sessions on \(info.name), they go to \($0.name)." } ?? "Sessions on \(info.name) run their own subagents.")
+            } else {
+                Caption("Subagents run on the session's own account until one has room.")
             }
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    /// "Pro", "Codex": the account an agent runs on, by its name in the panel.
+    private func place(_ account: String) -> String {
+        model.accounts(.claude).first { $0.account.key == account }?.name
+            ?? AgentProvider(rawValue: account).map(\.displayName) ?? account
+    }
+
+    private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            content()
+        }
+    }
+}
+
+enum ProviderSection {
+    /// Session and Weekly show by default; a provider with neither (OpenRouter) shows everything.
+    static func split(_ windows: [UsageWindow]) -> (main: [UsageWindow], more: [UsageWindow]) {
+        let main = windows.filter { $0.label == "Session" || $0.label == "Weekly" }
+        return main.isEmpty ? (windows, []) : (main, windows.filter { !main.contains($0) })
     }
 }
 
@@ -324,27 +488,6 @@ struct WindowRow: View {
     }
 }
 
-/// Fills with what is left: blue, yellow at 20% left, red at 10% left.
-/// The expand/collapse control at the bottom of a card.
-struct Caret: View {
-    let isExpanded: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 2)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(isExpanded ? "Show less" : "Show more")
-        .accessibilityLabel(isExpanded ? "Show less" : "Show more")
-    }
-}
-
 /// Spend on one API key; keys with a limit get a meter of what is left of it.
 struct KeyRow: View {
     let key: KeyUsage
@@ -375,8 +518,10 @@ struct KeyRow: View {
     }
 }
 
+/// Fills with what is left: blue, yellow at 20% left, red at 10% left.
 struct Meter: View {
     let remaining: Double
+    var height: CGFloat = 6
 
     var body: some View {
         GeometryReader { geo in
@@ -387,7 +532,7 @@ struct Meter: View {
                     .frame(width: geo.size.width * min(max(remaining, 0), 100) / 100)
             }
         }
-        .frame(height: 6)
+        .frame(height: height)
         .animation(.easeOut(duration: 0.3), value: remaining)
     }
 

@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Signing an account in: Claude Code does it itself, in Terminal, in the account's own folder.
+/// Signing an account in: Claude Code does it itself, in the account's own folder, from the browser or in Terminal.
 enum ClaudeSignIn {
     /// What a new account's terminal sign-in shares with `~/.claude`: everything but the sessions
     /// and the sign-in itself.
@@ -11,6 +11,22 @@ enum ClaudeSignIn {
     /// Prepares the account's Claude Code folder (links to the shared items in `~/.claude`) and opens
     /// Terminal on `claude` there, where Claude Code signs in itself.
     static func openTerminalSignIn(_ account: ClaudeAccount, name: String) throws {
+        try prepareFolder(account)
+        let script = HeadroomPaths.support.appendingPathComponent("sign-in-\(account.id).command")
+        HeadroomPaths.ensure(HeadroomPaths.support)
+        let export = account.cliConfigDir.map { "export CLAUDE_CONFIG_DIR=\(shellQuote($0))\n" } ?? ""
+        try """
+        #!/bin/zsh -l
+        \(export)echo "Claude Code for \(name): sign in with the same account as its Claude window."
+        echo "If it doesn't ask, type /login. Headroom reads this sign-in to show the account's usage."
+        exec claude
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        NSWorkspace.shared.open(script)
+    }
+
+    /// Creates the account's Claude Code folder with links to the shared items in `~/.claude`.
+    static func prepareFolder(_ account: ClaudeAccount) throws {
         let fm = FileManager.default
         if let dir = account.cliConfigDir {
             try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -22,17 +38,19 @@ enum ClaudeSignIn {
                 try fm.createSymbolicLink(atPath: target, withDestinationPath: source)
             }
         }
-        let script = HeadroomPaths.support.appendingPathComponent("sign-in-\(account.id).command")
-        HeadroomPaths.ensure(HeadroomPaths.support)
-        let export = account.cliConfigDir.map { "export CLAUDE_CONFIG_DIR=\(shellQuote($0))\n" } ?? ""
-        try """
-        #!/bin/zsh -l
-        \(export)echo "Claude Code for \(name): sign in with the same account as its Claude window."
-        echo "If it doesn't ask, type /login. Headroom reads this sign-in to show the account's usage."
-        exec claude
-        """.write(to: script, atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
-        NSWorkspace.shared.open(script)
+    }
+
+    /// Signs the account in through `claude auth login`, which opens the browser and returns once the sign-in
+    /// lands. Cancelling the task stops it.
+    static func browserSignIn(_ account: ClaudeAccount) async throws {
+        try prepareFolder(account)
+        guard let claude = SubagentRunner.executable() else { throw ProviderError.message("Claude Code (`claude`) was not found on this Mac.") }
+        var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("CLAUDE") }
+        if let dir = account.cliConfigDir { environment["CLAUDE_CONFIG_DIR"] = dir }
+        try await CLILogin.run(claude, ["auth", "login"], environment: environment)
+        guard ClaudeProvider.signedInAccount(configDir: account.cliConfigDir).uuid != nil else {
+            throw ProviderError.message("The sign-in didn't finish. Try again.")
+        }
     }
 
     /// Claude Code renews an account's sign-in when it starts; Headroom only reads it. So when an account's

@@ -99,6 +99,4 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidShow(_ notification: Notification) { model.panelOpened() }
-
-    func popoverDidClose(_ notification: Notification) { model.showingSettings = false }
 }
