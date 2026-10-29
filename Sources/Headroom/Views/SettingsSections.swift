@@ -29,16 +29,20 @@ struct AccountsSections: View {
 
     var body: some View {
         Group {
-            ForEach(model.connectedProviders) { provider in
-                let accounts = model.accounts(provider)
+            // One section with a small label per provider: separate sections each add a tall gap.
+            if !model.connectedProviders.isEmpty {
                 Section {
-                    ForEach(Array(accounts.enumerated()), id: \.element.id) { index, info in
-                        row(info, index: index, count: accounts.count)
-                    }
-                } header: {
-                    HStack(spacing: 4) {
-                        Text(provider.displayName)
-                        if accounts.count > 1 && model.showsAgents { InfoTip(footer(provider)) }
+                    ForEach(model.connectedProviders) { provider in
+                        let accounts = model.accounts(provider)
+                        HStack(spacing: 4) {
+                            Text(provider.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            if accounts.count > 1 && model.showsAgents { InfoTip(footer(provider)) }
+                        }
+                        .padding(.top, provider == model.connectedProviders.first ? 0 : 6)
+                        .listRowSeparator(.hidden)
+                        ForEach(Array(accounts.enumerated()), id: \.element.id) { index, info in
+                            row(info, index: index, count: accounts.count)
+                        }
                     }
                 }
             }
