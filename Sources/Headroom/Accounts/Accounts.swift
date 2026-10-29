@@ -24,7 +24,7 @@ struct Account: Codable, Hashable, Sendable, Identifiable {
 
     /// A notification level as people read it: what's left, not what's used ("At 10% left").
     static func notifyTitle(_ level: Double) -> String {
-        level >= 1 ? "When used up" : "At \(Int(((1 - level) * 100).rounded()))% left"
+        level >= 1 ? "Used up" : "\(Int(((1 - level) * 100).rounded()))% left"
     }
 
     init(provider: ProviderID, key: String, name: String? = nil, addedAt: Date = Date(), menuBar: MenuBarMode? = nil, notifyAt: Double? = 1) {

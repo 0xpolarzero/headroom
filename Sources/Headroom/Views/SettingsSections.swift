@@ -45,12 +45,15 @@ struct AccountsSections: View {
                     }
                 }
             }
-            Section {
-                HStack {
-                    if model.connectedProviders.isEmpty { Caption("No accounts yet.") }
-                    Spacer()
-                    Button("Add account…") { model.connectStatus = .idle; adding = true }
+            if listsOthers {
+                Section {
+                    HStack {
+                        Spacer()
+                        Button("Add another account…") { model.connectStatus = .idle; adding = true }
+                    }
                 }
+            } else if model.connectedProviders.isEmpty {
+                Section { Caption("No accounts yet.") }
             }
         }
         .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
@@ -89,7 +92,7 @@ struct AccountsSections: View {
             HStack(spacing: 4) {
                 Image(systemName: "menubar.rectangle").foregroundStyle(.secondary)
                 Picker("Menu bar", selection: Binding(get: { info.account.menuBar }, set: { model.setMenuBar(info.id, $0) })) {
-                    Text("Not shown").tag(MenuBarMode?.none)
+                    Text("Hidden").tag(MenuBarMode?.none)
                     Divider()
                     if info.account.provider == .openrouter {
                         Text("Credits").tag(MenuBarMode?.some(.session))
@@ -100,7 +103,7 @@ struct AccountsSections: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            .help("Menu bar")
+            .help("Shown in the menu bar")
             HStack(spacing: 4) {
                 Image(systemName: info.account.notifyAt == nil ? "bell.slash" : "bell").foregroundStyle(.secondary)
                 Picker("Notify", selection: Binding(get: { info.account.notifyAt }, set: { model.setNotify(info.id, $0) })) {
@@ -111,7 +114,7 @@ struct AccountsSections: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            .help("Notify")
+            .help("Notify when this much is left")
             Menu {
                 Button("Rename…") { newName = info.name; renaming = info }
                 if count > 1 {
@@ -144,35 +147,20 @@ struct AgentsSwitchSection: View {
     var body: some View {
         Section {
             Toggle(isOn: Binding(get: { model.agentsEnabled }, set: { model.setAgents($0) })) {
-                Label {
-                    HStack(spacing: 4) {
-                        Text("Agents in Claude Code")
-                        InfoTip("Subagents run on whichever Claude account has the most left, and your other plans become agents Claude can call. Adds Headroom's plugin to Claude Code.")
-                    }
-                } icon: {
-                    Image(systemName: "sparkle").foregroundStyle(ProviderID.claude.brandColors[0])
-                }
+                SettingLabel(icon: "sparkle", color: ProviderID.claude.brandColors[0], title: "Agents in Claude Code",
+                             tip: "Subagents run on whichever Claude account has the most left, and your other plans become agents Claude can call. Adds Headroom's plugin to Claude Code.",
+                             detail: model.claudeError ?? status, detailColor: model.claudeError == nil && version != "" ? .secondary : .orange)
             }
             .disabled(version == "")
-            HStack(spacing: 6) {
-                Image(systemName: icon.name).foregroundStyle(icon.color)
-                Caption(status)
-            }
-            if let error = model.claudeError { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .task { version = await Task.detached { SubagentRunner.executable().map(SelfTest.version) ?? "" }.value }
-    }
-
-    private var icon: (name: String, color: Color) {
-        if version == "" { return ("exclamationmark.triangle.fill", .orange) }
-        return model.subagentsInstalled ? ("checkmark.circle.fill", .green) : ("circle", .secondary)
     }
 
     private var status: String {
         guard let version else { return "Looking for Claude Code…" }
         if version.isEmpty { return "Claude Code not found" }
         let claude = version.replacingOccurrences(of: " (Claude Code)", with: "")
-        return model.subagentsInstalled ? "Plugin installed · Claude Code \(claude)" : "Off · Claude Code \(claude)"
+        return model.subagentsInstalled ? "Plugin installed · Claude Code \(claude)" : "Claude Code \(claude)"
     }
 }
 
@@ -181,24 +169,34 @@ struct AgentsSections: View {
     @Bindable var model: AppModel
     @State private var catalog = AgentCatalog.load()
     @State private var editing: AgentDefinition?
+    @State private var editingPrompt = false
     @State private var error: String?
 
     var body: some View {
         Group {
             Section {
-                SaveClaudeToggle(catalog: catalog) { catalog = AgentCatalog.load() }
+                Toggle(isOn: Binding(get: { catalog.saveClaude }, set: { on in change { $0.saveClaude = on } })) {
+                    SettingLabel(icon: "leaf.fill", color: .green, title: "Save Claude usage",
+                                 tip: catalog.enabled.isEmpty ? "Add an agent first." : SaveClaudeToggle.about)
+                }
+                .disabled(catalog.enabled.isEmpty && !catalog.saveClaude)
+                HStack {
+                    SettingLabel(icon: "text.quote", title: "Prompt", detail: catalog.saveClaudeText == nil ? "Default" : "Custom")
+                    Spacer()
+                    Button("Edit…") { editingPrompt = true }
+                }
             }
+            .sheet(isPresented: $editingPrompt) { SavingInstructionEditor(catalog: catalog) { catalog = AgentCatalog.load() } }
             Section {
                 ForEach(catalog.agents) { agent in row(agent) }
                 if catalog.agents.isEmpty { Caption("No agents yet.") }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
             } header: {
                 HStack(spacing: 4) {
-                    Text("Agents")
+                    Text("Your agents")
                     InfoTip("Agents run on your other plans. Claude Code calls them as headroom:<name> and picks one by its description. Changes apply from the next prompt.")
                     Spacer()
                     Button("New agent…") { editing = AgentDefinition(name: "", description: "", provider: .codex, model: "") }
-                        .controlSize(.small)
                 }
             }
         }

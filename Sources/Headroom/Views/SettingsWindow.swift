@@ -78,6 +78,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @Bindable var model: AppModel
+    @State private var adding = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -122,12 +123,18 @@ struct SettingsView: View {
             .background(.quaternary.opacity(0.35))
             Divider()
             VStack(alignment: .leading, spacing: 0) {
+                // In line with the first sidebar item, which starts as far down.
                 HStack(spacing: 5) {
                     Text(model.settingsPage.title).font(.title3.weight(.semibold))
                     InfoTip(model.settingsPage.about)
+                    Spacer()
+                    if model.settingsPage == .accounts {
+                        Button("Add account…") { model.connectStatus = .idle; adding = true }
+                    }
                 }
-                .padding(.leading, 20)
-                .padding(.top, 18)
+                .frame(height: 30)
+                .padding(.horizontal, 20)
+                .padding(.top, 44)
                 Group {
                     switch model.settingsPage {
                     case .accounts: Form { AccountsSections(model: model) }
@@ -146,5 +153,6 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .ignoresSafeArea(edges: .top)
+        .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
     }
 }

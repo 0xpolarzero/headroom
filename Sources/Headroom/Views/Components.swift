@@ -106,3 +106,29 @@ struct InfoTip: View {
             .accessibilityLabel(text)
     }
 }
+
+/// A setting's label: an icon in a fixed column, the title with its ⓘ, and an optional line under it. Every
+/// setting row uses it, so icons and titles line up from row to row.
+struct SettingLabel: View {
+    let icon: String
+    var color: Color = .secondary
+    let title: String
+    var tip: String?
+    var detail: String?
+    var detailColor: Color = .secondary
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+                .frame(width: 20, alignment: .center)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(title)
+                    if let tip { InfoTip(tip) }
+                }
+                if let detail { Text(detail).font(.caption).foregroundStyle(detailColor) }
+            }
+        }
+    }
+}

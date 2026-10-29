@@ -163,8 +163,8 @@ final class AccountsTests: XCTestCase {
     @MainActor func testAlertsSayHowFarAlong() {
         let window = UsageWindow(label: "Weekly", usedPercent: 90.4)
         XCTAssertEqual(AppModel.alertText(provider: .claude, name: "Pro", window: window, used: 90.4), "Claude (Pro) Weekly: 10% left")
-        XCTAssertEqual(Account.notifyTitle(0.9), "At 10% left")
-        XCTAssertEqual(Account.notifyTitle(1), "When used up")
+        XCTAssertEqual(Account.notifyTitle(0.9), "10% left")
+        XCTAssertEqual(Account.notifyTitle(1), "Used up")
         XCTAssertEqual(AppModel.alertText(provider: .codex, name: nil, window: window, used: 100), "Codex Weekly limit reached")
     }
 

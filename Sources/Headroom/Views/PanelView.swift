@@ -276,7 +276,8 @@ struct AgentsPanel: View {
         let catalog = AgentCatalog.load()
         let running = AgentRegistry.runningNow()
         VStack(alignment: .leading, spacing: 12) {
-            SaveClaudeToggle(catalog: catalog, compact: true)
+            SaveClaudeToggle(catalog: catalog)
+            Divider()
             if !running.isEmpty {
                 section("Running") {
                     ForEach(running, id: \.id) { item in
@@ -290,7 +291,7 @@ struct AgentsPanel: View {
                     }
                 }
             }
-            section("Agents") {
+            section("Your agents") {
                 if catalog.agents.isEmpty {
                     Caption("No agents yet. Add them in Settings.")
                 }
@@ -335,37 +336,27 @@ struct AgentsPanel: View {
     }
 }
 
-/// "Save Claude usage": Claude keeps planning and reviewing, and hands the hands-on work to the agents.
+/// "Save Claude usage" as a panel row, its switch in line with the agents' below.
 struct SaveClaudeToggle: View {
     let catalog: AgentCatalog
-    var compact = false
-    var onChange: (() -> Void)?
-    @State private var editing = false
+
+    static let about = "Claude plans and checks the work, and hands coding, searching and research to your agents on other plans."
 
     var body: some View {
-        let hasAgents = !catalog.enabled.isEmpty
-        HStack(alignment: .center, spacing: 8) {
-            Image(systemName: "leaf.fill").foregroundStyle(.green)
-            Text("Save Claude usage").font(compact ? .subheadline.weight(.semibold) : .body)
-            InfoTip(hasAgents ? "Claude plans and checks the work, and hands coding, searching and research to your agents on other plans."
-                              : "Add an agent first.")
-            if !compact && catalog.saveClaudeText != nil { PlanChip(text: "Custom") }
+        HStack(spacing: 6) {
+            Text("Save Claude usage").font(.subheadline.weight(.medium))
+            InfoTip(catalog.enabled.isEmpty ? "Add an agent first." : Self.about)
             Spacer(minLength: 4)
-            if !compact { Button("Edit prompt") { editing = true }.controlSize(.small) }
             Toggle("", isOn: Binding(get: { catalog.saveClaude }, set: { on in
                 var next = AgentCatalog.load()
                 next.saveClaude = on
                 try? next.save()
-                onChange?()
             }))
             .toggleStyle(.switch)
-            .controlSize(compact ? .mini : .regular)
+            .controlSize(.mini)
             .labelsHidden()
-            .disabled(!hasAgents && !catalog.saveClaude)
+            .disabled(catalog.enabled.isEmpty && !catalog.saveClaude)
         }
-        .padding(compact ? 10 : 0)
-        .background(compact ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .sheet(isPresented: $editing) { SavingInstructionEditor(catalog: catalog) { onChange?() } }
     }
 }
 
