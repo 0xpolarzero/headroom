@@ -3,6 +3,20 @@ import SwiftUI
 // The pieces Settings and first-launch setup share, so each setting looks and works the same in both.
 // Each is one or more Form sections.
 
+/// Opening Headroom when the Mac starts.
+struct LoginSection: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Section {
+            Toggle(isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) })) {
+                SettingLabel(icon: "power", title: "Open at login", detail: model.launchAtLoginError, detailColor: .orange)
+            }
+            .disabled(!AppModel.isBundled)
+        }
+    }
+}
+
 /// Every account, by provider, with its menu; then Add Account.
 struct AccountsSections: View {
     @Bindable var model: AppModel
@@ -82,7 +96,12 @@ struct AccountsSections: View {
                     if let plan = info.plan, plan != info.name { PlanChip(text: plan) }
                 }
                 if let problem = info.limits.problem {
-                    Text(problem).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    // A rate limit clears by itself: grey, not orange. One line; the rest on hover.
+                    Text(info.state.rateLimited ? "Busy, retrying soon" : problem)
+                        .font(.caption)
+                        .foregroundStyle(info.state.rateLimited ? .secondary : Color.orange)
+                        .lineLimit(1)
+                        .help(problem)
                 } else if let email = info.email {
                     Text(email).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }

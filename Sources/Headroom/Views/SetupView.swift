@@ -36,7 +36,9 @@ struct SetupView: View {
             .padding(.top, 36)
             Form {
                 switch step {
-                case .accounts: AccountsSections(model: model, listsOthers: true)
+                case .accounts:
+                    AccountsSections(model: model, listsOthers: true)
+                    LoginSection(model: model)
                 case .agents:
                     AgentsSwitchSection(model: model)
                     if model.agentsEnabled { AgentsSections(model: model) }

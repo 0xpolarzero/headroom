@@ -102,11 +102,23 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                 }
                 Spacer()
+                if model.needsRepair {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            Text("Plugin problem").font(.callout.weight(.medium))
+                            InfoTip(model.claudeError ?? "")
+                        }
+                        Button("Repair") { model.repair() }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.bottom, 8)
+                }
                 Menu {
                     Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
                         .disabled(!AppModel.isBundled)
-                    Divider()
-                    Button("Run setup again…") { WindowPresenter.close("settings"); WindowPresenter.setup(model) }
                 } label: {
                     Image(systemName: "ellipsis.circle").imageScale(.large).foregroundStyle(.secondary)
                 }

@@ -270,6 +270,27 @@ final class AppModel {
         if installed != agentsEnabled { agentsEnabled = installed }
     }
 
+    /// Something Headroom can fix itself: the plugin failed to install or update.
+    var needsRepair: Bool { claudeError != nil }
+
+    /// Installs the plugin again, from this copy of the app.
+    func repair() {
+        claudeError = nil
+        pluginChanges += 1
+        let previous = pluginTask
+        pluginTask = Task {
+            await previous?.value
+            do {
+                try await SubagentInstaller.install()
+                agentsEnabled = true
+            } catch {
+                claudeError = error.localizedDescription
+            }
+            pluginChanges -= 1
+            syncPlugin()
+        }
+    }
+
     func setMenuBar(_ id: String, _ mode: MenuBarMode?) { updateAccounts { $0.update(id) { $0.menuBar = mode } } }
 
     func setNotify(_ id: String, _ level: Double?) {
