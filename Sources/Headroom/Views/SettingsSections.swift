@@ -29,48 +29,51 @@ struct AccountsSections: View {
 
     var body: some View {
         Group {
-            // One section with a small label per provider: separate sections each add a tall gap.
+            // One card, laid out here: a form gives every row a divider and a minimum height.
             if !model.connectedProviders.isEmpty {
                 Section {
-                    ForEach(model.connectedProviders) { provider in
-                        let accounts = model.accounts(provider)
-                        HStack(spacing: 4) {
-                            Text(provider.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            if accounts.count > 1 && model.showsAgents { InfoTip(footer(provider)) }
-                        }
-                        .padding(.top, provider == model.connectedProviders.first ? 0 : 6)
-                        .listRowSeparator(.hidden)
-                        ForEach(Array(accounts.enumerated()), id: \.element.id) { index, info in
-                            row(info, index: index, count: accounts.count)
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(model.connectedProviders) { provider in
+                            let accounts = model.accounts(provider)
+                            HStack(spacing: 4) {
+                                Text(provider.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                if accounts.count > 1 && model.showsAgents { InfoTip(footer(provider)) }
+                            }
+                            .padding(.top, provider == model.connectedProviders.first ? 0 : 10)
+                            ForEach(Array(accounts.enumerated()), id: \.element.id) { index, info in
+                                row(info, index: index, count: accounts.count)
+                            }
                         }
                     }
+                    .padding(.vertical, 4)
                 }
             }
             let others = ProviderID.allCases.filter { !model.connectedProviders.contains($0) }
-            if listsOthers && !others.isEmpty {
-                Section("Not connected") {
-                    ForEach(others) { provider in
-                        HStack(spacing: 10) {
-                            ProviderTile(id: provider)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.displayName).fontWeight(.medium)
-                                Caption(provider.planHint)
+            if listsOthers {
+                Section(others.isEmpty ? "" : "Not connected") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(others) { provider in
+                            HStack(spacing: 10) {
+                                ProviderTile(id: provider)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(provider.displayName).fontWeight(.medium)
+                                    Caption(provider.planHint)
+                                }
+                                Spacer()
+                                Button(provider.signsInWithBrowser ? "Sign in…" : "Add key…") { model.connectStatus = .idle; connecting = provider }
                             }
-                            Spacer()
-                            Button(provider.signsInWithBrowser ? "Sign in…" : "Add key…") { model.connectStatus = .idle; connecting = provider }
                         }
-                        .padding(.vertical, 2)
+                        // The last row: add a second account of a connected plan.
+                        HStack {
+                            Spacer()
+                            Button("Add another account…") { model.connectStatus = .idle; adding = true }
+                        }
+                        .padding(.top, 2)
                     }
+                    .padding(.vertical, 4)
                 }
             }
-            if listsOthers {
-                Section {
-                    HStack {
-                        Spacer()
-                        Button("Add another account…") { model.connectStatus = .idle; adding = true }
-                    }
-                }
-            } else if model.connectedProviders.isEmpty {
+            if !listsOthers && model.connectedProviders.isEmpty {
                 Section { Caption("No accounts yet.") }
             }
         }
