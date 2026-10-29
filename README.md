@@ -13,13 +13,10 @@
 
 <p align="center">
   <a href="https://github.com/amontlabs/lastdrop/releases/latest">Download</a> ·
-  <a href="docs/media/lastdrop.mp4">Watch the video</a> ·
   <a href="#install">Install</a>
 </p>
 
-<p align="center">
-  <a href="docs/media/lastdrop.mp4"><img src="docs/images/video-poster.png" width="800" alt="Watch the lastdrop video: Claude Code calls lastdrop agents with the same Agent tool as its built-in subagents, and they run on other Claude accounts, Codex and Z.ai"></a>
-</p>
+https://github.com/user-attachments/assets/d3fbf598-a908-459f-b1b2-ebee54d4bc30
 
 <p align="center">
   <picture>
@@ -60,7 +57,7 @@ To build it yourself, you need the Swift 6 toolchain (Command Line Tools are eno
 git clone https://github.com/amontlabs/lastdrop.git
 cd lastdrop
 ./script/build_app.sh
-cp -R dist/lastdrop.app /Applications/
+rm -rf /Applications/lastdrop.app && cp -R dist/lastdrop.app /Applications/
 ```
 
 <p align="center">
