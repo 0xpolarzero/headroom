@@ -24,7 +24,7 @@ enum Snapshots {
             model.panelTab = .agents
             await capture(PanelView(model: model), nil, to: folder, "panel-agents")
             for step in [SetupView.Step.features, .accounts, .claudeCode, .menuBar] {
-                await capture(SetupView(model: model, step: step), NSSize(width: 600, height: 520), titled: "", to: folder, "setup-\(step.rawValue)")
+                await capture(SetupView(model: model, step: step), NSSize(width: 600, height: 560), titled: "", to: folder, "setup-\(step.rawValue)")
             }
             let waiting = ConnectProvider(model: model, provider: .claude, back: {}, done: {}).frame(width: 440)
                 .onAppear { model.connectStatus = .working("Finish signing in in your browser.") }
