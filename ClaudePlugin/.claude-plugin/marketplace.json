@@ -1,10 +1,10 @@
 {
-  "name": "headroom",
-  "owner": { "name": "Headroom" },
+  "name": "lastdrop",
+  "owner": { "name": "amontlabs" },
   "plugins": [
     {
-      "name": "headroom",
-      "source": "./headroom",
+      "name": "lastdrop",
+      "source": "./lastdrop",
       "description": "Runs Claude Code's subagents on your other Claude accounts that have room, exactly like built-in subagents."
     }
   ]

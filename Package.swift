@@ -2,16 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "Headroom",
+    name: "lastdrop",
     platforms: [.macOS(.v15)],
     products: [
-        .executable(name: "Headroom", targets: ["Headroom"]),
+        .executable(name: "lastdrop", targets: ["LastDrop"]),
     ],
     targets: [
         .executableTarget(
-            name: "Headroom",
+            name: "LastDrop",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
-        .testTarget(name: "HeadroomTests", dependencies: ["Headroom"]),
+        .testTarget(name: "LastDropTests", dependencies: ["LastDrop"]),
     ]
 )

@@ -1,0 +1,7 @@
+{
+  "name": "lastdrop",
+  "version": "0.1.0",
+  "description": "Runs Claude Code's subagents on your other Claude accounts that have room, exactly like built-in subagents.",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
