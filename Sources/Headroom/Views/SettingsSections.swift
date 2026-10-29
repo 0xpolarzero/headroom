@@ -89,31 +89,26 @@ struct AccountsSections: View {
             }
             .layoutPriority(1)
             Spacer()
-            HStack(spacing: 4) {
-                Image(systemName: "menubar.rectangle").foregroundStyle(.secondary)
-                Picker("Menu bar", selection: Binding(get: { info.account.menuBar }, set: { model.setMenuBar(info.id, $0) })) {
-                    Text("Hidden").tag(MenuBarMode?.none)
-                    Divider()
-                    if info.account.provider == .openrouter {
-                        Text("Credits").tag(MenuBarMode?.some(.session))
-                    } else {
-                        ForEach(MenuBarMode.allCases) { Text($0.title).tag(MenuBarMode?.some($0)) }
-                    }
+            // The icon goes inside each choice, so the dropdown shows it right beside the value.
+            Picker("Menu bar", selection: Binding(get: { info.account.menuBar }, set: { model.setMenuBar(info.id, $0) })) {
+                Label("Hidden", systemImage: "menubar.rectangle").tag(MenuBarMode?.none)
+                Divider()
+                if info.account.provider == .openrouter {
+                    Label("Credits", systemImage: "menubar.rectangle").tag(MenuBarMode?.some(.session))
+                } else {
+                    ForEach(MenuBarMode.allCases) { Label($0.title, systemImage: "menubar.rectangle").tag(MenuBarMode?.some($0)) }
                 }
-                .labelsHidden()
-                .fixedSize()
             }
+            .labelsHidden()
+            .fixedSize()
             .help("Shown in the menu bar")
-            HStack(spacing: 4) {
-                Image(systemName: info.account.notifyAt == nil ? "bell.slash" : "bell").foregroundStyle(.secondary)
-                Picker("Notify", selection: Binding(get: { info.account.notifyAt }, set: { model.setNotify(info.id, $0) })) {
-                    Text("Off").tag(Double?.none)
-                    Divider()
-                    ForEach(Account.notifyChoices, id: \.self) { Text(Account.notifyTitle($0)).tag(Double?.some($0)) }
-                }
-                .labelsHidden()
-                .fixedSize()
+            Picker("Notify", selection: Binding(get: { info.account.notifyAt }, set: { model.setNotify(info.id, $0) })) {
+                Label("Off", systemImage: "bell.slash").tag(Double?.none)
+                Divider()
+                ForEach(Account.notifyChoices, id: \.self) { Label(Account.notifyTitle($0), systemImage: "bell").tag(Double?.some($0)) }
             }
+            .labelsHidden()
+            .fixedSize()
             .help("Notify when this much is left")
             Menu {
                 Button("Rename…") { newName = info.name; renaming = info }
