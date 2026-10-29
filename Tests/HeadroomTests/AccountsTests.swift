@@ -84,6 +84,14 @@ final class AccountsTests: XCTestCase {
         XCTAssertEqual(keys(config, .zai), ["main"])
     }
 
+    @MainActor func testRemovingAnAccountOnlyTouchesItsOwnProvidersKeys() {
+        XCTAssertEqual(AppModel.ownItems(.zai).map(\.item), [ZAIProvider.sessionAccount, ZAIProvider.keyAccount])
+        XCTAssertEqual(AppModel.ownItems(.openrouter).map(\.item), [OpenRouterProvider.keyAccount])
+        XCTAssertEqual(AppModel.ownItems(.antigravity).map(\.item), [AntigravityProvider.loginAccount])
+        XCTAssertTrue(AppModel.ownItems(.claude).isEmpty, "Claude Code keeps its own login")
+        XCTAssertTrue(AppModel.ownItems(.codex).isEmpty, "the Codex CLI keeps its own login")
+    }
+
     // MARK: Migration and files
 
     private let legacyJSON = #"""

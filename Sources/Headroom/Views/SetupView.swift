@@ -66,8 +66,10 @@ struct SetupView: View {
 
     private func move(_ offset: Int) {
         if step == .features {
-            if limits != model.showsLimits { model.setFeature(.limits, limits) }
-            if agents != model.showsAgents { model.setFeature(.agents, agents) }
+            // Turn on before off: the last feature on can't be turned off.
+            for (feature, on) in [(Feature.limits, limits), (.agents, agents)].sorted(by: { $0.1 && !$1.1 }) where on != model.features.contains(feature) {
+                model.setFeature(feature, on)
+            }
         }
         let steps = self.steps
         guard let i = steps.firstIndex(of: step) else { return }

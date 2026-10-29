@@ -172,8 +172,12 @@ extension AppModel {
             do {
                 _ = try await account.usageProvider.fetch()
             } catch {
-                // Put back what was there, so a typo doesn't sign the account out.
-                if let previous { _ = Keychain.writeOwn(service: service, account: item, value: previous) } else { Keychain.delete(service: service, account: item) }
+                // Put back what was there, so a typo doesn't sign the account out; unless another attempt
+                // has saved its own key since.
+                if Keychain.readOwn(service: service, account: item) == key {
+                    if let previous { _ = Keychain.writeOwn(service: service, account: item, value: previous) } else { Keychain.delete(service: service, account: item) }
+                }
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
                 throw ProviderError.message("\(provider.displayName) didn't accept the key: \(error.localizedDescription)")
             }
         }
@@ -242,15 +246,23 @@ extension AppModel {
     /// Forgets an account and the keys Headroom kept for it. An added account's CLI folder stays on disk.
     /// A main account only loses Headroom's own sign-in.
     func remove(_ account: Account) {
-        for (service, item) in [(AntigravityProvider.loginService, AntigravityProvider.loginAccount),
-                                (ZAIProvider.service, ZAIProvider.sessionAccount), (ZAIProvider.service, ZAIProvider.keyAccount),
-                                (OpenRouterProvider.keyService, OpenRouterProvider.keyAccount)] {
+        for (service, item) in Self.ownItems(account.provider) {
             Keychain.delete(service: service, account: account.keychainItem(item))
         }
         if !account.isMain { updateAccounts { $0.remove(account.id) } }
         forgetUsage(account)
         refreshLocalChecks()
         if account.isMain { Task { await refresh([account]) } }
+    }
+
+    /// The keychain items Headroom itself keeps for a provider's accounts (before the per-account suffix).
+    nonisolated static func ownItems(_ provider: ProviderID) -> [(service: String, item: String)] {
+        switch provider {
+        case .antigravity: [(AntigravityProvider.loginService, AntigravityProvider.loginAccount)]
+        case .zai: [(ZAIProvider.service, ZAIProvider.sessionAccount), (ZAIProvider.service, ZAIProvider.keyAccount)]
+        case .openrouter: [(OpenRouterProvider.keyService, OpenRouterProvider.keyAccount)]
+        case .claude, .codex: []
+        }
     }
 
     /// Opens Terminal on `claude` for the account, when the browser sign-in can't be used.

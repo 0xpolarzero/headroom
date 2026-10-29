@@ -15,13 +15,15 @@ enum CLILogin {
         process.standardError = output
         let tail = Tail()
         output.fileHandleForReading.readabilityHandler = { tail.add($0.availableData) }
+        try Task.checkCancellation()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
                 process.terminationHandler = { _ in done.resume() }
                 do { try process.run() } catch { process.terminationHandler = nil; done.resume(throwing: error) }
             }
         } onCancel: {
-            process.terminate()
+            // Cancelled before launching: terminate() on a process that never ran raises.
+            if process.isRunning { process.terminate() }
         }
         output.fileHandleForReading.readabilityHandler = nil
         try Task.checkCancellation()

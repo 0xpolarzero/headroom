@@ -93,8 +93,9 @@ final class AppModel {
     var claudeError: String?
     /// When Headroom last started Claude Code to renew an account's expired sign-in.
     @ObservationIgnored var renewedAt: [String: Date] = [:]
-    /// The plugin is being installed or removed; until it's done, its state says nothing about the feature.
-    @ObservationIgnored private var changingPlugin = false
+    /// Plugin installs or removals still to finish; until then, its state says nothing about the feature.
+    @ObservationIgnored private var pluginChanges = 0
+    @ObservationIgnored private var pluginTask: Task<Void, Never>?
 
     /// Windows already announced as full; an entry clears once usage drops below 100%.
     private var alerted: Set<String> {
@@ -141,7 +142,10 @@ final class AppModel {
     /// feature, which leaves the plain gauge.
     var menuBarProviders: [ProviderID] {
         guard showsLimits else { return [] }
-        return connectedProviders.filter { !menuBarHidden.contains($0) && accounts($0).contains { $0.state.snapshot != nil } }
+        // The strip shows a provider's main account (every Claude account): one without usage would read "–".
+        return connectedProviders.filter { id in
+            !menuBarHidden.contains(id) && (id == .claude ? accounts(id).contains { $0.state.snapshot != nil } : state(id).snapshot != nil)
+        }
     }
 
     // MARK: Refresh
@@ -239,25 +243,32 @@ final class AppModel {
         if on { features.insert(feature) } else if features.count > 1 { features.remove(feature) } else { return }
         guard feature == .agents else { return }
         claudeError = nil
-        changingPlugin = true
-        Task {
-            do {
-                try await on ? SubagentInstaller.install() : SubagentInstaller.uninstall()
-            } catch {
-                claudeError = error.localizedDescription
+        pluginChanges += 1
+        // One install or removal at a time, each toward the latest choice, so quick toggles end where they stopped.
+        let previous = pluginTask
+        pluginTask = Task {
+            await previous?.value
+            let want = features.contains(.agents)
+            if want != SubagentInstaller.isInstalled() {
+                do {
+                    try await want ? SubagentInstaller.install() : SubagentInstaller.uninstall()
+                } catch {
+                    claudeError = error.localizedDescription
+                }
             }
-            changingPlugin = false
+            pluginChanges -= 1
             syncPlugin()
         }
     }
 
     /// The plugin is what makes agents work, so the feature follows it, also when it was changed in Claude Code.
     func syncPlugin() {
-        guard !changingPlugin else { return }
+        guard pluginChanges == 0 else { return }
         let installed = SubagentInstaller.isInstalled()
         if installed != subagentsInstalled { subagentsInstalled = installed }
         if installed != features.contains(.agents) {
             if installed { features.insert(.agents) } else { features.remove(.agents) }
+            if features.isEmpty { features.insert(.limits) }
         }
     }
 
