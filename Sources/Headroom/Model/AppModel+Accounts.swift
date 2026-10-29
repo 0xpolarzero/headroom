@@ -15,7 +15,7 @@ enum Capability: Equatable, Sendable {
 struct LocalCheck: Equatable, Sendable {
     var connected: Bool
     var email: String?
-    /// Nil when this account doesn't run agents.
+    /// Whether it can run agents, or what it lacks; nil when its provider can't run agents on it.
     var agents: Capability?
 }
 
@@ -27,10 +27,8 @@ struct AccountInfo: Identifiable {
     var plan: String?
     var state: ProviderState
     var limits: Capability
-    /// Nil when agents are off or this account doesn't run them.
-    var agents: Capability?
-    /// A Claude account under both thresholds, so other accounts' sessions can send it subagents.
-    var takesSubagents = false
+    /// The account new subagents or agents of its provider go to: the one with the most room.
+    var isNext = false
     var id: String { account.id }
 
     func used(_ label: String) -> Double? { state.snapshot?.windows.first { $0.label == label }?.usedPercent }
@@ -49,13 +47,50 @@ extension AppModel {
 
     /// The provider's accounts that are connected, or were added: a main account shows once a login is found.
     func accounts(_ provider: ProviderID) -> [AccountInfo] {
-        accountsConfig.pool(provider).compactMap { account in
+        let next = nextAccountID(provider)
+        return accountsConfig.pool(provider).compactMap { account -> AccountInfo? in
             let s = state(of: account)
             let check = localChecks[account.id]
             let connected = check?.connected ?? (s.snapshot != nil || (s.lastAttempt != nil && !s.notConfigured))
             guard !account.isMain || connected || s.snapshot != nil else { return nil }
             return info(account, state: s, check: check)
+        }.map { (info: AccountInfo) -> AccountInfo in
+            var info = info
+            info.isNext = info.id == next
+            return info
         }
+    }
+
+    /// The account new work of this provider goes to, when there's a choice and agents use it: Claude
+    /// subagents, or a `headroom:` agent on this provider.
+    private func nextAccountID(_ provider: ProviderID) -> String? {
+        guard showsAgents else { return nil }
+        let pool = accountsConfig.pool(provider).filter { localChecks[$0.id]?.agents == .ready }
+        guard pool.count > 1 else { return nil }
+        if provider != .claude {
+            guard let agentProvider = AgentProvider.allCases.first(where: { $0.usageID == provider }), AgentPool.pools(agentProvider),
+                  AgentCatalog.load().enabled.contains(where: { $0.provider == agentProvider }) else { return nil }
+        }
+        var usage: [String: SubagentUsage.Status] = [:]
+        for account in pool {
+            let s = state(of: account)
+            guard let at = s.lastSuccess, let windows = s.snapshot?.windows else { continue }
+            func used(_ label: String) -> Double? { windows.first { $0.label == label }?.usedPercent }
+            let only = windows.count == 1 ? windows[0].usedPercent : nil
+            usage[AgentPool.usageKey(account)] = .init(session: used("Session") ?? only, weekly: used("Weekly") ?? only, at: at)
+        }
+        // Only an account with room: when all are full, work stays where it is.
+        guard let best = AgentPool.pick(pool, usage: usage, config: accountsConfig, isFull: { _ in false }),
+              AgentPool.room(best, usage: usage, config: accountsConfig) != nil else { return nil }
+        return best.id
+    }
+
+    /// Why no account of the provider can run agents ("Install agy"), else nil.
+    func agentProblem(_ provider: AgentProvider) -> String? {
+        guard provider != .claude else { return nil }
+        let checks = accountsConfig.pool(provider.usageID).compactMap { localChecks[$0.id]?.agents }
+        guard !checks.isEmpty, !checks.contains(.ready) else { return nil }
+        return checks.compactMap(\.problem).first ?? "Connect a \(provider.displayName) account"
     }
 
     /// Providers with at least one account to show, in the panel's order.
@@ -65,13 +100,8 @@ extension AppModel {
 
     private func info(_ account: Account, state s: ProviderState, check: LocalCheck?) -> AccountInfo {
         let plan = s.snapshot?.plan
-        var info = AccountInfo(account: account, name: displayName(account, plan: plan), email: check?.email, plan: plan, state: s,
-                               limits: limitsCapability(s, connected: check?.connected))
-        if features.contains(.agents) { info.agents = check?.agents ?? (check == nil ? .pending : nil) }
-        if account.provider == .claude, let session = info.used("Session"), let weekly = info.used("Weekly") {
-            info.takesSubagents = session < accountsConfig.sessionThreshold * 100 && weekly < accountsConfig.weeklyThreshold * 100
-        }
-        return info
+        return AccountInfo(account: account, name: displayName(account, plan: plan), email: check?.email, plan: plan, state: s,
+                           limits: limitsCapability(s, connected: check?.connected))
     }
 
     /// Its own name, else its plan's first word for Claude ("Max"), else the plan, else "Main".
@@ -108,13 +138,13 @@ extension AppModel {
             let raw = Keychain.readOwn(service: AntigravityProvider.loginService, account: account.keychainItem(AntigravityProvider.loginAccount))
             check.email = raw.flatMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] }?.string("email")
             // Agents run through `agy`, whose own login is one per Mac: the main account's.
-            if account.isMain { check.agents = AntigravityBackend.executable() == nil ? .problem("Install agy") : .ready }
+            if account.isMain { check.agents = AntigravityBackend.executable() == nil ? .problem("Install the Antigravity CLI (agy)") : .ready }
         case .codex:
-            if account.isMain { check.agents = CodexBackend.executable() == nil ? .problem("Install the Codex CLI") : connected ? .ready : .problem("Not signed in") }
+            check.agents = CodexBackend.executable() == nil ? .problem("Install the Codex CLI") : AgentPool.canRun(account) ? .ready : .problem("Sign in to Codex")
         case .zai:
-            if account.isMain { check.agents = ZAIProvider.apiKey() == nil ? .problem("Add a Coding Plan key") : .ready }
+            check.agents = AgentPool.canRun(account) ? .ready : .problem("Add a Z.ai Coding Plan key")
         case .openrouter:
-            if account.isMain { check.agents = connected ? .ready : .problem("Add an API key") }
+            check.agents = AgentPool.canRun(account) ? .ready : .problem("Add an OpenRouter API key")
         }
         return check
     }
@@ -140,6 +170,12 @@ extension AppModel {
                 var environment = ProcessInfo.processInfo.environment
                 if let home = account.folder {
                     HeadroomPaths.ensure(URL(fileURLWithPath: home))
+                    // Its own login, and the user's Codex settings: config (MCP servers, model) and instructions.
+                    for item in ["config.toml", "AGENTS.md", "prompts", "skills"] {
+                        let source = NSHomeDirectory() + "/.codex/" + item, target = home + "/" + item
+                        guard FileManager.default.fileExists(atPath: source), (try? FileManager.default.attributesOfItem(atPath: target)) == nil else { continue }
+                        try FileManager.default.createSymbolicLink(atPath: target, withDestinationPath: source)
+                    }
                     environment["CODEX_HOME"] = home
                 }
                 try await CLILogin.run(codex, ["login"], environment: environment)

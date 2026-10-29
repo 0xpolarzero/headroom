@@ -45,6 +45,8 @@ enum SubagentRunner {
         var refused = false
         /// Where it ran as its row shows it: the account ("Pro"), or the provider for other backends.
         var account: String?
+        /// For an agent from Headroom's list: the `Account.id` it ran on, which a follow-up returns to.
+        var accountID: String?
     }
 
     /// What a run needs to know Claude Code is the one it expects, from its `system`/`init` event: nil when

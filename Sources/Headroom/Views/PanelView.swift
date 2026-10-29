@@ -87,8 +87,7 @@ struct LimitsList: View {
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(providers) { provider in
-                    ProviderGroup(provider: provider, accounts: model.accounts(provider), now: now,
-                                  showsSubagents: model.showsAgents && model.accounts(.claude).count > 1)
+                    ProviderGroup(provider: provider, accounts: model.accounts(provider), now: now)
                 }
             }
         }
@@ -115,12 +114,11 @@ private struct ProviderGroup: View {
     let provider: ProviderID
     let accounts: [AccountInfo]
     let now: Date
-    let showsSubagents: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if accounts.count == 1, let only = accounts.first {
-                AccountRow(info: only, title: provider.displayName, logo: provider, now: now, showsSubagents: false)
+                AccountRow(info: only, title: provider.displayName, logo: provider, now: now)
             } else {
                 HStack(spacing: 7) {
                     ProviderLogo(id: provider, size: 14)
@@ -129,7 +127,7 @@ private struct ProviderGroup: View {
                 .padding(.horizontal, 6)
                 .padding(.top, 6)
                 ForEach(accounts) { info in
-                    AccountRow(info: info, title: info.name, logo: nil, now: now, showsSubagents: showsSubagents)
+                    AccountRow(info: info, title: info.name, logo: nil, now: now)
                 }
             }
         }
@@ -143,7 +141,6 @@ private struct AccountRow: View {
     /// The provider's logo, when the row stands for the whole provider.
     let logo: ProviderID?
     let now: Date
-    let showsSubagents: Bool
     @State private var hovering = false
 
     var body: some View {
@@ -172,8 +169,10 @@ private struct AccountRow: View {
             Text("Outdated").font(.caption2).foregroundStyle(.orange)
         } else if info.state.error != nil, info.state.snapshot != nil {
             Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
-        } else if showsSubagents && info.takesSubagents {
-            Text("Takes subagents").font(.caption2).foregroundStyle(.blue)
+        } else if info.isNext {
+            Text("Next").font(.caption2.weight(.semibold)).foregroundStyle(.blue)
+                .help(info.account.provider == .claude ? "New subagents run on this account: it has the most room."
+                                                        : "New \(info.account.provider.displayName) agents run on this account: it has the most room.")
         }
     }
 
@@ -242,7 +241,7 @@ private struct AccountDetail: View {
     }
 }
 
-/// Where Claude Code's subagents go, what runs elsewhere now, and the agents list.
+/// Saving Claude usage, what runs on your other accounts and plans now, and the agents list.
 struct AgentsPanel: View {
     let model: AppModel
     let now: Date
@@ -250,17 +249,16 @@ struct AgentsPanel: View {
     var body: some View {
         let catalog = AgentCatalog.load()
         let running = AgentRegistry.runningNow()
-        let claude = model.accounts(.claude)
-        VStack(alignment: .leading, spacing: 10) {
-            if claude.count > 1 { routing(claude) }
+        VStack(alignment: .leading, spacing: 12) {
+            SaveClaudeToggle(catalog: catalog, compact: true)
             if !running.isEmpty {
-                section("Running elsewhere") {
+                section("Running") {
                     ForEach(running, id: \.id) { item in
                         HStack(spacing: 8) {
-                            Circle().fill(.blue).frame(width: 7, height: 7)
+                            ProgressView().controlSize(.mini)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(item.entry.subagentType ?? "Agent").font(.subheadline.weight(.medium)).lineLimit(1)
-                                Caption("\(place(item.entry.account)) · \(Format.duration(now.timeIntervalSince(item.entry.at)))")
+                                Text(item.entry.definition?.name ?? item.entry.subagentType ?? "Subagent").font(.subheadline.weight(.medium)).lineLimit(1)
+                                Caption("\(place(item.entry)) · \(Format.duration(now.timeIntervalSince(item.entry.at)))")
                             }
                         }
                     }
@@ -275,7 +273,11 @@ struct AgentsPanel: View {
                         ProviderLogo(id: agent.provider.usageID, size: 13)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(agent.name).font(.subheadline.weight(.medium))
-                            Caption(agent.summary)
+                            if let problem = model.agentProblem(agent.provider) {
+                                Text(problem).font(.caption).foregroundStyle(.orange)
+                            } else {
+                                Caption(agent.summary)
+                            }
                         }
                         Spacer()
                         Toggle("", isOn: Binding(get: { agent.enabled }, set: { on in
@@ -293,42 +295,12 @@ struct AgentsPanel: View {
         .padding(.vertical, 4)
     }
 
-    /// The Claude account with the most room: where a subagent from a session on another account goes.
-    private func routing(_ accounts: [AccountInfo]) -> some View {
-        let config = model.accountsConfig
-        let candidates = accounts.map {
-            SubagentAccounts.Candidate(account: ClaudeAccount(id: $0.account.key), name: $0.name,
-                                       sessionUsed: $0.used("Session"), weeklyUsed: $0.used("Weekly"))
+    /// "Pro", "Codex · Work": the account an agent runs on, by its name in the panel.
+    private func place(_ entry: AgentRegistry.Entry) -> String {
+        if let id = entry.accountID, let account = model.accountsConfig.account(id) {
+            return AgentPool.place(account, name: model.displayName(account, plan: model.state(of: account).snapshot?.plan))
         }
-        let best = SubagentAccounts.pick(candidates, sessionThreshold: config.sessionThreshold, weeklyThreshold: config.weeklyThreshold)
-        let info = accounts.first { $0.account.key == best?.account.id }
-        // A session never uses its own account: sessions on the best one send theirs to the next best.
-        let next = SubagentAccounts.pick(candidates.filter { $0.account.id != best?.account.id },
-                                         sessionThreshold: config.sessionThreshold, weeklyThreshold: config.weeklyThreshold)
-        return VStack(alignment: .leading, spacing: 4) {
-            Caption("Next subagent goes to")
-            HStack(spacing: 6) {
-                ProviderLogo(id: .claude, size: 13)
-                Text(info?.name ?? "No account has room").font(.subheadline.weight(.semibold))
-                if let info, let s = info.used("Session"), let w = info.used("Weekly") {
-                    Caption("\(Int(100 - s))% session · \(Int(100 - w))% week left")
-                }
-            }
-            if let info {
-                Caption(next.map { "From sessions on \(info.name), they go to \($0.name)." } ?? "Sessions on \(info.name) run their own subagents.")
-            } else {
-                Caption("Subagents run on the session's own account until one has room.")
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    /// "Pro", "Codex": the account an agent runs on, by its name in the panel.
-    private func place(_ account: String) -> String {
-        model.accounts(.claude).first { $0.account.key == account }?.name
-            ?? AgentProvider(rawValue: account).map(\.displayName) ?? account
+        return model.accounts(.claude).first { $0.account.key == entry.account }?.name ?? entry.account
     }
 
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
@@ -336,6 +308,39 @@ struct AgentsPanel: View {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             content()
         }
+    }
+}
+
+/// "Save Claude usage": Claude keeps planning and reviewing, and hands the hands-on work to the agents.
+struct SaveClaudeToggle: View {
+    let catalog: AgentCatalog
+    var compact = false
+    var onChange: (() -> Void)?
+
+    var body: some View {
+        let hasAgents = !catalog.enabled.isEmpty
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "leaf.fill").foregroundStyle(.green).font(compact ? .callout : .title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Save Claude usage").font(compact ? .subheadline.weight(.semibold) : .body.weight(.medium))
+                Text(hasAgents ? "Claude plans and checks the work, and hands the coding, searching and research to your agents on other plans."
+                               : "Add an agent first: Claude hands work to your agents on other plans.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            Toggle("", isOn: Binding(get: { catalog.saveClaude }, set: { on in
+                var next = AgentCatalog.load()
+                next.saveClaude = on
+                try? next.save()
+                onChange?()
+            }))
+            .toggleStyle(.switch)
+            .controlSize(compact ? .mini : .regular)
+            .labelsHidden()
+            .disabled(!hasAgents && !catalog.saveClaude)
+        }
+        .padding(compact ? 10 : 0)
+        .background(compact ? AnyShapeStyle(.quaternary.opacity(0.5)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

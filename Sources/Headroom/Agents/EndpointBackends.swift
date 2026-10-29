@@ -53,12 +53,16 @@ struct EndpointProfile: Equatable, Sendable {
     var directory: String
     var model: String
     var effort: String?
+    /// The `Account.id` whose key the helper prints; nil for the provider's main account.
+    var accountID: String?
 
     static let modelVariables = ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                                  "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"]
 
-    static func directory(for provider: AgentProvider) -> String {
-        HeadroomPaths.support.appendingPathComponent("endpoints/\(provider.rawValue)", isDirectory: true).path
+    /// One profile per account: a live process can't change its key.
+    static func directory(for provider: AgentProvider, account: Account? = nil) -> String {
+        let name = account.map { $0.isMain ? provider.rawValue : $0.id } ?? provider.rawValue
+        return HeadroomPaths.support.appendingPathComponent("endpoints/\(name)", isDirectory: true).path
     }
 
     var environment: [String: String] {
@@ -82,7 +86,7 @@ struct EndpointProfile: Equatable, Sendable {
         let dir = URL(fileURLWithPath: directory, isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let executable = URL(fileURLWithPath: helperExecutable).standardizedFileURL.path
-        let helper = "\(ClaudeSignIn.shellQuote(executable)) --agent-key \(provider.rawValue)"
+        let helper = "\(ClaudeSignIn.shellQuote(executable)) --agent-key \(accountID ?? provider.rawValue)"
         let settings = try JSONSerialization.data(withJSONObject: ["apiKeyHelper": helper], options: [.prettyPrinted, .sortedKeys])
         let file = dir.appendingPathComponent("settings.json")
         // Replace a stale symlink rather than writing through it into a user's settings.
@@ -103,11 +107,12 @@ struct EndpointProfile: Equatable, Sendable {
         }
     }
 
-    static func apiKey(_ provider: AgentProvider) -> String? {
+    static func apiKey(_ provider: AgentProvider, account: Account? = nil) -> String? {
+        let account = account ?? .main(provider.usageID)
         switch provider {
-        case .zai: ZAIProvider.apiKey()
-        case .openrouter: OpenRouterProvider.apiKey()
-        default: nil
+        case .zai: return ZAIProvider.apiKey(keyItem: account.keychainItem(ZAIProvider.keyAccount), usesFallbacks: account.isMain)
+        case .openrouter: return OpenRouterProvider.apiKey(keyItem: account.keychainItem(OpenRouterProvider.keyAccount), usesEnvironment: account.isMain)
+        default: return nil
         }
     }
 
@@ -116,12 +121,15 @@ struct EndpointProfile: Equatable, Sendable {
             : "Add a regular OpenRouter API key in Headroom's Settings. Management keys can't run models."
     }
 
-    /// The helper writes only the requested provider's key to stdout, before AppKit starts.
+    /// The helper writes only the requested account's key to stdout, before AppKit starts: `--agent-key zai`
+    /// for the main account, `--agent-key zai.work` for another.
     static func keyMain() -> Never {
         let args = CommandLine.arguments
-        guard let i = args.firstIndex(of: "--agent-key"), i + 1 < args.count,
-              let provider = AgentProvider(rawValue: args[i + 1]), provider == .zai || provider == .openrouter else { exit(2) }
-        guard let key = apiKey(provider) else {
+        guard let i = args.firstIndex(of: "--agent-key"), i + 1 < args.count else { exit(2) }
+        let parts = args[i + 1].split(separator: ".", maxSplits: 1).map(String.init)
+        guard let provider = AgentProvider(rawValue: parts[0]), provider == .zai || provider == .openrouter else { exit(2) }
+        let account = Account(provider: provider.usageID, key: parts.count > 1 ? parts[1] : Account.mainKey)
+        guard let key = apiKey(provider, account: account) else {
             FileHandle.standardError.write(Data((missingKey(provider) + "\n").utf8))
             exit(1)
         }
@@ -133,7 +141,9 @@ struct EndpointProfile: Equatable, Sendable {
         func failure(_ message: String) -> SubagentRunner.Result {
             .init(text: message, isError: true, limitReached: false, turns: 0, permissionDenials: 0, account: provider.displayName)
         }
-        guard let key = apiKey(provider) else { return failure(missingKey(provider)) }
+        let account = AgentPool.account(provider, resume: job.resume)
+        let place = AgentPool.place(account)
+        guard let key = apiKey(provider, account: account) else { return failure(missingKey(provider)) }
         do {
             if provider == .openrouter { try await OpenRouterProvider.validateInferenceKey(key) }
             let model = job.resume?.model ?? job.definition.model
@@ -141,7 +151,8 @@ struct EndpointProfile: Equatable, Sendable {
             if provider == .zai, let effort, !["low", "high", "max"].contains(effort) {
                 return failure("Z.ai supports low, high, or max effort; received \(effort).")
             }
-            let profile = EndpointProfile(provider: provider, directory: directory(for: provider), model: model, effort: effort)
+            let profile = EndpointProfile(provider: provider, directory: directory(for: provider, account: account), model: model, effort: effort,
+                                          accountID: account.isMain ? nil : account.id)
             try profile.prepare()
             let request = SubagentRunner.Request(prompt: job.prompt, model: model, effort: effort,
                 worktree: job.resume == nil && job.worktree, permissionMode: AgentRun.mappedPermissionMode(job.permissionMode),
@@ -149,18 +160,21 @@ struct EndpointProfile: Equatable, Sendable {
                 mcpConfig: job.mcpConfig, systemPrompt: job.definition.instructions, endpoint: profile)
             var result = await SubagentRunner.run(request, on: ClaudeAccount(id: "main"), in: job.resume?.directory ?? job.cwd,
                 onProcess: events.process, check: { event in
-                    if let reason = SubagentRunner.checkInit(event, subagentType: nil) { return "\(reason) on \(provider.displayName)" }
-                    events.started(provider.displayName, model)
+                    if let reason = SubagentRunner.checkInit(event, subagentType: nil) { return "\(reason) on \(place)" }
+                    events.started(place, model)
                     return nil
                 }, onStep: events.step, onItem: events.item)
-            result.account = provider.displayName
+            result.account = place
+            result.accountID = account.id
             return result
         } catch { return failure(error.localizedDescription) }
     }
 
     static func terminal(_ entry: AgentRegistry.Entry, provider: AgentProvider) -> String? {
         guard let model = entry.model else { return nil }
-        let profile = EndpointProfile(provider: provider, directory: directory(for: provider), model: model, effort: entry.effort)
+        let account = entry.accountID.flatMap { AccountsConfig.load().account($0) }
+        let profile = EndpointProfile(provider: provider, directory: directory(for: provider, account: account), model: model, effort: entry.effort,
+                                      accountID: account.flatMap { $0.isMain ? nil : $0.id })
         guard (try? profile.prepare()) != nil else { return nil }
         return profile.terminal(entry)
     }

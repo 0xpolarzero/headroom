@@ -212,8 +212,11 @@ private struct AccountsPage: View {
     }
 
     private func footer(_ provider: ProviderID) -> String {
-        provider == .claude ? "Subagents go to the account with the most room, in this order when they tie."
-            : "Listed in this order in the panel. Agents use the first account."
+        switch provider {
+        case .claude: "Subagents run on the account with the most room. This order breaks ties."
+        case .antigravity: "Agents use the first account: the Antigravity CLI signs in one account per Mac."
+        default: "Agents run on the account with the most room. This order breaks ties."
+        }
     }
 
     private func row(_ info: AccountInfo, index: Int, count: Int) -> some View {
@@ -224,17 +227,13 @@ private struct AccountsPage: View {
                     Text(info.name).fontWeight(.medium)
                     if let plan = info.plan, plan != info.name { PlanChip(text: plan) }
                 }
-                if let problem = info.limits.problem ?? info.agents?.problem {
+                if let problem = info.limits.problem {
                     Text(problem).font(.caption).foregroundStyle(.orange).lineLimit(2)
                 } else if let email = info.email {
                     Caption(email)
                 }
             }
             Spacer()
-            HStack(spacing: 4) {
-                if model.showsLimits { CapabilityPill(title: "Limits", capability: info.limits) }
-                if let agents = info.agents { CapabilityPill(title: "Agents", capability: agents) }
-            }
             Menu {
                 Button("Rename…") { newName = info.name; renaming = info }
                 if count > 1 {
@@ -315,22 +314,11 @@ private struct ClaudeCodePage: View {
                 if let error = model.claudeError { Text(error).font(.caption).foregroundStyle(.red) }
             }
 
-            if model.accounts(.claude).count > 1 {
-                Section {
-                    threshold("Use until its session is", \.sessionThreshold) { model.setThresholds(session: $0) }
-                    threshold("Use until its week is", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
-                } header: {
-                    Text("Claude accounts")
-                } footer: {
-                    Caption("A subagent runs on the account with the most room, and skips one past either limit. A session never sends subagents to its own account.")
-                }
+            Section {
+                SaveClaudeToggle(catalog: catalog) { catalog = AgentCatalog.load() }
             }
 
             Section {
-                Toggle(isOn: Binding(get: { catalog.saveClaude }, set: { on in change { $0.saveClaude = on } })) {
-                    Text("Prefer these agents")
-                    Text("Claude hands implementation, exploration, reviews and research to them before doing it itself.")
-                }
                 ForEach(catalog.agents) { agent in
                     HStack(spacing: 10) {
                         ProviderLogo(id: agent.provider.usageID, size: 16)
@@ -340,7 +328,11 @@ private struct ClaudeCodePage: View {
                                 Text(agent.type).font(.caption.monospaced()).foregroundStyle(.tertiary)
                             }
                             Caption(agent.description)
-                            Caption(agent.summary)
+                            if let problem = model.agentProblem(agent.provider) {
+                                Text(problem).font(.caption).foregroundStyle(.orange)
+                            } else {
+                                Caption(agent.summary)
+                            }
                         }
                         Spacer()
                         Toggle("", isOn: Binding(get: { agent.enabled }, set: { on in change { $0.agents[index(agent)].enabled = on } }))
@@ -371,6 +363,17 @@ private struct ClaudeCodePage: View {
                 }
             } footer: {
                 Caption("Claude picks an agent by its description. Changes apply from the next prompt, in every session.")
+            }
+
+            if model.accounts(.claude).count > 1 {
+                Section {
+                    threshold("Use until its session is", \.sessionThreshold) { model.setThresholds(session: $0) }
+                    threshold("Use until its week is", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
+                } header: {
+                    Text("Claude accounts")
+                } footer: {
+                    Caption("A subagent runs on the account with the most room, and skips one past either limit. A session never sends subagents to its own account.")
+                }
             }
         }
         .sheet(item: $editing) { agent in

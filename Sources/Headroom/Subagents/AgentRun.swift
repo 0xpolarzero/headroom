@@ -340,7 +340,7 @@ enum AgentRun {
         guard launch.started else { return fail(agentID, result) }
         let entry = resume ?? AgentRegistry.Entry(account: result.account ?? definition.provider.displayName, directory: request.cwd,
                                                    sessionID: "", model: definition.model, subagentType: definition.type,
-                                                   effort: job.effort, at: Date(), definition: definition)
+                                                   effort: job.effort, at: Date(), definition: definition, accountID: result.accountID)
         if let session = result.sessionID, !session.isEmpty {
             var updated = entry
             updated.sessionID = session
@@ -548,6 +548,8 @@ enum AgentRegistry {
         /// For an agent from Headroom's list, the definition it started with: a follow-up runs with it even
         /// after the list changed.
         var definition: AgentDefinition?
+        /// For an agent from Headroom's list: the `Account.id` it runs on.
+        var accountID: String?
     }
     /// A running agent's processes: its runner's and Claude Code's.
     struct Processes: Codable { var runner: Int32; var claude: Int32 }

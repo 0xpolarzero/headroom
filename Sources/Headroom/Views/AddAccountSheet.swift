@@ -163,17 +163,20 @@ struct ConnectProvider: View {
             }
             if let email = info.email { Caption(email) }
             VStack(alignment: .leading, spacing: 6) {
-                if model.showsLimits { line("Limits", info.limits, ready: "Headroom reads its limits.") }
-                if let agents = info.agents {
-                    line("Agents", agents, ready: provider == .claude ? "Subagents can run on it." : "Agents can run on it.")
-                } else if model.showsAgents {
-                    line("Agents", .problem("Agents use your first \(provider.displayName) account."), ready: "")
-                }
+                line("Limits", info.limits, ready: "Headroom reads its limits.")
+                if model.showsAgents, let text = agentsLine(info.account) { line("Agents", .ready, ready: text) }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
+    }
+
+    /// What agents do with the account, when they use it.
+    private func agentsLine(_ account: Account) -> String? {
+        if provider == .claude { return "Subagents run on it when it has the most room." }
+        guard let agentProvider = AgentProvider.allCases.first(where: { $0.usageID == provider }), AgentPool.pools(agentProvider) || account.isMain else { return nil }
+        return "Your \(provider.displayName) agents can run on it."
     }
 
     private func line(_ title: String, _ capability: Capability, ready: String) -> some View {

@@ -61,6 +61,15 @@ extension AppModel {
             guard let at = s.lastSuccess, s.snapshot != nil else { continue }
             status[row.id] = .init(session: row.used("Session"), weekly: row.used("Weekly"), at: at)
         }
+        // Agents on other providers pick among their accounts by the same reading. A plan without
+        // Session and Weekly (OpenRouter credits) counts its one window as both.
+        for account in accountsConfig.accounts where account.provider != .claude {
+            let s = state(of: account)
+            guard let at = s.lastSuccess, let windows = s.snapshot?.windows else { continue }
+            func used(_ label: String) -> Double? { windows.first { $0.label == label }?.usedPercent }
+            let only = windows.count == 1 ? windows[0].usedPercent : nil
+            status[AgentPool.usageKey(account)] = .init(session: used("Session") ?? only, weekly: used("Weekly") ?? only, at: at)
+        }
         let saved = SubagentUsage.readStatus()
         // A runner may have read an account more recently than the app.
         for (id, entry) in saved where (status[id]?.at ?? .distantPast) < entry.at { status[id] = entry }

@@ -139,18 +139,21 @@ enum CodexBackend: AgentBackend {
         guard let path = executable() else {
             return .init(text: "Codex (`codex`) was not found on this Mac.", isError: true, limitReached: false, turns: 0, permissionDenials: 0)
         }
-        return await run(job, events, executable: path)
+        return await run(job, events, executable: path, account: AgentPool.account(.codex, resume: job.resume))
     }
 
     /// An executable seam keeps lifecycle tests offline and independent of the user's Codex settings.
-    static func run(_ job: AgentJob, _ events: AgentEvents, executable: String) async -> SubagentRunner.Result {
+    static func run(_ job: AgentJob, _ events: AgentEvents, executable: String, account: Account = .main(.codex)) async -> SubagentRunner.Result {
         let startedAt = Date()
         var directory = job.resume?.directory ?? job.cwd
         var model = job.resume?.model ?? job.definition.model
         let effort = job.resume?.effort ?? job.effort
         var sessionID = job.resume?.sessionID
         var state = TurnState()
-        let server = CodexAppServer(executable: executable, directory: directory, environment: ProcessInfo.processInfo.environment) { method, _ in
+        var environment = ProcessInfo.processInfo.environment
+        if let home = account.folder { environment["CODEX_HOME"] = home }
+        let place = AgentPool.place(account)
+        let server = CodexAppServer(executable: executable, directory: directory, environment: environment) { method, _ in
             events.step("Declined Codex request: \(method)")
             return decline(method)
         }
@@ -159,7 +162,7 @@ enum CodexBackend: AgentBackend {
             .init(text: text, isError: error, limitReached: limit, turns: turns, permissionDenials: state.denials,
                   toolUses: state.toolUses, durationMs: Int(Date().timeIntervalSince(startedAt) * 1000),
                   inputTokens: state.inputTokens, outputTokens: state.outputTokens, model: model,
-                  sessionID: sessionID, directory: directory, account: "Codex")
+                  sessionID: sessionID, directory: directory, account: place, accountID: account.id)
         }
         do {
             try server.start()
@@ -206,7 +209,7 @@ enum CodexBackend: AgentBackend {
                 if let effort { turnParams["effort"] = effort }
                 let accepted = try await server.call("turn/start", turnParams)
                 guard let turnID = accepted.dict("turn")?.string("id") else { throw Failure("Codex didn't return a turn ID.") }
-                events.started("Codex", model)
+                events.started(place, model)
                 for await message in server.notifications {
                     let p = message.params
                     if message.method == "headroom/requestDeclined" {
@@ -275,7 +278,8 @@ enum CodexBackend: AgentBackend {
 
     static func terminal(_ entry: AgentRegistry.Entry) -> String? {
         guard !entry.sessionID.isEmpty else { return nil }
-        return "cd \(ClaudeSignIn.shellQuote(entry.directory)) || exit 1\nexec codex resume \(ClaudeSignIn.shellQuote(entry.sessionID))"
+        let home = entry.accountID.flatMap { AccountsConfig.load().account($0)?.folder }.map { "export CODEX_HOME=\(ClaudeSignIn.shellQuote($0))\n" } ?? ""
+        return home + "cd \(ClaudeSignIn.shellQuote(entry.directory)) || exit 1\nexec codex resume \(ClaudeSignIn.shellQuote(entry.sessionID))"
     }
 
     /// Completed snapshots fit the append-only transcript. Starts show progress without duplicate rows.
