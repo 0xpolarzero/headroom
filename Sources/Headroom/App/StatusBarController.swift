@@ -33,6 +33,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             NotificationCenter.default.addObserver(self, selector: #selector(itemMoved(_:)), name: name, object: nil)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showPanel), name: .showPanel, object: nil)
         observe()
     }
 
@@ -94,6 +95,12 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func screensChanged() { layout() }
+
+    /// After setup: open the panel, to show where Headroom lives.
+    @objc private func showPanel() {
+        guard !popover.isShown, let button = item.button else { return }
+        toggle(button)
+    }
 
     @objc private func toggle(_ sender: NSStatusBarButton) {
         if popover.isShown { popover.performClose(nil); return }

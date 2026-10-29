@@ -60,6 +60,8 @@ final class AppModel {
     /// The panel's tab while agents are on.
     var panelTab = PanelTab.limits
     var settingsPage = SettingsPage.accounts
+    /// The window shows setup instead of Settings.
+    var settingUp = false
     var order: [ProviderID] {
         didSet { defaults.set(order.map(\.rawValue), forKey: "providerOrder") }
     }

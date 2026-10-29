@@ -1,12 +1,17 @@
 import SwiftUI
 
-/// First launch: the two Settings pages, one at a time, each with a word on what it's for.
+/// First launch, in the window in place of Settings' sidebar and pages: one centered column, the same sections as
+/// Settings, two steps. Get started hands over to the menu bar, opening the panel there.
 struct SetupView: View {
     @Bindable var model: AppModel
     @State private var step: Step
     @State private var adding = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    enum Step: Int, CaseIterable { case accounts, agents }
+    enum Step: Int, CaseIterable {
+        case accounts, agents
+        var name: String { self == .accounts ? "Accounts" : "Agents" }
+    }
 
     init(model: AppModel, step: Step = .accounts) {
         self.model = model
@@ -21,101 +26,144 @@ struct SetupView: View {
         if model.isFreshInstall { WindowPresenter.setup(model) } else { model.defaults.set(true, forKey: doneKey) }
     }
 
-    private var steps: [Step] { Step.allCases }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(title).font(.largeTitle.weight(.bold))
-                    Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                if step == .accounts { Button("Add account…") { model.connectStatus = .idle; adding = true } }
-            }
-            .padding(.horizontal, 32)
-            .padding(.top, 48)
-            // The list takes the room there is and scrolls; what's below stays in view.
-            Form {
-                switch step {
-                case .accounts:
-                    AccountsSections(model: model, listsOthers: true)
-                case .agents:
-                    AgentsSwitchSection(model: model)
-                    if model.agentsEnabled {
-                        SuggestedAgentsSection(model: model)
-                        AgentsSections(model: model)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Design.sectionGap) {
+                header
+                Group {
+                    switch step {
+                    case .accounts:
+                        AccountsSections(model: model, listsOthers: true)
+                    case .agents:
+                        AgentsSwitchSection(model: model)
+                        if model.agentsEnabled {
+                            SuggestedAgentsSection(model: model)
+                            AgentsSections(model: model)
+                        }
                     }
                 }
+                .transition(.opacity)
             }
-            .formStyle(.grouped)
-            .padding(.horizontal, 12)
-            .frame(maxHeight: .infinity)
-            if step == .accounts {
-                LoginSwitch(model: model)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 16)
-            }
-            Divider()
-            HStack(spacing: 8) {
-                steps(current: step)
-                Spacer()
-                if step != .accounts { Button("Back") { move(-1) } }
-                Button(step == steps.last ? "Done" : "Continue") { move(1) }.keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 52)
+            .frame(maxWidth: Design.setupColumn, alignment: .leading)
+            .padding(.horizontal, Design.pageInset)
+            .padding(.top, 56)
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: step)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(edges: .top)
+        .bottomBar { bar }
         .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
     }
 
-    /// "1 Accounts › 2 Agents", the current one in full color.
-    private func steps(current: Step) -> some View {
-        HStack(spacing: 6) {
-            ForEach(Array(steps.enumerated()), id: \.element) { index, step in
-                if index > 0 { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
-                HStack(spacing: 5) {
-                    Text("\(index + 1)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(step == current ? Color.white : .secondary)
-                        .frame(width: 16, height: 16)
-                        .background(step == current ? Color.accentColor : Color.secondary.opacity(0.2), in: Circle())
-                    Text(step == .accounts ? "Accounts" : "Agents")
-                        .font(.callout)
-                        .foregroundStyle(step == current ? .primary : .secondary)
+    // MARK: Header
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            AppMark(size: 48)
+            Text(step == .accounts ? "Welcome to Headroom" : "Agents")
+                .font(.system(size: 26, weight: .bold))
+                .padding(.top, 18)
+                .accessibilityAddTraits(.isHeader)
+            Text(step == .accounts ? "See what's left of your AI plans. Logins on this Mac are already here."
+                                   : "Optional. Run subagents on whichever Claude account has room, and hand work to your other plans.")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+            HStack {
+                stepper
+                Spacer()
+                if step == .accounts {
+                    Button("Add account…") { model.connectStatus = .idle; adding = true }
                 }
+            }
+            .padding(.top, 24)
+        }
+    }
+
+    /// "1 Accounts — 2 Agents": where you are, a check on what's done.
+    private var stepper: some View {
+        HStack(spacing: 8) {
+            ForEach(Step.allCases, id: \.self) { item in
+                if item.rawValue > 0 {
+                    Capsule().fill(Design.ring).frame(width: 18, height: 1.5)
+                }
+                Button { step = item } label: {
+                    HStack(spacing: 6) {
+                        ZStack {
+                            Circle().fill(item == step ? Color.accentColor : item.rawValue < step.rawValue ? Color.green : Color.primary.opacity(0.1))
+                            if item.rawValue < step.rawValue {
+                                Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.white)
+                            } else {
+                                Text("\(item.rawValue + 1)").font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(item == step ? Color.white : .secondary)
+                            }
+                        }
+                        .frame(width: 18, height: 18)
+                        Text(item.name).font(.callout.weight(item == step ? .medium : .regular))
+                            .foregroundStyle(item == step ? .primary : .secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Step \(item.rawValue + 1): \(item.name)")
             }
         }
     }
 
-    private var title: String {
-        switch step {
-        case .accounts: "Welcome to Headroom"
-        case .agents: "Agents"
-        }
-    }
+    // MARK: Bottom bar
 
-    private var detail: String {
-        switch step {
-        case .accounts: "See what's left of your AI plans. Logins on this Mac are already here."
-        case .agents: "Optional. Get more out of your plans in Claude Code."
+    /// On glass, over the list scrolling under it: open at login, then Back and Continue.
+    private var bar: some View {
+        HStack(spacing: 10) {
+            if step == .accounts {
+                Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .disabled(!AppModel.isBundled)
+            }
+            Spacer()
+            if step != .accounts {
+                Button("Back") { move(-1) }.glassButton()
+            }
+            Button(step == Step.allCases.last ? "Get started" : "Continue") { move(1) }
+                .glassButton(prominent: true)
+                .keyboardShortcut(.defaultAction)
         }
+        .controlSize(.large)
+        .frame(maxWidth: Design.setupColumn)
+        .padding(.horizontal, Design.pageInset)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity)
     }
 
     private func move(_ offset: Int) {
-        let steps = self.steps
-        guard let i = steps.firstIndex(of: step) else { step = .accounts; return }
-        if i + offset >= steps.count {
-            model.defaults.set(true, forKey: Self.doneKey)
-            WindowPresenter.close("setup")
-        } else if i + offset >= 0 {
-            step = steps[i + offset]
+        let next = step.rawValue + offset
+        if let target = Step(rawValue: next) {
+            step = target
+        } else if next >= Step.allCases.count {
+            finish()
+        }
+    }
+
+    /// Setup is done: the window closes and the panel opens from the menu bar, where Headroom lives from now on.
+    private func finish() {
+        model.defaults.set(true, forKey: Self.doneKey)
+        model.settingUp = false
+        WindowPresenter.close()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            NotificationCenter.default.post(name: .showPanel, object: nil)
+        }
+    }
+}
+
+extension View {
+    /// The system's glass buttons on macOS 26, its bordered ones before.
+    @ViewBuilder func glassButton(prominent: Bool = false) -> some View {
+        if #available(macOS 26, *), Design.glass {
+            if prominent { buttonStyle(.glassProminent) } else { buttonStyle(.glass) }
+        } else {
+            if prominent { buttonStyle(.borderedProminent) } else { buttonStyle(.bordered) }
         }
     }
 }

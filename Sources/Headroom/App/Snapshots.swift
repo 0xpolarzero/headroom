@@ -9,19 +9,23 @@ enum Snapshots {
     static func main(to folder: URL) -> Never {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        app.appearance = NSAppearance(named: .darkAqua)
+        // Light with HEADROOM_APPEARANCE=light; HEADROOM_GLASS=0 for the opaque stand-in.
+        app.appearance = NSAppearance(named: ProcessInfo.processInfo.environment["HEADROOM_APPEARANCE"] == "light" ? .aqua : .darkAqua)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let model = AppModel()
         model.start()
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(10))   // usage and local checks
+            func windowed(_ view: some View) -> some View {
+                view.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(nsColor: .windowBackgroundColor)).ignoresSafeArea(edges: .top)
+            }
             for page in SettingsPage.allCases {
                 model.settingsPage = page
-                await capture(SettingsView(model: model), NSSize(width: 720, height: 560), titled: "Headroom Settings", to: folder, "settings-\(page.rawValue)")
+                await capture(windowed(SettingsView(model: model)), WindowPresenter.size, titled: "Headroom", to: folder, "settings-\(page.rawValue)")
             }
             model.settingsPage = .accounts
             model.claudeError = "Claude Code refused: plugin headroom@headroom not found in marketplace."
-            await capture(SettingsView(model: model), NSSize(width: 720, height: 560), titled: "Headroom Settings", to: folder, "settings-repair")
+            await capture(windowed(SettingsView(model: model)), WindowPresenter.size, titled: "Headroom", to: folder, "settings-repair")
             model.claudeError = nil
             await capture(SavingInstructionEditor(catalog: AgentCatalog.load()) {}, nil, to: folder, "save-instruction")
             model.panelTab = .limits
@@ -29,7 +33,7 @@ enum Snapshots {
             model.panelTab = .agents
             await capture(PanelView(model: model), nil, to: folder, "panel-agents")
             for step in SetupView.Step.allCases {
-                await capture(SetupView(model: model, step: step), NSSize(width: 600, height: 560), titled: "", to: folder, "setup-\(step.rawValue)")
+                await capture(windowed(SetupView(model: model, step: step)), WindowPresenter.size, titled: "Headroom", to: folder, "setup-\(step.rawValue)")
             }
             let waiting = ConnectProvider(model: model, provider: .claude, back: {}, done: {}).frame(width: 440)
                 .onAppear { model.connectStatus = .working("Finish signing in in your browser.") }
@@ -63,7 +67,14 @@ enum Snapshots {
         frameView.wantsLayer = true
         frameView.layoutSubtreeIfNeeded()
         frameView.displayIfNeeded()
-        // Split views and grouped forms draw through layers that cacheDisplay leaves blank: render the layer tree.
+        // The window server's own picture: it has what SwiftUI keeps in layers (scroll views' content) and the glass, and a
+        // process may ask for its own window without screen-recording permission, even off every screen.
+        if let picture = windowPicture(window), picture.width > 0 {
+            try? NSBitmapImageRep(cgImage: picture).representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent(name + ".png"))
+            window.close()
+            return
+        }
+        // Else render the layer tree.
         let scale = window.backingScaleFactor, bounds = frameView.bounds
         guard let layer = frameView.layer,
               let context = CGContext(data: nil, width: Int(bounds.width * scale), height: Int(bounds.height * scale), bitsPerComponent: 8,
@@ -81,5 +92,15 @@ enum Snapshots {
         let rep = NSBitmapImageRep(cgImage: image)
         try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent(name + ".png"))
         window.close()
+    }
+
+    /// `CGWindowListCreateImage`, looked up at run time: the SDK marks it unavailable from macOS 15, which this targets,
+    /// but it's still there, and nothing else pictures a window of this process without asking for permission.
+    private static func windowPicture(_ window: NSWindow) -> CGImage? {
+        typealias Create = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }
+        let create = unsafeBitCast(symbol, to: Create.self)
+        // .optionIncludingWindow, .boundsIgnoreFraming
+        return create(.null, 1 << 3, UInt32(window.windowNumber), 1 << 0)?.takeRetainedValue()
     }
 }

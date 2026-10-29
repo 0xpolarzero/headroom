@@ -1,84 +1,60 @@
 import SwiftUI
 
-// The pieces Settings and first-launch setup share, so each setting looks and works the same in both.
-// Each is one or more Form sections.
+// The sections Settings and first-launch setup share, so each setting looks and works the same in both. Each returns one
+// or more `PageSection`s for a page's column.
 
-/// Opening Headroom when the Mac starts.
-struct LoginSection: View {
+/// Opening Headroom when the Mac starts, as a row.
+struct LoginRow: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        Section {
-            LoginSwitch(model: model)
+        Row(icon: "power", title: "Open at login", detail: model.launchAtLoginError, detailColor: .orange) {
+            RowSwitch(label: "Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                .disabled(!AppModel.isBundled)
         }
     }
 }
 
-/// The open-at-login switch, for a form row or setup's own card.
-struct LoginSwitch: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        SettingSwitch(label: SettingLabel(icon: "power", title: "Open at login", detail: model.launchAtLoginError, detailColor: .orange),
-                      isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }), disabled: !AppModel.isBundled)
-    }
-}
-
-/// Every account, by provider, with its menu; then Add Account.
+/// The connected accounts, by provider, then (in setup) the plans not connected yet.
 struct AccountsSections: View {
     @Bindable var model: AppModel
-    /// Also lists the providers not connected yet, each with its own button: setup's more guided version.
+    /// Also lists the providers not connected yet, each with its own button.
     var listsOthers = false
-    @State private var adding = false
     @State private var connecting: ProviderID?
     @State private var renaming: AccountInfo?
     @State private var newName = ""
 
     var body: some View {
+        let others = ProviderID.allCases.filter { !model.connectedProviders.contains($0) }
         Group {
-            // One card, laid out here: a form gives every row a divider and a minimum height.
-            if !model.connectedProviders.isEmpty {
-                Section {
-                    VStack(alignment: .leading, spacing: 4) {
+            PageSection {
+                if model.connectedProviders.isEmpty {
+                    Caption("No accounts yet.").padding(.vertical, Design.rowPad)
+                } else {
+                    Nest {
                         ForEach(model.connectedProviders) { provider in
                             let accounts = model.accounts(provider)
-                            HStack(spacing: 4) {
-                                Text(provider.displayName).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                if accounts.count > 1 && model.showsAgents { InfoTip(footer(provider)) }
-                            }
-                            .padding(.top, provider == model.connectedProviders.first ? 0 : 10)
+                            NestLabel(text: provider.displayName, info: accounts.count > 1 && model.showsAgents ? footer(provider) : nil)
                             ForEach(Array(accounts.enumerated()), id: \.element.id) { index, info in
                                 row(info, index: index, count: accounts.count)
                             }
                         }
                     }
-                    .padding(.vertical, 4)
                 }
             }
-            let others = ProviderID.allCases.filter { !model.connectedProviders.contains($0) }
             if listsOthers && !others.isEmpty {
-                Section("Not connected") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(others) { provider in
-                            HStack(spacing: 10) {
-                                ProviderTile(id: provider)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(provider.displayName).fontWeight(.medium)
-                                    Caption(provider.planHint)
-                                }
-                                Spacer()
-                                Button(provider.signsInWithBrowser ? "Sign in…" : "Add key…") { model.connectStatus = .idle; connecting = provider }
-                            }
+                PageSection("Not connected") {
+                    ForEach(Array(others.enumerated()), id: \.element) { index, provider in
+                        if index > 0 { RowDivider() }
+                        Row(title: provider.displayName, detail: provider.planHint) {
+                            ProviderTile(id: provider)
+                        } control: {
+                            Button(provider.signsInWithBrowser ? "Sign in…" : "Add key…") { model.connectStatus = .idle; connecting = provider }
                         }
                     }
-                    .padding(.vertical, 4)
                 }
             }
-            if !listsOthers && model.connectedProviders.isEmpty {
-                Section { Caption("No accounts yet.") }
-            }
         }
-        .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
         .sheet(item: $connecting) { provider in AddAccountSheet(model: model, provider: provider) }
         .alert("Rename account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
@@ -98,7 +74,7 @@ struct AccountsSections: View {
     private func row(_ info: AccountInfo, index: Int, count: Int) -> some View {
         HStack(spacing: 10) {
             ProviderTile(id: info.account.provider)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(info.name).fontWeight(.medium)
                     if let plan = info.plan, plan != info.name { PlanChip(text: plan) }
@@ -106,16 +82,16 @@ struct AccountsSections: View {
                 if let problem = info.limits.problem {
                     // A rate limit clears by itself: grey, not orange. One line; the rest on hover.
                     Text(info.state.rateLimited ? "Busy, retrying soon" : problem)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(info.state.rateLimited ? .secondary : Color.orange)
                         .lineLimit(1)
                         .help(problem)
                 } else if let email = info.email {
-                    Text(email).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Text(email).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
-            Spacer()
             // The icon goes inside each choice, so the dropdown shows it right beside the value.
             Picker("Menu bar", selection: Binding(get: { info.account.menuBar }, set: { model.setMenuBar(info.id, $0) })) {
                 Label("Hidden", systemImage: "menubar.rectangle").tag(MenuBarMode?.none)
@@ -151,13 +127,14 @@ struct AccountsSections: View {
                     Button(info.account.isMain ? "Sign out" : "Remove", role: .destructive) { model.remove(info.account) }
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "ellipsis")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .help("More")
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
     }
 }
 
@@ -167,11 +144,13 @@ struct AgentsSwitchSection: View {
     @State private var version: String?
 
     var body: some View {
-        Section {
-            SettingSwitch(label: SettingLabel(icon: "sparkle", color: ProviderID.claude.brandColors[0], title: "Agents in Claude Code",
-                                              tip: "Subagents run on whichever Claude account has the most left, and your other plans become agents Claude can call. Adds Headroom's plugin to Claude Code.",
-                                              detail: model.claudeError ?? status, detailColor: model.claudeError == nil && version != "" ? .secondary : .orange),
-                          isOn: Binding(get: { model.agentsEnabled }, set: { model.setAgents($0) }), disabled: version == "")
+        PageSection {
+            Row(icon: "sparkle", color: ProviderID.claude.brandColors[0], title: "Agents in Claude Code",
+                info: "Subagents run on whichever Claude account has the most left, and your other plans become agents Claude can call. Adds Headroom's plugin to Claude Code.",
+                detail: model.claudeError ?? status, detailColor: model.claudeError == nil && version != "" ? .secondary : .orange) {
+                RowSwitch(label: "Agents in Claude Code", isOn: Binding(get: { model.agentsEnabled }, set: { model.setAgents($0) }))
+                    .disabled(version == "")
+            }
         }
         .task { version = await Task.detached { SubagentRunner.executable().map(SelfTest.version) ?? "" }.value }
     }
@@ -194,29 +173,28 @@ struct AgentsSections: View {
 
     var body: some View {
         Group {
-            Section {
-                SettingSwitch(label: SettingLabel(icon: "leaf.fill", color: .green, title: "Save Claude usage",
-                                                  tip: catalog.enabled.isEmpty ? "Add an agent first." : SaveClaudeToggle.about),
-                              isOn: Binding(get: { catalog.saveClaude }, set: { on in change { $0.saveClaude = on } }),
-                              disabled: catalog.enabled.isEmpty && !catalog.saveClaude)
-                HStack {
-                    SettingLabel(icon: "text.quote", title: "Prompt", detail: catalog.saveClaudeText == nil ? "Default" : "Custom")
-                    Spacer()
+            PageSection {
+                Row(icon: "leaf.fill", color: .green, title: "Save Claude usage",
+                    info: catalog.enabled.isEmpty ? "Add an agent first." : SaveClaudeToggle.about) {
+                    RowSwitch(label: "Save Claude usage", isOn: Binding(get: { catalog.saveClaude }, set: { on in change { $0.saveClaude = on } }))
+                        .disabled(catalog.enabled.isEmpty && !catalog.saveClaude)
+                }
+                RowDivider()
+                Row(icon: "text.quote", title: "Prompt", detail: catalog.saveClaudeText == nil ? "Default" : "Custom") {
                     Button("Edit…") { editingPrompt = true }
                 }
             }
             .sheet(isPresented: $editingPrompt) { SavingInstructionEditor(catalog: catalog) { catalog = AgentCatalog.load() } }
-            Section {
-                ForEach(catalog.agents) { agent in row(agent) }
-                if catalog.agents.isEmpty { Caption("No agents yet.") }
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            } header: {
-                HStack(spacing: 4) {
-                    Text("Your agents")
-                    InfoTip("Agents run on your other plans. Claude Code calls them as headroom:<name> and picks one by its description. Changes apply from the next prompt.")
-                    Spacer()
-                    Button("New agent…") { editing = AgentDefinition(name: "", description: "", provider: .codex, model: "") }
+            PageSection("Your agents",
+                        info: "Agents run on your other plans. Claude Code calls them as headroom:<name> and picks one by its description. Changes apply from the next prompt.") {
+                Button("New agent…") { editing = AgentDefinition(name: "", description: "", provider: .codex, model: "") }
+            } content: {
+                if catalog.agents.isEmpty {
+                    Caption("No agents yet.").padding(.vertical, Design.rowPad)
+                } else {
+                    Nest { ForEach(catalog.agents) { row($0) } }
                 }
+                if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.top, 6) }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentCatalogChanged)) { _ in catalog = AgentCatalog.load() }
@@ -231,34 +209,34 @@ struct AgentsSections: View {
 
     private func row(_ agent: AgentDefinition) -> some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(agent.name).fontWeight(.medium)
                     Text(agent.type).font(.caption.monospaced()).foregroundStyle(.tertiary)
                     InfoTip(agent.description)
                 }
-                AgentBadges(agent: agent).padding(.top, 2)
+                AgentBadges(agent: agent)
                 if let problem = model.agentProblem(agent.provider) {
-                    Text(problem).font(.caption).foregroundStyle(.orange)
+                    Text(problem).font(.callout).foregroundStyle(.orange)
                 }
             }
-            Spacer()
-            Toggle("", isOn: Binding(get: { agent.enabled }, set: { on in change { next in
+            .frame(maxWidth: .infinity, alignment: .leading)
+            RowSwitch(label: agent.name, isOn: Binding(get: { agent.enabled }, set: { on in change { next in
                 if let i = next.agents.firstIndex(where: { $0.id == agent.id }) { next.agents[i].enabled = on }
             } }))
-            .toggleStyle(.switch)
-            .labelsHidden()
             Menu {
                 Button("Edit…") { editing = agent }
                 Divider()
                 Button("Remove", role: .destructive) { change { $0.agents.removeAll { $0.id == agent.id } } }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "ellipsis")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .help("More")
         }
+        .padding(.vertical, 8)
     }
 
     /// Saves the list, which the plugin reads on the next prompt.
@@ -281,14 +259,11 @@ struct ClaudeAccountsSection: View {
 
     var body: some View {
         if model.agentsEnabled && model.accounts(.claude).count > 1 {
-            Section {
-                threshold("Use until the session has", \.sessionThreshold) { model.setThresholds(session: $0) }
-                threshold("Use until the week has", \.weeklyThreshold) { model.setThresholds(weekly: $0) }
-            } header: {
-                HStack(spacing: 4) {
-                    Text("Claude accounts")
-                    InfoTip("Subagents go to the account with the most left, and skip one with less left than this. A session never sends subagents to its own account.")
-                }
+            PageSection("Claude accounts",
+                        info: "Subagents go to the account with the most left, and skip one with less left than this. A session never sends subagents to its own account.") {
+                Row(icon: "clock", title: "Use until the session has") { threshold("Session", \.sessionThreshold) { model.setThresholds(session: $0) } }
+                RowDivider()
+                Row(icon: "calendar", title: "Use until the week has") { threshold("Week", \.weeklyThreshold) { model.setThresholds(weekly: $0) } }
             }
         }
     }
@@ -298,6 +273,8 @@ struct ClaudeAccountsSection: View {
             // Stored as the share used, shown as what's left.
             ForEach([0.5, 0.75, 0.9, 0.95], id: \.self) { Text("\(Int(((1 - $0) * 100).rounded()))% left").tag($0) }
         }
+        .labelsHidden()
+        .fixedSize()
     }
 }
 
@@ -313,29 +290,27 @@ struct SuggestedAgentsSection: View {
             !model.accounts(provider.usageID).isEmpty && model.agentProblem(provider) == nil
         }
         if !suggestions.isEmpty {
-            Section {
-                ForEach(suggestions) { agent in
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(agent.name).fontWeight(.medium)
-                                InfoTip(agent.description)
+            PageSection("Suggested for your plans", info: "Ready-made agents for the plans you connected. Edit or remove them any time in Settings.") {
+                Nest {
+                    ForEach(suggestions) { agent in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text(agent.name).fontWeight(.medium)
+                                    InfoTip(agent.description)
+                                }
+                                AgentBadges(agent: agent)
+                                if let problem = problems[agent.name] { Text(problem).font(.callout).foregroundStyle(.orange) }
                             }
-                            AgentBadges(agent: agent).padding(.top, 2)
-                            if let problem = problems[agent.name] { Text(problem).font(.caption).foregroundStyle(.orange) }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            if adding == agent.name {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button("Add") { Task { await add(agent) } }
+                            }
                         }
-                        Spacer()
-                        if adding == agent.name {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Button("Add") { Task { await add(agent) } }
-                        }
+                        .padding(.vertical, 8)
                     }
-                }
-            } header: {
-                HStack(spacing: 4) {
-                    Text("Suggested for your plans")
-                    InfoTip("Ready-made agents for the plans you connected. Edit or remove them any time in Settings.")
                 }
             }
         }
@@ -367,4 +342,6 @@ struct SuggestedAgentsSection: View {
 extension Notification.Name {
     /// The agents list changed outside the view showing it.
     static let agentCatalogChanged = Notification.Name("HeadroomAgentCatalogChanged")
+    /// Open the menu bar panel, to show where Headroom lives.
+    static let showPanel = Notification.Name("HeadroomShowPanel")
 }

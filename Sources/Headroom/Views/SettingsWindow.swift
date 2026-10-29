@@ -1,50 +1,53 @@
 import AppKit
 import SwiftUI
 
-/// Settings and first-launch setup, each in a window of its own: the panel only shows usage.
+/// Headroom's one window: Settings, or on first launch, setup in its place. The panel only shows usage.
 @MainActor
 enum WindowPresenter {
-    private static var windows: [String: NSWindow] = [:]
-    private static var closeObservers: [String: NSObjectProtocol] = [:]
+    private static var window: NSWindow?
+    private static var closeObserver: NSObjectProtocol?
+    static let size = NSSize(width: 780, height: 600)
 
     static func settings(_ model: AppModel, page: SettingsPage? = nil) {
         if let page { model.settingsPage = page }
-        show("settings", title: "Headroom Settings", size: NSSize(width: 720, height: 560)) { SettingsView(model: model) }
+        model.settingUp = false
+        show(model)
     }
 
     static func setup(_ model: AppModel) {
-        show("setup", title: "Welcome to Headroom", size: NSSize(width: 600, height: 560), resizable: false) { SetupView(model: model) }
+        model.settingUp = true
+        show(model)
     }
 
-    static func close(_ name: String) { windows[name]?.close() }
+    static func close() { window?.close() }
 
-    private static func show(_ name: String, title: String, size: NSSize, resizable: Bool = true, content: () -> some View) {
-        if let window = windows[name] {
+    private static func show(_ model: AppModel) {
+        if let window {
             bringForward(window)
             return
         }
-        var style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
-        if resizable { style.insert(.resizable) }
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: style, backing: .buffered, defer: false)
-        window.title = title
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.title = "Headroom"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
-        let host = NSHostingController(rootView: content())
+        let host = NSHostingController(rootView: MainWindowView(model: model))
         host.sizingOptions = []   // the window keeps its size; long pages scroll
         window.contentViewController = host
         window.setContentSize(size)
-        window.contentMinSize = NSSize(width: 600, height: 420)
+        window.contentMinSize = NSSize(width: 680, height: 460)
         window.center()
-        windows[name] = window
-        closeObservers[name] = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
-            MainActor.assumeIsolated { windowClosed(name) }
+        self.window = window
+        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
+            MainActor.assumeIsolated { windowClosed() }
         }
         bringForward(window)
     }
 
-    /// A menu bar app can't take the front by itself (macOS keeps it behind the active app), so while one
-    /// of its windows is open it acts as a regular app, with a Dock icon, and it comes forward.
+    /// A menu bar app can't take the front by itself (macOS keeps it behind the active app), so while its window is
+    /// open it acts as a regular app, with a Dock icon, and it comes forward.
     private static func bringForward(_ window: NSWindow) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -52,11 +55,30 @@ enum WindowPresenter {
         window.orderFrontRegardless()
     }
 
-    /// Back to the menu bar alone once its last window closes.
-    private static func windowClosed(_ name: String) {
-        if let observer = closeObservers.removeValue(forKey: name) { NotificationCenter.default.removeObserver(observer) }
-        windows[name] = nil
-        if windows.values.allSatisfy({ !$0.isVisible }) { NSApp.setActivationPolicy(.accessory) }
+    /// Back to the menu bar alone once the window closes.
+    private static func windowClosed() {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        closeObserver = nil
+        window = nil
+        NSApp.setActivationPolicy(.accessory)
+    }
+}
+
+/// Setup in the window's place on first launch, else Settings.
+struct MainWindowView: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Group {
+            if model.settingUp {
+                SetupView(model: model)
+            } else {
+                SettingsView(model: model)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .ignoresSafeArea(edges: .top)
     }
 }
 
@@ -85,104 +107,95 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .agents: "sparkle"
         }
     }
-
-    var tint: Color {
-        switch self {
-        case .accounts: .blue
-        case .agents: ProviderID.claude.brandColors[0]
-        }
-    }
 }
 
+/// Settings: an inset sidebar on glass, and the page beside it.
 struct SettingsView: View {
     @Bindable var model: AppModel
     @State private var adding = false
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(SettingsPage.allCases) { page in
-                    Button { model.settingsPage = page } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: page.icon)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 20, height: 20)
-                                .background(page.tint.gradient, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            Text(page.title)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(page == model.settingsPage ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer()
-                if model.needsRepair {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                            Text("Plugin problem").font(.callout.weight(.medium))
-                            InfoTip(model.claudeError ?? "")
-                        }
-                        Button("Repair") { model.repair() }
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .padding(.bottom, 8)
-                }
-                Menu {
-                    Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                        .disabled(!AppModel.isBundled)
-                } label: {
-                    Image(systemName: "ellipsis.circle").imageScale(.large).foregroundStyle(.secondary)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("More")
-                .padding(.horizontal, 8)
-                .padding(.bottom, 14)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 44)
-            .frame(width: 190)
-            .background(.quaternary.opacity(0.35))
-            Divider()
-            VStack(alignment: .leading, spacing: 0) {
-                // In line with the first sidebar item, which starts as far down.
-                HStack(spacing: 5) {
-                    Text(model.settingsPage.title).font(.title3.weight(.semibold))
-                    InfoTip(model.settingsPage.about)
-                    Spacer()
-                    if model.settingsPage == .accounts {
-                        Button("Add account…") { model.connectStatus = .idle; adding = true }
-                    }
-                }
-                .frame(height: 30)
-                .padding(.horizontal, 20)
-                .padding(.top, 44)
-                Group {
-                    switch model.settingsPage {
-                    case .accounts: Form { AccountsSections(model: model) }
-                    case .agents:
-                        Form {
-                            AgentsSwitchSection(model: model)
-                            if model.agentsEnabled {
-                                AgentsSections(model: model)
-                                ClaudeAccountsSection(model: model)
-                            }
-                        }
-                    }
-                }
-                .formStyle(.grouped)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            sidebar
+                .frame(width: Design.sidebarWidth)
+                .frame(maxHeight: .infinity)
+                .glassSurface(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(Design.sidebarInset)
+            page
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea(edges: .top)
         .sheet(isPresented: $adding) { AddAccountSheet(model: model) }
+    }
+
+    @ViewBuilder private var page: some View {
+        switch model.settingsPage {
+        case .accounts:
+            Page(title: "Accounts", info: SettingsPage.accounts.about) {
+                Button("Add account…") { model.connectStatus = .idle; adding = true }
+            } content: {
+                AccountsSections(model: model)
+            }
+        case .agents:
+            Page(title: "Agents", info: SettingsPage.agents.about) {
+                AgentsSwitchSection(model: model)
+                if model.agentsEnabled {
+                    AgentsSections(model: model)
+                    ClaudeAccountsSection(model: model)
+                }
+            }
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(SettingsPage.allCases) { page in
+                Button { model.settingsPage = page } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: page.icon)
+                            .font(.system(size: 13))
+                            .foregroundStyle(page == model.settingsPage ? Color.accentColor : .secondary)
+                            .frame(width: 18)
+                        Text(page.title)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .background(page == model.settingsPage ? Color.primary.opacity(0.08) : .clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+            if model.needsRepair {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        Text("Plugin problem").font(.callout.weight(.medium))
+                        InfoTip(model.claudeError ?? "")
+                    }
+                    Button("Repair") { model.repair() }.controlSize(.small)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            Menu {
+                Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                    .disabled(!AppModel.isBundled)
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 14)).foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+            .padding(.leading, 8)
+            .padding(.top, 4)
+        }
+        .padding(.horizontal, 8)
+        // Below the window's buttons, which sit on the sidebar.
+        .padding(.top, Design.titleBar - Design.sidebarInset)
+        .padding(.bottom, 10)
     }
 }
