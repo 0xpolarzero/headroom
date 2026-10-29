@@ -18,6 +18,10 @@
 </p>
 
 <p align="center">
+  <a href="docs/media/lastdrop.mp4"><img src="docs/images/video-poster.png" width="800" alt="Watch the lastdrop video: Claude Code sends a subagent to the Claude account with room and agents to Codex and Z.ai, while each account's water level drops"></a>
+</p>
+
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-limits-dark.png">
     <img src="docs/images/panel-limits-light.png" width="320" alt="The lastdrop panel: two Claude accounts, Codex, Antigravity, Z.ai and OpenRouter, each with what's left of its session and week">

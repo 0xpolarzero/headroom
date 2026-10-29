@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>lastdrop</title>
+<style>
+  :root {
+    --ink: #07121D; --night: #17324D; --water: #2B6FE6; --accent: #5A9BFF; --shallow: #8FD0FF;
+    --text: #EAF2FA; --dim: #8FA3B8; --faint: #5B6E82;
+    --sans: "SF Pro Display", -apple-system, "Helvetica Neue", sans-serif;
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--ink); }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; font-family: var(--sans); color: var(--text);
+    -webkit-font-smoothing: antialiased; }
+  .abs { position: absolute; }
+  #bg { inset: 0; background:
+      radial-gradient(1200px 800px at 18% 8%, rgba(43,111,230,.20), transparent 60%),
+      radial-gradient(900px 700px at 90% 95%, rgba(23,50,77,.9), transparent 70%),
+      linear-gradient(180deg, #0A1826 0%, #06101A 100%); }
+  #desk { inset: 0; opacity: 0; background:
+      radial-gradient(1100px 700px at 75% 20%, rgba(90,155,255,.35), transparent 60%),
+      radial-gradient(1000px 800px at 10% 90%, rgba(143,208,255,.18), transparent 60%),
+      linear-gradient(160deg, #142B45 0%, #0B1B2B 60%, #08131F 100%); }
+  /* Intro */
+  #intro { inset: 0; }
+  #mark { left: 0; top: 0; width: 220px; height: 220px; }
+  #word { font-size: 132px; font-weight: 600; letter-spacing: -0.045em; line-height: 1; white-space: nowrap; }
+  #tag { font-size: 34px; color: var(--dim); white-space: nowrap; }
+  /* Terminal */
+  #term { left: 140px; top: 200px; width: 1000px; height: 640px; border-radius: 20px; background: rgba(14,26,38,.92);
+    border: 1px solid rgba(255,255,255,.09); box-shadow: 0 40px 120px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05); overflow: hidden; }
+  #termbar { position: absolute; left: 0; right: 0; top: 0; height: 52px; border-bottom: 1px solid rgba(255,255,255,.06);
+    display: flex; align-items: center; padding: 0 20px; gap: 9px; }
+  .dot { width: 13px; height: 13px; border-radius: 50%; background: rgba(255,255,255,.14); }
+  #termtitle { margin-left: 14px; font-family: var(--mono); font-size: 16px; color: var(--faint); }
+  #save { position: absolute; right: 18px; top: 10px; height: 32px; border-radius: 16px; padding: 0 8px 0 14px; display: flex; align-items: center;
+    gap: 10px; font-size: 16px; font-weight: 500; color: var(--dim); background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); }
+  #saveSwitch { width: 38px; height: 22px; border-radius: 11px; background: rgba(255,255,255,.16); position: relative; }
+  #saveKnob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+  .line { position: absolute; left: 36px; font-family: var(--mono); font-size: 23px; white-space: nowrap; color: var(--text); }
+  .sub { position: absolute; left: 36px; font-family: var(--mono); font-size: 19px; white-space: nowrap; color: var(--dim); }
+  .bullet { color: var(--accent); }
+  .muted { color: var(--dim); }
+  .chip { position: absolute; right: 26px; height: 36px; border-radius: 18px; padding: 0 14px 0 10px; display: flex; align-items: center; gap: 8px;
+    font-size: 17px; font-weight: 600; color: var(--text); background: rgba(90,155,255,.12); border: 1px solid rgba(90,155,255,.35); white-space: nowrap; }
+  .chip svg { width: 18px; height: 18px; }
+  .chip span { color: var(--dim); font-weight: 500; }
+  /* Columns */
+  .col { position: absolute; width: 104px; }
+  .colname { position: absolute; left: -40px; width: 184px; text-align: center; font-size: 20px; font-weight: 600; }
+  .colpct { position: absolute; left: -40px; width: 184px; text-align: center; font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .colsub { position: absolute; left: -40px; width: 184px; text-align: center; font-size: 15px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+  /* Captions */
+  .cap { position: absolute; left: 0; width: 1920px; text-align: center; top: 902px; font-size: 44px; font-weight: 600; letter-spacing: -0.015em; }
+  .cap em { font-style: normal; color: var(--shallow); }
+  /* Menu bar */
+  #menubar { left: 0; top: 0; width: 1920px; height: 46px; background: rgba(20,28,38,.62); backdrop-filter: blur(30px);
+    border-bottom: 1px solid rgba(255,255,255,.06); display: flex; align-items: center; justify-content: flex-end; padding: 0 28px; gap: 26px;
+    font-size: 19px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .mbitem { display: flex; align-items: center; gap: 7px; }
+  .stack { display: flex; flex-direction: column; font-size: 11px; font-weight: 700; line-height: 11px; text-align: right; }
+  #glyphbox { padding: 4px 8px; border-radius: 7px; display: flex; align-items: center; gap: 12px; }
+  #panel { width: 480px; border-radius: 22px; overflow: hidden; box-shadow: 0 50px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08); }
+  #panel img { display: block; width: 480px; }
+  #cursor { width: 34px; height: 34px; }
+  #pitch { left: 170px; top: 430px; }
+  #pitch .h { font-size: 72px; font-weight: 600; letter-spacing: -0.035em; line-height: 1.04; }
+  #pitch .p { font-size: 30px; color: var(--dim); margin-top: 22px; }
+  /* End */
+  #endicon { width: 240px; height: 240px; }
+  #endword { width: 1920px; text-align: center; font-size: 120px; font-weight: 600; letter-spacing: -0.045em; }
+  #endtag { width: 1920px; text-align: center; font-size: 36px; color: var(--dim); }
+  #endurl { width: 1920px; text-align: center; font-size: 28px; font-weight: 500; color: var(--shallow); font-family: var(--mono); }
+  #endmeta { width: 1920px; text-align: center; font-size: 22px; color: var(--faint); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bg" class="abs"></div>
+  <div id="desk" class="abs"></div>
+
+  <!-- Intro -->
+  <div id="intro" class="abs">
+    <svg id="mark" class="abs" viewBox="0 0 100 100">
+      <defs>
+        <linearGradient id="gw" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8FD0FF"/><stop offset="1" stop-color="#2B6FE6"/></linearGradient>
+        <mask id="cut"><rect width="100" height="100" fill="#fff"/><path id="cutline" d="M22 59 C32 52 42 64 52 58 C62 52 70 62 80 56" fill="none" stroke="#000" stroke-width="5.5" stroke-linecap="round"/></mask>
+      </defs>
+      <path d="M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z" fill="url(#gw)" mask="url(#cut)"/>
+    </svg>
+    <div id="word" class="abs">lastdrop</div>
+    <div id="tag" class="abs">Every last drop out of your AI plans.</div>
+  </div>
+
+  <!-- Claude Code -->
+  <div id="term" class="abs">
+    <div id="termbar"><div class="dot"></div><div class="dot"></div><div class="dot"></div><div id="termtitle">claude · ~/billing</div>
+      <div id="save">Save Claude usage<div id="saveSwitch"><div id="saveKnob"></div></div></div>
+    </div>
+    <div id="l0" class="line" style="top: 84px"><span class="bullet">›</span> <span id="typed"></span><span id="caret" style="color: var(--accent)">▍</span></div>
+    <div id="l1" class="line" style="top: 150px"><span class="bullet">⏺</span> I'll map the billing code, then split the work.</div>
+    <div id="l2" class="line" style="top: 214px"><span class="bullet">⏺</span> Explore<span class="muted">(Map the billing module)</span></div>
+    <div id="c2" class="chip" style="top: 210px">__CLAUDE__Team</div>
+    <div id="s2" class="sub" style="top: 256px">  ⎿ Running on your Team account · <span id="n2">0</span> tool uses</div>
+    <div id="l3" class="line" style="top: 314px"><span class="bullet">⏺</span> lastdrop:sol<span class="muted">(Review the diff)</span></div>
+    <div id="c3" class="chip" style="top: 310px">__CODEX__Codex <span>gpt-6.1-sol</span></div>
+    <div id="s3" class="sub" style="top: 356px">  ⎿ Running on Codex · <span id="n3">0</span> tool uses</div>
+    <div id="l4" class="line" style="top: 414px"><span class="bullet">⏺</span> lastdrop:flash<span class="muted">(Write the tests)</span></div>
+    <div id="c4" class="chip" style="top: 410px">__ZAI__Z.ai <span>glm-5.3-flash</span></div>
+    <div id="s4" class="sub" style="top: 456px">  ⎿ Running on Z.ai · <span id="n4">0</span> tool uses</div>
+    <div id="l5" class="line" style="top: 530px"><span style="color: #4ADE80">✓</span> Billing is split into three modules. 42 tests pass.</div>
+  </div>
+
+  <div id="cols" class="abs" style="left: 0; top: 0; width: 1920px; height: 1080px">
+    <svg id="colsvg" width="1920" height="1080" style="position: absolute; left: 0; top: 0"></svg>
+    <div id="collabels"></div>
+  </div>
+  <svg id="streams" class="abs" width="1920" height="1080" style="left: 0; top: 0"></svg>
+
+  <div id="cap1" class="cap">Subagents run on whichever Claude account <em>has room</em>.</div>
+  <div id="cap2" class="cap">Your other plans become agents <em>Claude can call</em>.</div>
+  <div id="cap3" class="cap">Save Claude usage: Claude plans, <em>your other plans do the work</em>.</div>
+
+  <!-- Menu bar -->
+  <div id="menubar" class="abs">
+    <div id="glyphbox">
+      <svg width="22" height="22" viewBox="0 0 100 100"><defs><mask id="gm"><rect width="100" height="100" fill="#fff"/><path d="M22 59 C32 52 42 64 52 58 C62 52 70 62 80 56" fill="none" stroke="#000" stroke-width="9" stroke-linecap="round"/></mask></defs><path d="M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z" fill="#fff" mask="url(#gm)"/></svg>
+      <div class="mbitem">__CLAUDEW__<div class="stack"><span>19%</span><span>54%</span></div><div class="stack"><span>88%</span><span>77%</span></div></div>
+      <div class="mbitem">__CODEXW__<div class="stack"><span>66%</span><span>82%</span></div></div>
+      <div class="mbitem">__ZAIW__<span>79%</span></div>
+    </div>
+    <div>Wed 9:41</div>
+  </div>
+  <div id="panel" class="abs"><img src="panel.png" alt=""></div>
+  <svg id="cursor" class="abs" viewBox="0 0 32 32"><path d="M6 3 L6 25 L11.5 19.8 L15.2 28.2 L19 26.6 L15.4 18.4 L22.6 18.4 Z" fill="#fff" stroke="#000" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  <div id="pitch" class="abs"><div class="h">Every limit,<br>at a glance.</div><div class="p">Session, week and credits, for every account.</div></div>
+
+  <!-- End card -->
+  <img id="endicon" class="abs" src="icon.png" alt="">
+  <div id="endword" class="abs" style="left: 0">lastdrop</div>
+  <div id="endtag" class="abs" style="left: 0">Every last drop out of your AI plans.</div>
+  <div id="endurl" class="abs" style="left: 0">github.com/amontlabs/lastdrop</div>
+  <div id="endmeta" class="abs" style="left: 0">Free and open source · macOS 15 and later</div>
+</div>
+
+<script>
+const LOGOS = __LOGOS__;
+const $ = id => document.getElementById(id);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, p) => a + (b - a) * p;
+const outCubic = p => 1 - Math.pow(1 - p, 3);
+const inCubic = p => p * p * p;
+const inOutCubic = p => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+const outBack = (p, s = 1.6) => 1 + (s + 1) * Math.pow(p - 1, 3) + s * Math.pow(p - 1, 2);
+const outExpo = p => p === 1 ? 1 : 1 - Math.pow(2, -10 * p);
+/* fade window: in over [a, a+ia], out over [b-ob, b] */
+function win(t, a, b, ia = .5, ob = .45) { return Math.min(outCubic(seg(t, a, a + ia)), 1 - inCubic(seg(t, b - ob, b))); }
+function show(el, o, dy = 0, s = 1) { el.style.opacity = o; el.style.transform = `translate3d(0, ${dy}px, 0) scale(${s})`; }
+
+/* Columns: what's left of each account, as water. */
+const COLS = [
+  { key: 'claude', name: 'Max', sub: 'This session', x: 1250, from: .19, to: .19, low: true, inAt: 3.6 },
+  { key: 'claude', name: 'Team', sub: 'Next', x: 1400, from: .88, to: .79, drain: [6.0, 8.6], inAt: 3.7, next: true },
+  { key: 'codex', name: 'Codex', sub: 'Pro 200', x: 1550, from: .66, to: .57, drain: [9.2, 12.4], inAt: 8.5 },
+  { key: 'zai', name: 'Z.ai', sub: 'GLM Coding', x: 1700, from: .79, to: .69, drain: [9.8, 12.8], inAt: 8.65 },
+];
+const COL_TOP = 300, COL_H = 420, COL_W = 104;
+function logoSVG(key, size, fill) {
+  const l = LOGOS[key];
+  return `<svg width="${size}" height="${size}" viewBox="${l.viewBox}">${l.d.map(d => `<path d="${d}" fill="${fill}"/>`).join('')}</svg>`;
+}
+function buildCols() {
+  const svg = $('colsvg');
+  let defs = `<defs><linearGradient id="cw" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8FD0FF"/><stop offset="1" stop-color="#2B6FE6"/></linearGradient>
+    <linearGradient id="co" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFC27A"/><stop offset="1" stop-color="#F0872B"/></linearGradient>`;
+  let body = '';
+  COLS.forEach((c, i) => {
+    defs += `<clipPath id="clip${i}"><rect x="${c.x}" y="${COL_TOP}" width="${COL_W}" height="${COL_H}" rx="30"/></clipPath>`;
+    body += `<g id="col${i}"><rect x="${c.x}" y="${COL_TOP}" width="${COL_W}" height="${COL_H}" rx="30" fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.10)"/>
+      <path id="fill${i}" clip-path="url(#clip${i})" fill="url(#${c.low ? 'co' : 'cw'})"/></g>`;
+  });
+  svg.innerHTML = defs + '</defs>' + body;
+  const labels = $('collabels');
+  labels.innerHTML = COLS.map((c, i) => `<div id="lab${i}" class="col" style="left: ${c.x}px; top: 0">
+      <div style="position: absolute; left: ${COL_W / 2 - 20}px; top: 240px">${logoSVG(c.key, 40, '#EAF2FA')}</div>
+      <div id="pct${i}" class="colpct" style="top: 736px"></div>
+      <div class="colname" style="top: 780px">${c.name}</div>
+      <div class="colsub" style="top: 812px; color: ${c.next ? 'var(--accent)' : 'var(--faint)'}">${c.sub}</div></div>`).join('');
+}
+function level(c, t) { return c.drain ? lerp(c.from, c.to, inOutCubic(seg(t, c.drain[0], c.drain[1]))) : c.from; }
+function wavePath(c, i, t, lv) {
+  const y0 = COL_TOP + COL_H * (1 - lv);
+  let d = `M${c.x} ${COL_TOP + COL_H} L${c.x} ${y0}`;
+  for (let x = 0; x <= COL_W; x += 4) {
+    const y = y0 + Math.sin((x / COL_W) * Math.PI * 2 + t * 3.2 + i * 1.7) * 4 + Math.sin((x / COL_W) * Math.PI * 4 - t * 2.1) * 1.6;
+    d += ` L${c.x + x} ${y.toFixed(2)}`;
+  }
+  return d + ` L${c.x + COL_W} ${COL_TOP + COL_H} Z`;
+}
+
+/* Streams: from a row's chip to its account's column. */
+const STREAMS = [
+  { row: 210, col: 1, on: [5.8, 8.8] },
+  { row: 310, col: 2, on: [9.0, 12.8] },
+  { row: 410, col: 3, on: [9.6, 13.1] },
+];
+function buildStreams() {
+  const svg = $('streams');
+  svg.innerHTML = `<defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#5A9BFF"/><stop offset="1" stop-color="#8FD0FF"/></linearGradient></defs>` +
+    STREAMS.map((s, i) => {
+      // Over the columns like a pipe: out of the chip, up to its own lane above them, along it, and down into the column.
+      const x0 = 1142, y0 = 200 + s.row + 18, c = COLS[s.col], x1 = c.x + COL_W / 2, y1 = COL_TOP - 76, lane = 176 - i * 18;
+      const d = `M${x0} ${y0} C${x0 + 78} ${y0} ${x0 + 34} ${lane} ${x0 + 112} ${lane} L${x1 - 34} ${lane} C${x1 - 8} ${lane} ${x1} ${lane + 10} ${x1} ${y1}`;
+      return `<path id="sp${i}" d="${d}" fill="none" stroke="url(#sg)" stroke-width="3" stroke-linecap="round"/>
+        ${[0, 1, 2, 3].map(k => `<circle id="sd${i}_${k}" r="5.5" fill="#8FD0FF"/>`).join('')}`;
+    }).join('');
+}
+
+function render(t) {
+  /* Backgrounds */
+  const deskO = Math.min(outCubic(seg(t, 15.0, 15.7)), 1 - outCubic(seg(t, 20.3, 20.9)));
+  $('desk').style.opacity = deskO;
+
+  /* Intro: the drop falls, the level line cuts through, the name follows. */
+  const introO = 1 - inCubic(seg(t, 3.0, 3.45));
+  const fall = inCubic(seg(t, 0.15, 0.95));
+  const land = seg(t, 0.95, 1.35);
+  const squash = land > 0 ? Math.sin(land * Math.PI) * (1 - land) * 0.16 : 0;
+  const shift = inOutCubic(seg(t, 1.35, 2.0));
+  const markX = lerp(960 - 110, 600, shift), markY = lerp(-260, 400 - 110, fall);
+  const mark = $('mark');
+  mark.style.left = markX + 'px'; mark.style.top = markY + 'px';
+  mark.style.transform = `scale(${1 + squash}, ${1 - squash})`; mark.style.transformOrigin = '50% 85%';
+  const cut = $('cutline'); const len = 62;
+  cut.style.strokeDasharray = len; cut.style.strokeDashoffset = len * (1 - outCubic(seg(t, 1.05, 1.6)));
+  mark.style.opacity = introO;
+  const word = $('word'); const wp = outCubic(seg(t, 1.6, 2.25));
+  word.style.left = (600 + 182) + 'px'; word.style.top = (400 - 66) + 'px';
+  word.style.clipPath = `inset(-20% ${100 - wp * 100}% -20% 0)`; word.style.opacity = introO;
+  word.style.transform = `translateX(${(1 - wp) * -24}px)`;
+  const tag = $('tag'); const tp = outCubic(seg(t, 2.15, 2.7));
+  tag.style.left = (600 + 188) + 'px'; tag.style.top = (400 + 88) + 'px';
+  tag.style.opacity = tp * introO; tag.style.transform = `translateY(${(1 - tp) * 14}px)`;
+
+  /* Claude Code */
+  const termIn = outCubic(seg(t, 3.35, 4.0)), termOut = inCubic(seg(t, 14.7, 15.25));
+  show($('term'), termIn * (1 - termOut), (1 - termIn) * 40 - termOut * 20, 1 - termOut * 0.03);
+  const prompt = 'Refactor the billing module and add tests';
+  const typed = Math.floor(prompt.length * seg(t, 4.0, 5.1));
+  $('typed').textContent = prompt.slice(0, typed);
+  $('caret').style.opacity = (t < 5.4 && Math.floor(t * 2.4) % 2 === 0) || (t >= 4.0 && t < 5.1) ? 1 : 0;
+  const rowIn = (id, at) => { const p = outCubic(seg(t, at, at + .4)); show($(id), p, (1 - p) * 10); };
+  rowIn('l1', 5.3); rowIn('l2', 5.7); rowIn('c2', 5.85); rowIn('s2', 6.1);
+  rowIn('l3', 9.0); rowIn('c3', 9.15); rowIn('s3', 9.35);
+  rowIn('l4', 9.6); rowIn('c4', 9.75); rowIn('s4', 9.95);
+  rowIn('l5', 13.3);
+  const count = (id, a, b, n) => $(id).textContent = Math.round(n * seg(t, a, b));
+  count('n2', 6.1, 8.6, 14); count('n3', 9.35, 12.4, 9); count('n4', 9.95, 12.8, 17);
+  const sv = outCubic(seg(t, 12.2, 12.55));
+  $('saveKnob').style.transform = `translateX(${sv * 16}px)`;
+  $('saveSwitch').style.background = `rgba(${lerp(255, 90, sv)}, ${lerp(255, 155, sv)}, 255, ${lerp(.16, 1, sv)})`;
+  $('save').style.color = sv > .5 ? '#EAF2FA' : '#8FA3B8';
+  $('save').style.boxShadow = `0 0 ${sv * 30 * (1 - seg(t, 12.6, 13.6))}px rgba(90,155,255,.6)`;
+
+  /* Columns */
+  const colsOut = inCubic(seg(t, 14.7, 15.2));
+  COLS.forEach((c, i) => {
+    const p = outBack(seg(t, c.inAt, c.inAt + .55), 1.2), o = clamp(seg(t, c.inAt, c.inAt + .35)) * (1 - colsOut);
+    const g = $('col' + i); g.style.opacity = o; g.style.transform = `translateY(${(1 - p) * 40}px)`;
+    const lab = $('lab' + i); lab.style.opacity = o; lab.style.transform = `translateY(${(1 - p) * 40}px)`;
+    const lv = level(c, t);
+    $('fill' + i).setAttribute('d', wavePath(c, i, t, lv * clamp(seg(t, c.inAt + .1, c.inAt + .9) * 1.0 + 0)));
+    $('pct' + i).textContent = Math.round(lv * 100 * outCubic(seg(t, c.inAt + .1, c.inAt + .9))) + '%';
+    $('pct' + i).style.color = c.low ? '#FFB25A' : '#EAF2FA';
+  });
+
+  /* Streams */
+  STREAMS.forEach((s, i) => {
+    const path = $('sp' + i), L = path.getTotalLength();
+    const draw = outCubic(seg(t, s.on[0], s.on[0] + .5)), fade = 1 - seg(t, s.on[1] - .4, s.on[1]);
+    path.style.strokeDasharray = L; path.style.strokeDashoffset = L * (1 - draw); path.style.opacity = .55 * fade;
+    for (let k = 0; k < 4; k++) {
+      const dot = $(`sd${i}_${k}`);
+      const active = t > s.on[0] + .3 && t < s.on[1];
+      const q = ((t - s.on[0]) * .55 + k / 4) % 1;
+      const pt = path.getPointAtLength(L * q);
+      dot.setAttribute('cx', pt.x); dot.setAttribute('cy', pt.y);
+      dot.style.opacity = active ? Math.sin(q * Math.PI) * fade : 0;
+    }
+  });
+
+  /* Captions */
+  const cap = (id, a, b) => { const o = win(t, a, b, .45, .4); show($(id), o, (1 - outCubic(seg(t, a, a + .45))) * 16); };
+  cap('cap1', 5.9, 8.7); cap('cap2', 9.0, 12.0); cap('cap3', 12.2, 14.9);
+
+  /* Menu bar */
+  const mb = outCubic(seg(t, 15.3, 15.8)) * (1 - inCubic(seg(t, 20.3, 20.8)));
+  show($('menubar'), mb, (1 - outCubic(seg(t, 15.3, 15.8))) * -46);
+  const box = $('glyphbox');
+  const click = t > 16.75;
+  box.style.background = click ? 'rgba(255,255,255,.16)' : 'transparent';
+  /* Cursor travels to the drop and clicks. */
+  const cur = $('cursor'); const cm = inOutCubic(seg(t, 15.8, 16.65));
+  const gx = 1920 - 28 - 132 - 26 - (box.getBoundingClientRect().width) + 14, gy = 14;
+  cur.style.left = lerp(1180, gx, cm) + 'px'; cur.style.top = lerp(620, gy, cm) + 'px';
+  const press = Math.sin(seg(t, 16.65, 16.9) * Math.PI);
+  cur.style.transform = `scale(${1 - press * .18})`; cur.style.transformOrigin = '20% 10%';
+  cur.style.opacity = mb * (1 - seg(t, 17.6, 18.0));
+  /* The panel drops open under the drop. */
+  const pn = $('panel'); const po = outBack(seg(t, 16.85, 17.45), 1.05), pa = clamp(seg(t, 16.85, 17.15));
+  const pr = box.getBoundingClientRect();
+  pn.style.left = Math.min(1920 - 480 - 30, pr.left + pr.width / 2 - 240) + 'px'; pn.style.top = '58px';
+  pn.style.opacity = pa * (1 - inCubic(seg(t, 20.25, 20.7)));
+  pn.style.transform = `translateY(${(1 - po) * -24}px) scale(${lerp(.94, 1, po)})`; pn.style.transformOrigin = '50% 0%';
+  const pi = outCubic(seg(t, 17.3, 17.9)); show($('pitch'), pi * (1 - inCubic(seg(t, 20.2, 20.65))), (1 - pi) * 24);
+
+  /* End card */
+  const ic = outBack(seg(t, 20.85, 21.45), 1.4), ia = clamp(seg(t, 20.85, 21.1));
+  const end = 1 - inCubic(seg(t, 24.55, 25.0));
+  const icon = $('endicon'); icon.style.left = (960 - 120) + 'px'; icon.style.top = '210px';
+  icon.style.opacity = ia * end; icon.style.transform = `scale(${lerp(.55, 1, ic)})`;
+  const ew = outCubic(seg(t, 21.25, 21.75)); show($('endword'), ew * end, (1 - ew) * 18); $('endword').style.top = '478px';
+  const et = outCubic(seg(t, 21.6, 22.1)); show($('endtag'), et * end, (1 - et) * 14); $('endtag').style.top = '628px';
+  const eu = outCubic(seg(t, 22.0, 22.5)); show($('endurl'), eu * end, (1 - eu) * 12); $('endurl').style.top = '730px';
+  const em = outCubic(seg(t, 22.2, 22.7)); show($('endmeta'), em * end, (1 - em) * 10); $('endmeta').style.top = '786px';
+}
+buildCols(); buildStreams();
+window.render = render;
+window.DURATION = 25;
+render(0);
+</script>
+</body>
+</html>
