@@ -24,7 +24,7 @@ enum Snapshots {
             await capture(PanelView(model: model), nil, to: folder, "panel-limits")
             model.panelTab = .agents
             await capture(PanelView(model: model), nil, to: folder, "panel-agents")
-            for step in [SetupView.Step.features, .accounts, .claudeCode, .menuBar] {
+            for step in SetupView.Step.allCases {
                 await capture(SetupView(model: model, step: step), NSSize(width: 600, height: 560), titled: "", to: folder, "setup-\(step.rawValue)")
             }
             let waiting = ConnectProvider(model: model, provider: .claude, back: {}, done: {}).frame(width: 440)
@@ -41,6 +41,7 @@ enum Snapshots {
 
     private static func capture(_ view: some View, _ size: NSSize?, titled title: String? = nil, to folder: URL, _ name: String) async {
         let host = NSHostingController(rootView: view)
+        if size != nil { host.sizingOptions = [] }
         var style: NSWindow.StyleMask = title == nil ? [.borderless] : [.titled, .closable, .miniaturizable, .fullSizeContentView]
         if title != nil { style.insert(.resizable) }
         let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 400, height: 400), styleMask: style, backing: .buffered, defer: false)

@@ -30,7 +30,9 @@ enum WindowPresenter {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
-        window.contentViewController = NSHostingController(rootView: content())
+        let host = NSHostingController(rootView: content())
+        host.sizingOptions = []   // the window keeps its size; long pages scroll
+        window.contentViewController = host
         window.setContentSize(size)
         window.contentMinSize = NSSize(width: 600, height: 420)
         window.center()
@@ -41,33 +43,35 @@ enum WindowPresenter {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, accounts, limits, claudeCode
+    case accounts, agents
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .general: "General"
         case .accounts: "Accounts"
-        case .limits: "Limits"
-        case .claudeCode: "Claude Code"
+        case .agents: "Agents"
+        }
+    }
+
+    /// Under the title: what the page is about.
+    var subtitle: String {
+        switch self {
+        case .accounts: "Your plans, what each shows in the menu bar, and when it notifies you."
+        case .agents: "In Claude Code: subagents on your other Claude accounts, and agents on your other plans."
         }
     }
 
     var icon: String {
         switch self {
-        case .general: "gearshape"
         case .accounts: "person.2"
-        case .limits: "gauge.with.dots.needle.50percent"
-        case .claudeCode: "sparkle"
+        case .agents: "sparkle"
         }
     }
 
     var tint: Color {
         switch self {
-        case .general: .gray
         case .accounts: .blue
-        case .limits: .green
-        case .claudeCode: ProviderID.claude.brandColors[0]
+        case .agents: ProviderID.claude.brandColors[0]
         }
     }
 }
@@ -78,7 +82,7 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(pages) { page in
+                ForEach(SettingsPage.allCases) { page in
                     Button { model.settingsPage = page } label: {
                         HStack(spacing: 8) {
                             Image(systemName: page.icon)
@@ -91,12 +95,24 @@ struct SettingsView: View {
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
-                        .background(page == current ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .background(page == model.settingsPage ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
                 Spacer()
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                        .toggleStyle(.checkbox)
+                        .disabled(!AppModel.isBundled)
+                    if let error = model.launchAtLoginError { Caption(error) }
+                    Button("Run Setup Again…") { WindowPresenter.close("settings"); WindowPresenter.setup(model) }
+                        .buttonStyle(.link)
+                        .help("Walks through accounts and agents again, and reinstalls the plugin if agents are on.")
+                }
+                .font(.callout)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 14)
             }
             .padding(.horizontal, 10)
             .padding(.top, 44)
@@ -104,13 +120,23 @@ struct SettingsView: View {
             .background(.quaternary.opacity(0.35))
             Divider()
             VStack(alignment: .leading, spacing: 0) {
-                Text(current.title).font(.title3.weight(.semibold)).padding(.leading, 20).padding(.top, 14).frame(height: 44, alignment: .bottom)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.settingsPage.title).font(.title3.weight(.semibold))
+                    Caption(model.settingsPage.subtitle)
+                }
+                .padding(.leading, 20)
+                .padding(.top, 18)
                 Group {
-                    switch current {
-                    case .general: GeneralPage(model: model)
-                    case .accounts: AccountsPage(model: model)
-                    case .limits: LimitsPage(model: model)
-                    case .claudeCode: ClaudeCodePage(model: model)
+                    switch model.settingsPage {
+                    case .accounts: Form { AccountsSections(model: model) }
+                    case .agents:
+                        Form {
+                            AgentsSwitchSection(model: model)
+                            if model.agentsEnabled {
+                                AgentsSections(model: model)
+                                ClaudeAccountsSection(model: model)
+                            }
+                        }
                     }
                 }
                 .formStyle(.grouped)
@@ -118,62 +144,5 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .ignoresSafeArea(edges: .top)
-    }
-
-    private var current: SettingsPage { pages.contains(model.settingsPage) ? model.settingsPage : .general }
-
-    /// Only the pages of the features that are on.
-    private var pages: [SettingsPage] {
-        SettingsPage.allCases.filter { page in
-            switch page {
-            case .limits: model.showsLimits
-            case .claudeCode: model.showsAgents
-            case .general, .accounts: true
-            }
-        }
-    }
-}
-
-// MARK: Pages
-
-private struct GeneralPage: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        Form {
-            FeaturesSection(model: model)
-            StartupSection(model: model)
-            Section {
-                Button("Run Setup Again…") { WindowPresenter.close("settings"); WindowPresenter.setup(model) }
-            }
-        }
-    }
-}
-
-private struct AccountsPage: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        Form { AccountsSections(model: model) }
-    }
-}
-
-private struct LimitsPage: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        Form { MenuBarSection(model: model) }
-    }
-}
-
-private struct ClaudeCodePage: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        Form {
-            PluginSection(model: model)
-            AgentsSections(model: model)
-            ClaudeAccountsSection(model: model)
-        }
     }
 }

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// What the panel shows while both features are on.
+/// What the panel shows while agents are on.
 enum PanelTab: String, CaseIterable {
     case limits = "Limits"
     case agents = "Agents"
@@ -12,7 +12,7 @@ struct PanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.showsLimits && model.showsAgents {
+            if model.showsAgents {
                 Picker("Show", selection: $model.panelTab) {
                     ForEach(PanelTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
@@ -40,7 +40,7 @@ struct PanelView: View {
     }
 
     private var tab: PanelTab {
-        model.showsLimits && model.showsAgents ? model.panelTab : model.showsLimits ? .limits : .agents
+        model.showsAgents ? model.panelTab : .limits
     }
 
     private var footer: some View {

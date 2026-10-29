@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// First launch: the same sections as Settings, one step at a time, each with a word on what it's for.
+/// First launch: the two Settings pages, one at a time, each with a word on what it's for.
 struct SetupView: View {
     @Bindable var model: AppModel
     @State private var step: Step
 
-    enum Step: Int { case features, accounts, claudeCode, menuBar }
+    enum Step: Int, CaseIterable { case accounts, agents }
 
-    init(model: AppModel, step: Step = .features) {
+    init(model: AppModel, step: Step = .accounts) {
         self.model = model
         _step = State(initialValue: step)
     }
@@ -24,7 +24,7 @@ struct SetupView: View {
         if existing { defaults.set(true, forKey: doneKey) } else { WindowPresenter.setup(model) }
     }
 
-    private var steps: [Step] { [.features, .accounts] + (model.showsAgents ? [.claudeCode] : []) + (model.showsLimits ? [.menuBar] : []) }
+    private var steps: [Step] { Step.allCases }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -36,14 +36,10 @@ struct SetupView: View {
             .padding(.top, 36)
             Form {
                 switch step {
-                case .features: FeaturesSection(model: model)
                 case .accounts: AccountsSections(model: model, listsOthers: true)
-                case .claudeCode:
-                    PluginSection(model: model)
-                    AgentsSections(model: model)
-                case .menuBar:
-                    MenuBarSection(model: model)
-                    StartupSection(model: model)
+                case .agents:
+                    AgentsSwitchSection(model: model)
+                    if model.agentsEnabled { AgentsSections(model: model) }
                 }
             }
             .formStyle(.grouped)
@@ -54,39 +50,31 @@ struct SetupView: View {
                     ForEach(steps, id: \.self) { Circle().fill($0 == step ? Color.primary : Color.secondary.opacity(0.35)).frame(width: 6, height: 6) }
                 }
                 Spacer()
-                if step != .features { Button("Back") { move(-1) } }
+                if step != .accounts { Button("Back") { move(-1) } }
                 Button(step == steps.last ? "Done" : "Continue") { move(1) }.keyboardShortcut(.defaultAction)
             }
             .padding(16)
         }
         .frame(width: 600, height: 560)
-        .task(id: step) {
-            // Agents need the plugin: install it as the step opens, so the step shows it working.
-            if step == .claudeCode, !model.subagentsInstalled, model.claudeError == nil { model.setFeature(.agents, true) }
-        }
     }
 
     private var title: String {
         switch step {
-        case .features: "Welcome to Headroom"
-        case .accounts: "Connect your accounts"
-        case .claudeCode: "Set up Claude Code"
-        case .menuBar: "Headroom is in your menu bar"
+        case .accounts: "Welcome to Headroom"
+        case .agents: "Agents"
         }
     }
 
     private var detail: String {
         switch step {
-        case .features: "Choose what you want Headroom to do. You can change this any time in Settings."
-        case .accounts: "Logins already on this Mac are listed. Add the other plans you pay for, or a second account of one you have."
-        case .claudeCode: "Headroom's plugin lets Claude Code run subagents on your other accounts. Add agents to hand work to your other plans."
-        case .menuBar: "Click it to see every limit. On a Mac with a notch, macOS hides menu bar items that don't fit: ⌘-drag other items away if you can't find it."
+        case .accounts: "Headroom shows what's left of your AI plans. Logins on this Mac are already listed; add the others. Click its icon in the menu bar for every limit, or pick numbers to show there for each account."
+        case .agents: "Optional: more out of your plans in Claude Code. You can change this any time in Settings → Agents."
         }
     }
 
     private func move(_ offset: Int) {
         let steps = self.steps
-        guard let i = steps.firstIndex(of: step) else { step = .features; return }
+        guard let i = steps.firstIndex(of: step) else { step = .accounts; return }
         if i + offset >= steps.count {
             model.defaults.set(true, forKey: Self.doneKey)
             WindowPresenter.close("setup")

@@ -125,7 +125,11 @@ extension AccountsConfig {
         var claude = claude
         claude.normalize()
         let at = accounts.firstIndex { $0.provider == .claude } ?? 0
-        let pool = claude.ordered.map { Account(provider: .claude, key: $0.id, addedAt: $0.isMain ? .distantPast : $0.addedAt) }
+        // Keep what the list doesn't carry (name, menu bar, notifications) for the accounts that stay.
+        let pool = claude.ordered.map { claudeAccount in
+            accounts.first { $0.provider == .claude && $0.key == claudeAccount.id }
+                ?? Account(provider: .claude, key: claudeAccount.id, addedAt: claudeAccount.isMain ? .distantPast : claudeAccount.addedAt)
+        }
         accounts.removeAll { $0.provider == .claude }
         accounts.insert(contentsOf: pool, at: min(at, accounts.count))
         sessionThreshold = claude.sessionThreshold

@@ -3,55 +3,6 @@ import SwiftUI
 // The pieces Settings and first-launch setup share, so each setting looks and works the same in both.
 // Each is one or more Form sections.
 
-/// The two features, each a switch.
-struct FeaturesSection: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        Section {
-            Toggle(isOn: feature(.limits)) {
-                Label {
-                    Text("Limits in the menu bar")
-                    Text("What's left of every plan's session and weekly limits.")
-                } icon: {
-                    Image(systemName: "gauge.with.dots.needle.50percent").foregroundStyle(.green)
-                }
-            }
-            Toggle(isOn: feature(.agents)) {
-                Label {
-                    Text("Agents in Claude Code")
-                    Text("Subagents run on whichever Claude account has room, and your other plans become agents Claude can call. Installs Headroom's plugin for Claude Code.")
-                } icon: {
-                    Image(systemName: "sparkle").foregroundStyle(ProviderID.claude.brandColors[0])
-                }
-            }
-            if let error = model.claudeError { Text(error).foregroundStyle(.red).font(.caption) }
-        } footer: {
-            Caption("At least one stays on.")
-        }
-    }
-
-    private func feature(_ feature: Feature) -> Binding<Bool> {
-        Binding(get: { model.features.contains(feature) }, set: { model.setFeature(feature, $0) })
-    }
-}
-
-/// Opening at login and limit notifications.
-struct StartupSection: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        Section {
-            Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                .disabled(!AppModel.isBundled)
-            if let error = model.launchAtLoginError { Caption(error) }
-            if model.showsLimits { Toggle("Notify when a limit is reached", isOn: $model.notificationsOn) }
-        } footer: {
-            if model.showsLimits { Caption("One notification when a session or weekly limit reaches 100%.") }
-        }
-    }
-}
-
 /// Every account, by provider, with its menu; then Add Account.
 struct AccountsSections: View {
     @Bindable var model: AppModel
@@ -130,10 +81,37 @@ struct AccountsSections: View {
                 if let problem = info.limits.problem {
                     Text(problem).font(.caption).foregroundStyle(.orange).lineLimit(2)
                 } else if let email = info.email {
-                    Caption(email)
+                    Text(email).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
+            .layoutPriority(1)
             Spacer()
+            HStack(spacing: 4) {
+                Image(systemName: "menubar.rectangle").foregroundStyle(.secondary)
+                Picker("Menu bar", selection: Binding(get: { info.account.menuBar }, set: { model.setMenuBar(info.id, $0) })) {
+                    Text("Not shown").tag(MenuBarMode?.none)
+                    Divider()
+                    if info.account.provider == .openrouter {
+                        Text("Credits").tag(MenuBarMode?.some(.session))
+                    } else {
+                        ForEach(MenuBarMode.allCases) { Text($0 == .both ? "Session and Weekly" : $0.title).tag(MenuBarMode?.some($0)) }
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            .help("What this account shows in the menu bar")
+            HStack(spacing: 4) {
+                Image(systemName: info.account.notifyAt == nil ? "bell.slash" : "bell").foregroundStyle(.secondary)
+                Picker("Notify", selection: Binding(get: { info.account.notifyAt }, set: { model.setNotify(info.id, $0) })) {
+                    Text("Off").tag(Double?.none)
+                    Divider()
+                    ForEach(Account.notifyChoices, id: \.self) { Text("At \(Int($0 * 100))%").tag(Double?.some($0)) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            .help("Notify when its session or weekly limit reaches this much used")
             Menu {
                 Button("Rename…") { newName = info.name; renaming = info }
                 if count > 1 {
@@ -158,85 +136,46 @@ struct AccountsSections: View {
     }
 }
 
-/// What each provider shows in the menu bar: Session, Weekly, both, or nothing.
-struct MenuBarSection: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        Section {
-            ForEach(model.connectedProviders) { provider in
-                Picker(selection: choice(provider)) {
-                    if provider == .openrouter {
-                        Text("Credits").tag("shown")
-                    } else {
-                        ForEach(MenuBarMode.allCases) { Text($0 == .both ? "Session and Weekly" : $0.title).tag($0.rawValue) }
-                    }
-                    Divider()
-                    Text("Hidden").tag("hidden")
-                } label: {
-                    HStack(spacing: 8) {
-                        ProviderLogo(id: provider, size: 14)
-                        Text(provider.displayName)
-                    }
-                }
-            }
-        } header: {
-            Text("Menu bar")
-        } footer: {
-            Caption("On a Mac with a notch, Headroom shows Session alone, then fewer providers, then a gauge, when there isn't room for everything.")
-        }
-    }
-
-    private func choice(_ provider: ProviderID) -> Binding<String> {
-        Binding(get: {
-            model.showsInMenuBar(provider) ? (provider == .openrouter ? "shown" : model.menuBarMode(for: provider).rawValue) : "hidden"
-        }, set: { value in
-            model.setShowsInMenuBar(provider, value != "hidden")
-            if let mode = MenuBarMode(rawValue: value) { model.setMenuBarMode(provider, mode) }
-        })
-    }
-}
-
-/// Whether Headroom's plugin is in Claude Code.
-struct PluginSection: View {
+/// The switch for agents in Claude Code, and whether Headroom's plugin is there.
+struct AgentsSwitchSection: View {
     @Bindable var model: AppModel
     @State private var version: String?
 
     var body: some View {
         Section {
-            HStack(spacing: 10) {
-                if model.subagentsInstalled {
-                    Image(systemName: "checkmark.circle.fill").font(.title2).foregroundStyle(.green)
-                } else if version == "" {
-                    Image(systemName: "exclamationmark.triangle.fill").font(.title2).foregroundStyle(.orange)
-                } else {
-                    ProgressView().controlSize(.small).frame(width: 24)
+            Toggle(isOn: Binding(get: { model.agentsEnabled }, set: { model.setAgents($0) })) {
+                Label {
+                    Text("Agents in Claude Code")
+                    Text("Subagents run on whichever Claude account has room, and your other plans become agents Claude can call.")
+                } icon: {
+                    Image(systemName: "sparkle").foregroundStyle(ProviderID.claude.brandColors[0])
                 }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).fontWeight(.medium)
-                    Caption(detail)
-                }
-                Spacer()
-                if !model.subagentsInstalled && version != "" { Button("Install") { model.setFeature(.agents, true) } }
+            }
+            .disabled(version == "")
+            HStack(spacing: 6) {
+                Image(systemName: icon.name).foregroundStyle(icon.color)
+                Caption(status)
             }
             if let error = model.claudeError { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .task { version = await Task.detached { SubagentRunner.executable().map(SelfTest.version) ?? "" }.value }
     }
 
-    private var title: String {
-        if model.subagentsInstalled { return "Connected to Claude Code" }
-        return version == "" ? "Claude Code isn't installed" : "Headroom's plugin isn't installed"
+    private var icon: (name: String, color: Color) {
+        if version == "" { return ("exclamationmark.triangle.fill", .orange) }
+        return model.subagentsInstalled ? ("checkmark.circle.fill", .green) : ("circle", .secondary)
     }
 
-    private var detail: String {
-        if version == "" { return "Install Claude Code, then come back here." }
-        guard model.subagentsInstalled else { return "It's added to ~/.claude/settings.json for all your sessions, and removed when you turn agents off." }
-        let version = self.version ?? ""
+    private var status: String {
+        guard let version else { return "Looking for Claude Code…" }
+        if version.isEmpty { return "Claude Code isn't installed. Install it, then come back here." }
+        let claude = version.replacingOccurrences(of: " (Claude Code)", with: "")
+        guard model.subagentsInstalled else {
+            return "Claude Code \(claude). Turning this on adds Headroom's plugin to ~/.claude/settings.json for all your sessions."
+        }
         let tested = (try? Data(contentsOf: HeadroomPaths.selfTest)).flatMap { try? JSONDecoder.headroom.decode(SelfTest.Record.self, from: $0) }
-        let claude = version.isEmpty ? "Claude Code" : version.replacingOccurrences(of: " (Claude Code)", with: "")
         let test = tested.map { $0.version == version ? " · test passed \(Format.clock($0.at))" : "" } ?? ""
-        return "Plugin installed · \(claude)\(test)"
+        return "Plugin installed in Claude Code \(claude)\(test)"
     }
 }
 
@@ -329,7 +268,7 @@ struct ClaudeAccountsSection: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        if model.accounts(.claude).count > 1 {
+        if model.agentsEnabled && model.accounts(.claude).count > 1 {
             Section {
                 threshold("Use until its session is", \.sessionThreshold) { model.setThresholds(session: $0) }
                 threshold("Use until its week is", \.weeklyThreshold) { model.setThresholds(weekly: $0) }

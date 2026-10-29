@@ -108,7 +108,7 @@ extension AppModel {
     func displayName(_ account: Account, plan: String?) -> String {
         if let name = account.name { return name }
         if account.provider == .claude, let first = plan?.split(separator: " ").first { return String(first) }
-        return account.isMain ? (plan ?? "Main") : (plan ?? account.key)
+        return plan ?? (account.isMain ? account.provider.displayName : account.key)
     }
 
     private func limitsCapability(_ s: ProviderState, connected: Bool?) -> Capability {

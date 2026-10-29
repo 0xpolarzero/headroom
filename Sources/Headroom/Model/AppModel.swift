@@ -27,7 +27,7 @@ struct ProviderState: Sendable {
 }
 
 /// Which window the menu bar items show.
-enum MenuBarMode: String, CaseIterable, Identifiable {
+enum MenuBarMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case session, weekly, both
     var id: String { rawValue }
     var title: String {
@@ -52,34 +52,16 @@ final class AppModel {
 
     /// Each account's latest usage, by `Account.id`.
     private(set) var states: [String: ProviderState] = [:]
-    /// What Headroom does; see `Feature`.
-    private(set) var features: Set<Feature> {
-        didSet { defaults.set(features.map(\.rawValue).sorted(), forKey: "features") }
+    /// Agents in Claude Code: Headroom's plugin, subagents on other Claude accounts, and `headroom:` agents.
+    /// Follows whether the plugin is installed.
+    private(set) var agentsEnabled: Bool {
+        didSet { defaults.set(agentsEnabled, forKey: "agentsEnabled") }
     }
-    /// The panel's tab while both features are on.
+    /// The panel's tab while agents are on.
     var panelTab = PanelTab.limits
     var settingsPage = SettingsPage.accounts
     var order: [ProviderID] {
         didSet { defaults.set(order.map(\.rawValue), forKey: "providerOrder") }
-    }
-    /// Providers left out of the menu bar, stored as the hidden set so providers added later show. Kept under
-    /// the key of the old on/off list, which hid them from the menu bar too.
-    private(set) var menuBarHidden: Set<ProviderID> {
-        didSet { defaults.set(menuBarHidden.map(\.rawValue), forKey: "disabledProviders") }
-    }
-    var notificationsOn: Bool {
-        didSet {
-            defaults.set(notificationsOn, forKey: "notificationsOn")
-            if notificationsOn { requestNotificationPermission() }
-        }
-    }
-    /// What a provider shows when it has no choice of its own: the single choice from before there was one per provider.
-    var menuBarMode: MenuBarMode {
-        didSet { defaults.set(menuBarMode.rawValue, forKey: "menuBarMode") }
-    }
-    /// Each provider's choice of Session, Weekly or both, by provider.
-    private(set) var menuBarModes: [String: String] {
-        didSet { defaults.set(menuBarModes, forKey: "menuBarModes") }
     }
     private(set) var launchAtLogin = false
     private(set) var launchAtLoginError: String?
@@ -102,7 +84,7 @@ final class AppModel {
     @ObservationIgnored private var pluginChanges = 0
     @ObservationIgnored private var pluginTask: Task<Void, Never>?
 
-    /// Windows already announced as full; an entry clears once usage drops below 100%.
+    /// Windows already announced; an entry clears once usage drops below the account's level.
     private var alerted: Set<String> {
         didSet { defaults.set(Array(alerted), forKey: "alertedLimits") }
     }
@@ -112,25 +94,38 @@ final class AppModel {
     init() {
         let saved = (defaults.stringArray(forKey: "providerOrder") ?? []).compactMap(ProviderID.init)
         order = saved + ProviderID.allCases.filter { !saved.contains($0) }
-        menuBarHidden = Set((defaults.stringArray(forKey: "disabledProviders") ?? []).compactMap(ProviderID.init))
-        menuBarMode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
-        menuBarModes = defaults.dictionary(forKey: "menuBarModes") as? [String: String] ?? [:]
-        notificationsOn = defaults.object(forKey: "notificationsOn") as? Bool ?? true
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
-        if let saved = defaults.stringArray(forKey: "features") {
-            features = Set(saved.compactMap(Feature.init))
-        } else {
-            features = Feature.initial(pluginInstalled: SubagentInstaller.isInstalled())
-            defaults.set(features.map(\.rawValue).sorted(), forKey: "features")
-        }
+        agentsEnabled = SubagentInstaller.isInstalled()
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
+        migrateAccountSettings()
+    }
+
+    /// Before each account had its own, the menu bar and notifications had one setting each: carry them over
+    /// once, so an existing install looks as it did. A new install shows the icon alone and notifies at 100%.
+    private func migrateAccountSettings() {
+        guard !defaults.bool(forKey: "accountSettingsMigrated") else { return }
+        let existing = defaults.object(forKey: "providerOrder") != nil
+        let hidden = Set(defaults.stringArray(forKey: "disabledProviders") ?? [])
+        let mode = MenuBarMode(rawValue: defaults.string(forKey: "menuBarMode") ?? "") ?? .session
+        let modes = defaults.dictionary(forKey: "menuBarModes") as? [String: String] ?? [:]
+        let notify = defaults.object(forKey: "notificationsOn") as? Bool ?? true
+        updateAccounts { config in
+            for account in config.accounts {
+                config.update(account.id) { account in
+                    // The menu bar showed each provider's main account, and every Claude account.
+                    let shown = existing && !hidden.contains(account.provider.rawValue) && (account.isMain || account.provider == .claude)
+                    account.menuBar = shown ? MenuBarMode(rawValue: modes[account.provider.rawValue] ?? "") ?? mode : nil
+                    account.notifyAt = notify ? 1 : nil
+                }
+            }
+        }
+        defaults.set(true, forKey: "accountSettingsMigrated")
     }
 
     // MARK: Derived
 
     /// Whether the panel and Settings show anything about agents.
-    var showsAgents: Bool { features.contains(.agents) }
-    var showsLimits: Bool { features.contains(.limits) }
+    var showsAgents: Bool { agentsEnabled }
 
     /// The provider's main account's usage.
     func state(_ id: ProviderID) -> ProviderState { state(of: .main(id)) }
@@ -144,13 +139,15 @@ final class AppModel {
 
     var isRefreshing: Bool { enabledAccounts.contains { states[$0.id]?.isLoading == true } }
 
-    /// Providers in the menu bar: those with something to show and not hidden, and none without the limits
-    /// feature, which leaves the plain gauge.
-    var menuBarProviders: [ProviderID] {
-        guard showsLimits else { return [] }
-        // The strip shows a provider's main account (every Claude account): one without usage would read "–".
-        return connectedProviders.filter { id in
-            !menuBarHidden.contains(id) && (id == .claude ? accounts(id).contains { $0.state.snapshot != nil } : state(id).snapshot != nil)
+    /// The accounts the menu bar shows, by provider in the panel's order: those set to show something and
+    /// with usage to show. Empty leaves the icon alone.
+    var menuBarGroups: [MenuBarGroup] {
+        connectedProviders.compactMap { provider in
+            let shown = accounts(provider).filter { $0.account.menuBar != nil && $0.state.snapshot != nil }
+            guard !shown.isEmpty else { return nil }
+            return MenuBarGroup(provider: provider, entries: shown.map {
+                MenuBarEntry(name: shown.count > 1 ? $0.name : nil, snapshot: $0.state.snapshot, mode: $0.account.menuBar ?? .session)
+            })
         }
     }
 
@@ -158,7 +155,7 @@ final class AppModel {
 
     func start() {
         guard loop == nil else { return }
-        if notificationsOn { requestNotificationPermission() }
+        if accountsConfig.accounts.contains(where: { $0.notifyAt != nil }) { requestNotificationPermission() }
         refreshLocalChecks()
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -218,7 +215,7 @@ final class AppModel {
             states[id]?.notConfigured = false
             states[id]?.rateLimited = false
             states[id]?.lastSuccess = .now
-            checkLimits(account.provider, snapshot, account: account.isMain ? nil : account.key)
+            checkLimits(account, snapshot)
         } catch {
             states[id]?.error = error.localizedDescription
             if case ProviderError.notConfigured = error { states[id]?.notConfigured = true }
@@ -243,18 +240,16 @@ final class AppModel {
 
     // MARK: Settings
 
-    /// Turning agents on installs Headroom's Claude Code plugin; turning them off removes it. One feature
-    /// always stays on.
-    func setFeature(_ feature: Feature, _ on: Bool) {
-        if on { features.insert(feature) } else if features.count > 1 { features.remove(feature) } else { return }
-        guard feature == .agents else { return }
+    /// Turning agents on installs Headroom's Claude Code plugin; turning them off removes it.
+    func setAgents(_ on: Bool) {
+        agentsEnabled = on
         claudeError = nil
         pluginChanges += 1
         // One install or removal at a time, each toward the latest choice, so quick toggles end where they stopped.
         let previous = pluginTask
         pluginTask = Task {
             await previous?.value
-            let want = features.contains(.agents)
+            let want = agentsEnabled
             if want != SubagentInstaller.isInstalled() {
                 do {
                     try await want ? SubagentInstaller.install() : SubagentInstaller.uninstall()
@@ -272,20 +267,14 @@ final class AppModel {
         guard pluginChanges == 0 else { return }
         let installed = SubagentInstaller.isInstalled()
         if installed != subagentsInstalled { subagentsInstalled = installed }
-        if installed != features.contains(.agents) {
-            if installed { features.insert(.agents) } else { features.remove(.agents) }
-            if features.isEmpty { features.insert(.limits) }
-        }
+        if installed != agentsEnabled { agentsEnabled = installed }
     }
 
-    func showsInMenuBar(_ id: ProviderID) -> Bool { !menuBarHidden.contains(id) }
+    func setMenuBar(_ id: String, _ mode: MenuBarMode?) { updateAccounts { $0.update(id) { $0.menuBar = mode } } }
 
-    func menuBarMode(for id: ProviderID) -> MenuBarMode { MenuBarMode(rawValue: menuBarModes[id.rawValue] ?? "") ?? menuBarMode }
-
-    func setMenuBarMode(_ id: ProviderID, _ mode: MenuBarMode) { menuBarModes[id.rawValue] = mode.rawValue }
-
-    func setShowsInMenuBar(_ id: ProviderID, _ on: Bool) {
-        if on { menuBarHidden.remove(id) } else { menuBarHidden.insert(id) }
+    func setNotify(_ id: String, _ level: Double?) {
+        updateAccounts { $0.update(id) { $0.notifyAt = level } }
+        if level != nil { requestNotificationPermission() }
     }
 
     func move(_ id: ProviderID, by offset: Int) {
@@ -309,24 +298,29 @@ final class AppModel {
 
     // MARK: Notifications
 
-    func checkLimits(_ id: ProviderID, _ snapshot: UsageSnapshot, account: String? = nil) {
+    /// One notification each time a Session or Weekly limit crosses the account's level.
+    func checkLimits(_ account: Account, _ snapshot: UsageSnapshot) {
+        let saved = accountsConfig.account(account.id) ?? account
         for window in snapshot.windows where Self.alertWindows.contains(window.label) {
             guard let used = window.usedPercent else { continue }
-            let key = "\(id.rawValue)\(account.map { ".\($0)" } ?? "").\(window.label)"
-            if used < 100 {
-                alerted.remove(key)
-            } else if !alerted.contains(key) {
-                alerted.insert(key)
-                if notificationsOn { notify(id, window, account: account) }
+            let key = "\(account.provider.rawValue)\(account.isMain ? "" : ".\(account.key)").\(window.label)"
+            guard let level = saved.notifyAt, used >= level * 100 else { alerted.remove(key); continue }
+            if alerted.insert(key).inserted {
+                let name = displayName(saved, plan: snapshot.plan)
+                notify(Self.alertText(provider: account.provider, name: account.isMain ? nil : name, window: window, used: used), id: key)
             }
         }
     }
 
-    private func notify(_ id: ProviderID, _ window: UsageWindow, account: String? = nil) {
-        var text = "\(id.displayName)\(account.map { " (\($0))" } ?? "") \(window.label) limit reached"
-        if let reset = window.resetsAt { text += " — resets at \(Format.clock(reset))" }
-        post(text, id: "\(id.rawValue).\(account ?? "").\(window.label)")
+    /// "Codex Session limit reached, resets at 14:00", or "Claude (Pro) Weekly 90% used, resets …".
+    static func alertText(provider: ProviderID, name: String?, window: UsageWindow, used: Double) -> String {
+        var text = "\(provider.displayName)\(name.map { " (\($0))" } ?? "") \(window.label) "
+        text += used >= 100 ? "limit reached" : "\(Int(used.rounded()))% used"
+        if let reset = window.resetsAt { text += ", resets at \(Format.clock(reset))" }
+        return text
     }
+
+    private func notify(_ text: String, id: String) { post(text, id: id) }
 
     func post(_ text: String, id: String) {
         guard Self.isBundled else { return }
@@ -335,7 +329,7 @@ final class AppModel {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
-    private func requestNotificationPermission() {
+    func requestNotificationPermission() {
         guard Self.isBundled else { return }
         let center = UNUserNotificationCenter.current()
         center.delegate = NotificationPresenter.shared
@@ -351,4 +345,17 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate, @
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
     }
+}
+
+/// One provider in the menu bar: its logo, then each shown account's numbers.
+struct MenuBarGroup {
+    var provider: ProviderID
+    var entries: [MenuBarEntry]
+}
+
+struct MenuBarEntry {
+    /// Set when the provider shows several accounts, to tell them apart.
+    var name: String?
+    var snapshot: UsageSnapshot?
+    var mode: MenuBarMode
 }

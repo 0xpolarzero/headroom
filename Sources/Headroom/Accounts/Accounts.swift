@@ -1,17 +1,5 @@
 import Foundation
 
-/// What Headroom does. Each can be on without the other: limits in the menu bar and panel, and agents
-/// in Claude Code (the plugin, subagents on accounts with room, and `headroom:` agents).
-enum Feature: String, Codable, CaseIterable, Sendable {
-    case limits, agents
-
-    /// The features of an install from before they existed: limits always showed, and agents were on
-    /// exactly when the plugin was installed.
-    static func initial(pluginInstalled: Bool) -> Set<Feature> {
-        pluginInstalled ? [.limits, .agents] : [.limits]
-    }
-}
-
 /// One sign-in on one provider. A provider's accounts form its pool, in priority order: the panel lists
 /// them in that order, and work goes to the one with the most room, then the next.
 ///
@@ -27,12 +15,20 @@ struct Account: Codable, Hashable, Sendable, Identifiable {
     /// What the panel and Settings call it ("Pro", "Work"); nil uses its plan.
     var name: String?
     var addedAt = Date()
+    /// What it shows in the menu bar; nil shows nothing, and with nothing shown the menu bar is an icon.
+    var menuBar: MenuBarMode?
+    /// Notify when a Session or Weekly limit reaches this share used (0...1); nil never.
+    var notifyAt: Double?
 
-    init(provider: ProviderID, key: String, name: String? = nil, addedAt: Date = Date()) {
+    static let notifyChoices = [0.75, 0.9, 1.0]
+
+    init(provider: ProviderID, key: String, name: String? = nil, addedAt: Date = Date(), menuBar: MenuBarMode? = nil, notifyAt: Double? = 1) {
         self.provider = provider
         self.key = key
         self.name = name
         self.addedAt = addedAt
+        self.menuBar = menuBar
+        self.notifyAt = notifyAt
     }
 
     static func main(_ provider: ProviderID) -> Account { Account(provider: provider, key: mainKey, addedAt: .distantPast) }
@@ -149,9 +145,13 @@ struct AccountsConfig: Codable, Equatable, Sendable {
     }
 
     mutating func rename(_ id: String, to name: String) {
-        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        accounts[i].name = name.isEmpty ? nil : name
+        update(id) { $0.name = name.isEmpty ? nil : name }
+    }
+
+    mutating func update(_ id: String, _ change: (inout Account) -> Void) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        change(&accounts[i])
     }
 
     /// Forgets an account. A main account can't be removed: it stands for the login already on the Mac.

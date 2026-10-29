@@ -4,13 +4,6 @@ import XCTest
 final class AccountsTests: XCTestCase {
     private func keys(_ config: AccountsConfig, _ provider: ProviderID) -> [String] { config.pool(provider).map(\.key) }
 
-    // MARK: Features
-
-    func testFeaturesOfAnOlderInstallFollowThePlugin() {
-        XCTAssertEqual(Feature.initial(pluginInstalled: true), [.limits, .agents])
-        XCTAssertEqual(Feature.initial(pluginInstalled: false), [.limits])
-    }
-
     // MARK: Accounts
 
     func testEveryProviderHasOneMainAccount() {
@@ -143,5 +136,41 @@ final class AccountsTests: XCTestCase {
         XCTAssertEqual(keys(config, .codex), ["main", "work"])
         XCTAssertEqual(config.weeklyThreshold, 0.5)
         XCTAssertEqual(config.accounts.first?.provider, .claude, "the Claude pool keeps its place")
+    }
+
+    // MARK: Menu bar and notifications
+
+    func testNewAccountsNotifyAtTheLimitAndShowNothing() throws {
+        let fresh = Account(provider: .codex, key: "work")
+        XCTAssertNil(fresh.menuBar)
+        XCTAssertEqual(fresh.notifyAt, 1)
+        // Saved before these settings existed: the app's one-time migration fills them in.
+        let old = try JSONDecoder.headroom.decode(Account.self, from: Data(#"{"provider":"codex","key":"work","addedAt":1}"#.utf8))
+        XCTAssertNil(old.menuBar)
+        XCTAssertNil(old.notifyAt)
+    }
+
+    func testSavingTheClaudeListKeepsEachAccountsSettings() {
+        var config = AccountsConfig()
+        config.append(Account(provider: .claude, key: "Pro", name: "Work", menuBar: .both, notifyAt: 0.9))
+        config.replaceClaudePool(with: ClaudeAccountsConfig(config))
+        let pro = config.account("claude.Pro")
+        XCTAssertEqual(pro?.name, "Work")
+        XCTAssertEqual(pro?.menuBar, .both)
+        XCTAssertEqual(pro?.notifyAt, 0.9)
+    }
+
+    @MainActor func testAlertsSayHowFarAlong() {
+        let window = UsageWindow(label: "Weekly", usedPercent: 90.4)
+        XCTAssertEqual(AppModel.alertText(provider: .claude, name: "Pro", window: window, used: 90.4), "Claude (Pro) Weekly 90% used")
+        XCTAssertEqual(AppModel.alertText(provider: .codex, name: nil, window: window, used: 100), "Codex Weekly limit reached")
+    }
+
+    @MainActor func testShortOfRoomTheMenuBarDropsAccountsFromTheEnd() {
+        let entry = MenuBarEntry(name: nil, snapshot: nil, mode: .session)
+        let groups = [MenuBarGroup(provider: .claude, entries: [entry, entry]), MenuBarGroup(provider: .codex, entries: [entry])]
+        XCTAssertEqual(StatusBarController.first(3, of: groups).map(\.entries.count), [2, 1])
+        XCTAssertEqual(StatusBarController.first(2, of: groups).map(\.entries.count), [2])
+        XCTAssertEqual(StatusBarController.first(1, of: groups).map(\.entries.count), [1])
     }
 }

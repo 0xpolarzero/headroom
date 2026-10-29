@@ -42,33 +42,33 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    /// Providers in the Settings order, each as its own setting says; a plain gauge when none has anything
-    /// to show. With less room, the strip first shows Session alone where a provider shows both, then drops
-    /// providers from the end.
+    /// The accounts set to show something, by provider; the plain icon when none is. With less room, the
+    /// strip first shows Session alone where an account shows both, then drops accounts from the end.
     private func update() {
-        let ids = model.menuBarProviders
-        var layouts = [(ids, false)]
-        if ids.contains(where: { model.menuBarMode(for: $0) == .both }) { layouts.append((ids, true)) }
-        layouts += (1..<max(ids.count, 1)).reversed().map { (Array(ids.prefix($0)), true) }
-        strips = ids.isEmpty ? [] : layouts.map { strip($0.0, squeezed: $0.1) }
+        let groups = model.menuBarGroups
+        let count = groups.reduce(0) { $0 + $1.entries.count }
+        var layouts = [(groups, false)]
+        if groups.contains(where: { $0.entries.contains { $0.mode == .both } }) { layouts.append((groups, true)) }
+        layouts += (1..<max(count, 1)).reversed().map { (Self.first($0, of: groups), true) }
+        strips = groups.isEmpty ? [] : layouts.map { strip($0.0, squeezed: $0.1) }
         layout()
     }
 
-    private func strip(_ ids: [ProviderID], squeezed: Bool) -> NSImage {
-        let model = self.model
-        let claudeRows = model.showsClaudeAccounts ? model.claudeRows : nil
-        func mode(_ id: ProviderID) -> MenuBarMode {
-            let mode = model.menuBarMode(for: id)
-            return squeezed && mode == .both ? .session : mode
+    /// The first `count` accounts across the groups, in order.
+    static func first(_ count: Int, of groups: [MenuBarGroup]) -> [MenuBarGroup] {
+        var left = count
+        return groups.compactMap { group in
+            guard left > 0 else { return nil }
+            var group = group
+            group.entries = Array(group.entries.prefix(left))
+            left -= group.entries.count
+            return group
         }
-        return MenuBarLabel.template(HStack(spacing: 10) {
-            ForEach(ids) { id in
-                if id == .claude, let claudeRows {
-                    ClaudeMenuBarLabel(rows: claudeRows, mode: mode(id))
-                } else {
-                    MenuBarLabel(id: id, snapshot: model.state(id).snapshot, mode: mode(id))
-                }
-            }
+    }
+
+    private func strip(_ groups: [MenuBarGroup], squeezed: Bool) -> NSImage {
+        MenuBarLabel.template(HStack(spacing: 10) {
+            ForEach(groups, id: \.provider) { MenuBarLabel(group: $0, squeezed: squeezed) }
         })
     }
 
