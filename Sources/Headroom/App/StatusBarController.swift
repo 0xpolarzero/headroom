@@ -43,14 +43,14 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    /// The accounts set to show something, by provider; the plain icon when none is. With less room, the
-    /// strip first shows Session alone where an account shows both, then drops accounts from the end.
+    /// The accounts set to show something, by provider; the plain icon when none is. With less room, accounts drop
+    /// from the end, each still showing what it's set to: Both stacks two small numbers, no wider than one big one,
+    /// so showing Session alone instead saves nothing.
     private func update() {
         let groups = model.menuBarGroups
         let count = groups.reduce(0) { $0 + $1.entries.count }
         var layouts = [(groups, false)]
-        if groups.contains(where: { $0.entries.contains { $0.mode == .both } }) { layouts.append((groups, true)) }
-        layouts += (1..<max(count, 1)).reversed().map { (Self.first($0, of: groups), true) }
+        layouts += (1..<max(count, 1)).reversed().map { (Self.first($0, of: groups), false) }
         strips = groups.isEmpty ? [] : layouts.map { strip($0.0, squeezed: $0.1) }
         layout()
     }
