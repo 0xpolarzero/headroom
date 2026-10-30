@@ -321,6 +321,6 @@ final class SubagentTests: XCTestCase {
         XCTAssertEqual(entry.sessionID, "s")
         XCTAssertNil(entry.subagentType)
         let store = try JSONDecoder.lastdrop.decode(AgentRegistry.Store.self, from: Data(#"{"agents":{},"lacking":{},"fullUntil":{}}"#.utf8))
-        XCTAssertNil(store.processes)
+        XCTAssertEqual(store.processes?.count, 0)
     }
 }

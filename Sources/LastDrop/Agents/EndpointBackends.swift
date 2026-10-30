@@ -151,13 +151,18 @@ struct EndpointProfile: Equatable, Sendable {
             if provider == .zai, let effort, !["low", "high", "max"].contains(effort) {
                 return failure("Z.ai supports low, high, or max effort; received \(effort).")
             }
+            // Claude Code ignores a level it doesn't know with a warning; the call should fail instead.
+            if provider == .openrouter, let effort, !ClaudeBackend.efforts.contains(effort) {
+                return failure("OpenRouter agents take \(ClaudeBackend.efforts.joined(separator: ", ")) effort; received \(effort).")
+            }
             let profile = EndpointProfile(provider: provider, directory: directory(for: provider, account: account), model: model, effort: effort,
                                           accountID: account.isMain ? nil : account.id)
             try profile.prepare()
             let request = SubagentRunner.Request(prompt: job.prompt, model: model, effort: effort,
                 worktree: job.resume == nil && job.worktree, permissionMode: AgentRun.mappedPermissionMode(job.permissionMode),
                 sessionID: job.resume?.sessionID ?? UUID().uuidString.lowercased(), resume: job.resume != nil,
-                mcpConfig: job.mcpConfig, systemPrompt: job.definition.instructions, endpoint: profile)
+                mcpConfig: job.mcpConfig, systemPrompt: job.instructions, endpoint: profile,
+                disallowedTools: job.role == nil ? [] : SubagentRunner.editingTools)
             var result = await SubagentRunner.run(request, on: ClaudeAccount(id: "main"), in: job.resume?.directory ?? job.cwd,
                 onProcess: events.process, check: { event in
                     if let reason = SubagentRunner.checkInit(event, subagentType: nil) { return "\(reason) on \(place)" }

@@ -131,6 +131,30 @@ enum CodexBackend: AgentBackend {
         }
     }
 
+    /// What a declined request asked for, as the caller reads it ("Bash: git push").
+    static func describe(declined method: String, _ params: [String: Any]) -> String {
+        switch method {
+        case "item/commandExecution/requestApproval", "execCommandApproval":
+            let command = params.string("command") ?? (params["command"] as? [String])?.joined(separator: " ") ?? ""
+            return command.isEmpty ? "Bash" : "Bash: \(command.replacingOccurrences(of: "\n", with: " ").prefix(80))"
+        case "item/fileChange/requestApproval", "applyPatchApproval": return "Edit files"
+        case "item/permissions/requestApproval": return "Extra permissions"
+        case "item/tool/call": return params.string("tool") ?? "Tool call"
+        default: return method
+        }
+    }
+
+    /// The requests the server asked and lastdrop declined, collected from its reading thread.
+    final class Declined: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lines: [String] = []
+        var items: [String] { lock.lock(); defer { lock.unlock() }; return lines }
+        func add(_ line: String) {
+            lock.lock(); defer { lock.unlock() }
+            if !lines.contains(line) { lines.append(line) }
+        }
+    }
+
     static func limitReached(_ error: [String: Any], willRetry: Bool = false) -> Bool {
         !willRetry && error.string("codexErrorInfo") == "usageLimitExceeded"
     }
@@ -153,8 +177,10 @@ enum CodexBackend: AgentBackend {
         var environment = ProcessInfo.processInfo.environment
         if let home = account.folder { environment["CODEX_HOME"] = home }
         let place = AgentPool.place(account)
-        let server = CodexAppServer(executable: executable, directory: directory, environment: environment) { method, _ in
+        let declined = Declined()
+        let server = CodexAppServer(executable: executable, directory: directory, environment: environment) { method, params in
             events.step("Declined Codex request: \(method)")
+            declined.add(describe(declined: method, params))
             return decline(method)
         }
         defer { server.stop() }
@@ -162,7 +188,7 @@ enum CodexBackend: AgentBackend {
             .init(text: text, isError: error, limitReached: limit, turns: turns, permissionDenials: state.denials,
                   toolUses: state.toolUses, durationMs: Int(Date().timeIntervalSince(startedAt) * 1000),
                   inputTokens: state.inputTokens, outputTokens: state.outputTokens, model: model,
-                  sessionID: sessionID, directory: directory, account: place, accountID: account.id)
+                  sessionID: sessionID, directory: directory, account: place, accountID: account.id, declined: declined.items)
         }
         do {
             try server.start()
@@ -175,13 +201,14 @@ enum CodexBackend: AgentBackend {
                     guard selected.efforts.contains(effort) else { throw Failure("Codex model \(model) doesn't support effort \(effort). Supported: \(selected.efforts.joined(separator: ", ")).") }
                 }
                 if job.worktree && job.resume == nil {
-                    directory = try await worktree(in: directory)
+                    directory = try AgentWorktree.create(in: directory, agentID: job.agentID).directory
                     events.step("Worktree: \(directory)")
                 }
-                var params = try permissions(job.permissionMode)
+                // A read-only role gets the read-only sandbox, whatever the session's mode.
+                var params = try permissions(job.role == nil ? job.permissionMode : "plan")
                 params["cwd"] = directory
                 params["model"] = model
-                params["developerInstructions"] = job.definition.instructions
+                params["developerInstructions"] = job.instructions
                 if let file = job.mcpConfig {
                     let object = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: file)))
                     guard let root = object as? [String: Any], root["mcpServers"] is [String: Any] else { throw Failure("lastdrop couldn't read the caller's MCP configuration.") }
@@ -256,24 +283,6 @@ enum CodexBackend: AgentBackend {
     private static func rejectsAutoReview(_ error: CodexAppServer.RPCError) -> Bool {
         let text = error.message.lowercased()
         return [-32600, -32602].contains(error.code) && ["auto_review", "approvalsreviewer", "approvals_reviewer"].contains(where: text.contains)
-    }
-
-    /// Retain worktrees so follow-ups and Open in Terminal can continue them, including dirty files.
-    static func worktree(in directory: String) async throws -> String {
-        try await Task.detached {
-            let root = FileManager.default.temporaryDirectory.appendingPathComponent("lastdrop-codex-worktrees", isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            let path = root.appendingPathComponent(UUID().uuidString.lowercased()).path
-            let git = Process(), output = Pipe()
-            git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            git.arguments = ["-C", directory, "worktree", "add", "--detach", path, "HEAD"]
-            git.standardOutput = output; git.standardError = output
-            try git.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            git.waitUntilExit()
-            guard git.terminationStatus == 0 else { throw Failure("Codex couldn't create a worktree: \(String(decoding: data.suffix(2000), as: UTF8.self))") }
-            return path
-        }.value
     }
 
     static func terminal(_ entry: AgentRegistry.Entry) -> String? {

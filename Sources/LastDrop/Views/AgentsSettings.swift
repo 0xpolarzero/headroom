@@ -22,7 +22,7 @@ struct AgentEditor: View {
                         .lineLimit(2...4)
                 } footer: {
                     HStack(spacing: 4) {
-                        Caption("Claude calls it lastdrop:\(AgentDefinition.slug(agent.name)).")
+                        Caption("Claude uses it as model: \"\(AgentDefinition.slug(agent.name))\" on the Agent tool.")
                         InfoTip("Claude picks agents by their description, so write it for Claude.")
                     }
                 }

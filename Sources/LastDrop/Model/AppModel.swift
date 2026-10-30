@@ -52,7 +52,7 @@ final class AppModel {
 
     /// Each account's latest usage, by `Account.id`.
     private(set) var states: [String: ProviderState] = [:]
-    /// Agents in Claude Code: lastdrop's plugin, subagents on other Claude accounts, and `lastdrop:` agents.
+    /// Agents in Claude Code: lastdrop's plugin, subagents on other Claude accounts, and extra models for the Agent tool.
     /// Follows whether the plugin is installed.
     private(set) var agentsEnabled: Bool {
         didSet { defaults.set(agentsEnabled, forKey: "agentsEnabled") }

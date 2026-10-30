@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where an agent from lastdrop's list runs. Each has a backend that starts it, continues it and lists its models.
+/// Where an extra model for the Agent tool runs. Each has a backend that starts it, continues it and lists its models.
 enum AgentProvider: String, Codable, CaseIterable, Sendable, Identifiable {
     /// Your other Claude accounts, the one with the most room.
     case claude
@@ -32,13 +32,13 @@ enum AgentProvider: String, Codable, CaseIterable, Sendable, Identifiable {
     }
 }
 
-/// One agent of lastdrop's list: an agent type Claude sees beside the built-in ones (`lastdrop:<name>`),
-/// which always runs on its provider and model.
+/// One extra model of lastdrop's list: Claude passes its name as the Agent tool's `model` and it runs on
+/// its provider and model, whatever the call's agent type (general-purpose, Explore, Plan).
 struct AgentDefinition: Codable, Hashable, Sendable, Identifiable {
     var id = UUID()
-    /// The type's short name: letters, digits, "-" and "_" (`codex-deep`).
+    /// The name Claude passes as `model`: letters, digits, "-" and "_" (`codex-deep`).
     var name: String
-    /// When Claude should use it, as Claude reads it in its list of agent types.
+    /// When Claude should use it, as Claude reads it beside the Agent tool's models.
     var description: String
     var provider: AgentProvider
     /// The provider's model id (`gpt-6.1-sol`, `glm-5.3`).
@@ -47,21 +47,26 @@ struct AgentDefinition: Codable, Hashable, Sendable, Identifiable {
     var effort: String?
     var enabled = true
 
-    /// The agent type Claude calls it by.
-    var type: String { "\(AgentCatalog.plugin):\(name)" }
-
     /// "Codex · gpt-6.1-sol · high", where it runs as its row shows it.
     var summary: String {
         ([provider == .claude ? "Claude" : provider.displayName, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
     }
 
     /// What the backend is told about its role: the same line Claude chose it by.
-    var instructions: String {
-        "You are \(name), a subagent another coding agent delegated a task to. Your role: \(description)\n"
-            + "Work on the task you are given, then answer with a concise report of what you found or did: it is all the caller sees."
+    var instructions: String { instructions(role: nil) }
+
+    /// The same, with the brief of a read-only role (`Explore`, `Plan`) the call asked for.
+    func instructions(role: String?) -> String {
+        let brief = switch role {
+        case "Explore": "\nYou were called to explore: search and read only, change no files, and report what you find."
+        case "Plan": "\nYou were called to plan: read only, change no files, and return a step-by-step implementation plan."
+        default: ""
+        }
+        return "You are \(name), a subagent another coding agent delegated a task to. Your role: \(description)\n"
+            + "Work on the task you are given, then answer with a concise report of what you found or did: it is all the caller sees." + brief
     }
 
-    /// "Codex Deep" → "codex-deep", as an agent type name allows.
+    /// "Codex Deep" → "codex-deep", as a model name allows.
     static func slug(_ name: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         let parts = name.lowercased().trimmingCharacters(in: .whitespaces).components(separatedBy: allowed.inverted)
@@ -69,10 +74,10 @@ struct AgentDefinition: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
-/// lastdrop's list of agents, in its support folder. The plugin reads it (`lastdrop --agent-catalog`) on
-/// every prompt and registers the enabled ones, so edits apply from the next turn.
+/// lastdrop's list of extra models for the Agent tool, in its support folder. The plugin reads it
+/// (`lastdrop --agent-catalog`) on every prompt, so edits apply from the next turn.
 struct AgentCatalog: Codable, Equatable, Sendable {
-    /// The plugin's name, the agent types' prefix.
+    /// The plugin's name, the prefix runs started before the update were called by (`lastdrop:codex-deep`).
     static let plugin = "lastdrop"
 
     var agents: [AgentDefinition] = []
@@ -85,7 +90,7 @@ struct AgentCatalog: Codable, Equatable, Sendable {
 
     /// What Claude reads while saving is on, unless the user rewrote it. The plugin keeps the same text
     /// for an app that sends none.
-    static let defaultSavingInstruction = "Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to lastdrop's agents (lastdrop:*), picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no lastdrop agent fits."
+    static let defaultSavingInstruction = "Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to the models the user added to the Agent tool's model parameter, picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no added model fits."
 
     /// The instruction Claude gets.
     var savingInstruction: String {
@@ -97,7 +102,7 @@ struct AgentCatalog: Codable, Equatable, Sendable {
 
     var enabled: [AgentDefinition] { agents.filter(\.enabled) }
 
-    /// The enabled agent Claude calls by `type` (`lastdrop:codex-deep`), or by its bare name.
+    /// The enabled agent Claude passes as `model` (`codex-deep`); `lastdrop:codex-deep` still names it for runs started before.
     func agent(_ type: String) -> AgentDefinition? {
         let name = type.hasPrefix("\(Self.plugin):") ? String(type.dropFirst(Self.plugin.count + 1)) : type
         return enabled.first { $0.name == name }
@@ -107,11 +112,17 @@ struct AgentCatalog: Codable, Equatable, Sendable {
     func problem(with definition: AgentDefinition) -> String? {
         if definition.name.isEmpty { return "Give the agent a name." }
         if definition.name != AgentDefinition.slug(definition.name) { return "Names use lowercase letters, digits, - and _." }
+        if Self.isReserved(definition.name) { return "\(definition.name) is a name Claude Code uses for its own models." }
         if agents.contains(where: { $0.name == definition.name && $0.id != definition.id }) { return "Another agent is named \(definition.name)." }
         if definition.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Say what the agent is for: Claude reads it to choose." }
         if definition.model.isEmpty { return "Pick a model." }
         return nil
     }
+
+    /// Names of Claude Code's own models and aliases, which always mean the native model.
+    static let reservedNames: Set<String> = ["sonnet", "opus", "haiku", "fable", "inherit", "best", "opusplan"]
+
+    static func isReserved(_ name: String) -> Bool { reservedNames.contains(name) || name.hasPrefix("claude-") }
 
     static func load(from url: URL = LastDropPaths.agentCatalog) -> AgentCatalog {
         (try? Data(contentsOf: url)).flatMap { try? JSONDecoder.lastdrop.decode(AgentCatalog.self, from: $0) } ?? .init()
@@ -119,14 +130,22 @@ struct AgentCatalog: Codable, Equatable, Sendable {
 
     func save(to url: URL = LastDropPaths.agentCatalog) throws {
         LastDropPaths.ensure(url.deletingLastPathComponent())
+        // `load` gives an empty list for a file it can't read; saving that over the file would lose the real list.
+        // A file that exists and doesn't decode is copied aside first, and when that fails nothing is saved.
+        if FileManager.default.fileExists(atPath: url.path),
+           (try? Data(contentsOf: url)).flatMap({ try? JSONDecoder.lastdrop.decode(AgentCatalog.self, from: $0) }) == nil {
+            try UnreadableFile.copyAside(url)
+        }
         var next = self
         next.revision += 1
         try JSONEncoder.lastdrop.encode(next).write(to: url, options: .atomic)
     }
 
-    /// What the plugin reads: the revision and the enabled agents as Claude Code registers them.
+    /// What the plugin reads: the revision and the enabled agents. A stored name that became reserved is
+    /// left out: the native model wins.
     func pluginJSON() -> [String: Any] {
-        ["revision": revision, "saveClaude": saveClaude, "saveClaudeText": savingInstruction, "nativeTasks": true, "agents": enabled.map { agent in
+        ["revision": revision, "saveClaude": saveClaude, "saveClaudeText": savingInstruction, "nativeTasks": true, "agentModels": true,
+         "agents": enabled.filter { !Self.isReserved($0.name) }.map { agent in
             ["name": agent.name, "description": agent.description, "provider": agent.provider.rawValue,
              "summary": agent.summary, "prompt": agent.instructions]
         }]

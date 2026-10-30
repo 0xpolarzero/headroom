@@ -80,7 +80,7 @@ enum AntigravityBackend: AgentBackend {
         var args = ["-p=", "--input-format", "stream-json", "--output-format", "stream-json", "--model", slug, "--disable-slash-commands"]
         // The documented flag overrides effort for this invocation without changing the CLI's settings.
         if let effort = suffix(slug) { args += ["--effort", effort] }
-        switch job.permissionMode {
+        switch job.role == nil ? job.permissionMode : "plan" {
         case "bypassPermissions": args += ["--mode", "accept-edits", "--dangerously-skip-permissions"]
         // Nobody can be asked headless, so "default" lets it edit, as a Claude agent's auto mode does.
         case "default", "acceptEdits", "auto": args += ["--mode", "accept-edits"]
@@ -105,41 +105,47 @@ enum AntigravityBackend: AgentBackend {
             let model = job.resume?.model ?? job.definition.model
             let offered = suffix(model) == nil ? try await models(executable: executable) : []
             let selected = try slug(model: model, effort: job.resume?.effort ?? job.effort, models: offered)
-            if job.resume == nil, job.worktree { directory = try await worktree(in: directory) }
-            var stream = Stream(model: selected, directory: directory, events: events)
-            let prompt = job.definition.instructions + "\n\n" + job.prompt
-            var input = try JSONSerialization.data(withJSONObject: ["event": "user", "message": ["content": prompt]])
-            input.append(0x0A)
-            let command = try await execute(executable, arguments(job, slug: selected), directory: directory,
-                                            input: input, onProcess: events.process) { line in
-                onLine(line)
-                guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { return }
-                stream.receive(event)
+            if job.resume == nil, job.worktree { directory = try AgentWorktree.create(in: directory, agentID: job.agentID).directory }
+            func turn(_ job: AgentJob, prompt: String, in directory: String) async throws -> (Stream, SubagentRunner.Result) {
+                var stream = Stream(model: selected, directory: directory, events: events)
+                var input = try JSONSerialization.data(withJSONObject: ["event": "user", "message": ["content": prompt]])
+                input.append(0x0A)
+                let command = try await execute(executable, arguments(job, slug: selected), directory: directory,
+                                                input: input, onProcess: events.process) { line in
+                    onLine(line)
+                    guard let event = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { return }
+                    stream.receive(event)
+                }
+                return (stream, stream.finish(exitCode: command.status, stderr: command.stderr))
             }
-            return stream.finish(exitCode: command.status, stderr: command.stderr)
+            let (first, result) = try await turn(job, prompt: job.instructions + "\n\n" + job.prompt, in: directory)
+            // A native agent goes on after a denied action and still writes its report; `agy` ends its turn there.
+            // Go on in the same conversation, once, with the same model, effort, mode and folder.
+            guard first.endedAfterDenial, let session = result.sessionID else { return result }
+            var next = job
+            next.resume = .init(account: "Antigravity", directory: result.directory ?? directory, sessionID: session, model: selected, at: Date())
+            events.step("Antigravity ended after a declined action; continuing")
+            let (_, second) = try await turn(next, prompt: continuePrompt, in: result.directory ?? directory)
+            var merged = second
+            merged.toolUses += result.toolUses
+            merged.turns += result.turns
+            merged.durationMs += result.durationMs
+            merged.inputTokens += result.inputTokens
+            merged.outputTokens += result.outputTokens
+            merged.permissionDenials += result.permissionDenials
+            merged.declined = result.declined + second.declined.filter { !result.declined.contains($0) }
+            return merged
         } catch {
             return failure(error.localizedDescription, directory: directory)
         }
     }
 
+    /// What a run that ended on a declined action is told when it goes on.
+    static let continuePrompt = "That action was declined and can't run here. Finish the task without it and give your report."
+
     static func terminal(_ entry: AgentRegistry.Entry) -> String? {
         guard !entry.sessionID.isEmpty else { return nil }
         return "cd \(ClaudeSignIn.shellQuote(entry.directory)) || exit 1\nexec agy --conversation \(ClaudeSignIn.shellQuote(entry.sessionID))"
-    }
-
-    /// Kept under git's common directory so it survives a follow-up without dirtying the checkout.
-    static func worktree(in directory: String) async throws -> String {
-        var common = ""
-        let lookup = try await execute("/usr/bin/git", ["-C", directory, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                                       directory: nil) { common += $0 }
-        guard lookup.status == 0, !common.isEmpty else { throw Failure("Antigravity worktree: \(lookup.stderr)") }
-        let parent = URL(fileURLWithPath: common).appendingPathComponent("lastdrop-worktrees")
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        let path = parent.appendingPathComponent(UUID().uuidString.lowercased()).path
-        let added = try await execute("/usr/bin/git", ["-C", directory, "worktree", "add", "--detach", path, "HEAD"],
-                                      directory: nil) { _ in }
-        guard added.status == 0 else { throw Failure("Antigravity worktree: \(added.stderr)") }
-        return path
     }
 
     private struct Command {
@@ -233,6 +239,7 @@ enum AntigravityBackend: AgentBackend {
         private var tools = Set<Int>()
         private var results = Set<Int>()
         private var permissionDenials = 0
+        private var declined: [String] = []
         private var userTurns = 0
         private var turnUsage: [String: Double] = [:]
 
@@ -258,6 +265,8 @@ enum AntigravityBackend: AgentBackend {
             case "step_update":
                 guard let step = event.dict("step_update"), let index = step.double("step_index").map(Int.init), !completed.contains(index) else { return }
                 let done = step.string("state") == "DONE"
+                // A tool that failed (a denied permission, for one) ends in ERROR, with no DONE after it.
+                let ended = done || step.string("state") == "ERROR"
                 if done {
                     if step.string("step_type") == "user_input" { userTurns += 1 }
                     for key in ["input_tokens", "output_tokens", "cache_read_tokens"] {
@@ -280,21 +289,32 @@ enum AntigravityBackend: AgentBackend {
                         events.step(summary)
                         events.item(item)
                     }
-                    if done, results.insert(index).inserted {
+                    if ended, results.insert(index).inserted {
                         let error = info["error"]
                         let failed = error != nil && !(error is NSNull)
                         let output = Self.render(info["output"])
                         let errorText = Self.render(error)
                         let resultText = [output, errorText].filter { !$0.isEmpty }.joined(separator: "\n")
-                        if failed, errorText.lowercased().contains("permission") { permissionDenials += 1 }
+                        if failed, errorText.lowercased().contains("permission") {
+                            permissionDenials += 1
+                            let line = Self.summary(step.string("tool_name") ?? info.string("name") ?? "tool", info.dict("parameters") ?? [:])
+                            if !declined.contains(line) { declined.append(line) }
+                        }
                         if let item = SubagentRunner.transcriptItem(["type": "tool_result", "tool_use_id": id,
                                                                    "content": resultText, "is_error": failed]) { events.item(item) }
                     }
                 }
-                if done { completed.insert(index) }
+                if ended { completed.insert(index) }
             case "result": final = event.dict("result")
             default: break
             }
+        }
+
+        /// The turn ended as a success with no report after a request nobody could answer was denied.
+        var endedAfterDenial: Bool {
+            guard final?.string("status") == "SUCCESS", started, invalidInit == nil,
+                  (final?.string("response") ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            return !declined.isEmpty || !((final?["denied_actions"] as? [[String: Any]]) ?? []).isEmpty
         }
 
         func finish(exitCode: Int32, stderr: String) -> SubagentRunner.Result {
@@ -303,6 +323,13 @@ enum AntigravityBackend: AgentBackend {
             let error = Self.render(final?["error"])
             let response = final?.string("response") ?? ""
             let failed = status != "SUCCESS" || exitCode != 0 || !started || invalidInit != nil
+            // With nobody to answer, a permission request is denied and `agy` ends its turn there, as a success with
+            // an empty response: that is a failure to report, not an answer.
+            let denied = (final?["denied_actions"] as? [[String: Any]] ?? []).compactMap { $0.string("display_name") ?? $0.string("action") }
+            let declined = self.declined.isEmpty ? denied : self.declined
+            let empty = !failed && response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let emptyText = "Antigravity ended without writing a report."
+                + (declined.isEmpty ? "" : " It asked permission for \(declined.joined(separator: ", ")), which lastdrop declines because nobody can answer.")
             let details = [error, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
             let diagnostic = details.isEmpty ? "Antigravity ended with status \(status). \(response)" : details
             let usage = final?.dict("usage")
@@ -310,14 +337,14 @@ enum AntigravityBackend: AgentBackend {
             let input = turnUsage["input_tokens"] ?? usage?.double("input_tokens") ?? 0
             let cached = turnUsage["cache_read_tokens"] ?? usage?.double("cache_read_tokens") ?? 0
             let output = turnUsage["output_tokens"] ?? usage?.double("output_tokens") ?? 0
-            return .init(text: failed ? message(invalidInit ?? diagnostic) : response, isError: failed,
+            return .init(text: failed ? message(invalidInit ?? diagnostic) : empty ? emptyText : response, isError: failed || empty,
                          limitReached: failed && mentionsLimit(status + " " + diagnostic),
                          modelUnavailable: failed && modelUnavailable(diagnostic),
                          turns: userTurns > 0 ? userTurns : Int(final?.double("num_turns") ?? 0),
                          permissionDenials: permissionDenials, toolUses: tools.count,
                          durationMs: Int((final?.double("duration_seconds") ?? 0) * 1000),
                          inputTokens: Int(input + cached), outputTokens: Int(output),
-                         model: model, sessionID: sessionID ?? final?.string("conversation_id"), directory: directory, account: "Antigravity")
+                         model: model, sessionID: sessionID ?? final?.string("conversation_id"), directory: directory, account: "Antigravity", declined: declined)
         }
 
         private static func render(_ value: Any?) -> String {

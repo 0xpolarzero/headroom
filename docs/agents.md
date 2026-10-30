@@ -1,73 +1,174 @@
 # Agents on other providers — design
 
-Status: built on the `agents-on-providers` branch, 2026-10-27. Codex and Antigravity verified live; Z.ai and OpenRouter need an inference key to verify. Research behind it: [docs/research/](research/) (A: Claude Code side,
-B: Codex, C: Z.ai and OpenRouter, D: Antigravity).
+Status: extra models for the Agent tool, built on the `agent-models` branch, 2026-10-30. Codex and Antigravity are verified live; Z.ai and OpenRouter need an inference key to verify. Research behind it: [docs/research/](research/) (A: Claude Code side,
+B: Codex, C: Z.ai and OpenRouter, D: Antigravity, H: byte checks and live runs of the Agent-model design).
 
 ## What Claude sees
 
-Nothing new to learn. lastdrop's enabled agents show up as agent types next to the built-in ones
-(`lastdrop:codex-deep`, `lastdrop:glm`, …), each with its one-line role. Claude calls the built-in `Agent`
-tool with that `subagent_type`; the row, Show transcript, background, `SendMessage`, `TaskStop`,
-`ListAgents` and Open in Terminal work as they do for agents on other Claude accounts today.
+Nothing new to learn. The native list of agent types, which Claude Code puts in the conversation as
+`Available agent types…`, gets two lines appended for the main session:
 
-`model` can't carry providers: the Agent schema only accepts `sonnet | opus | haiku | fable`. The agent type
-picks the provider and model; the call's `model` is ignored (or rejected if it conflicts) for lastdrop types.
+```
+The Agent tool's model parameter also accepts these models the user added:
+- sol: Reviews: code, plans and diffs that need strong coding reasoning. (Codex · gpt-6.1-sol · high)
+```
+
+Claude calls the built-in `Agent` tool as before and names the agent as the model:
+`Agent({ subagent_type: "general-purpose", model: "sol" })`. The row, Show transcript, background,
+`SendMessage`, `TaskStop`, `ListAgents` and Open in Terminal work as they do for agents on other Claude
+accounts today. Tools and the system prompt are unchanged, so nothing new enters the prompt cache's
+prefix: the requests are byte-identical in `tools` and `system` with and without the plugin (evidence:
+[research H](research/H-agent-models.md)).
+
+The rule: lastdrop changes where a subagent runs, never what runs. An added agent runs on its own provider
+and model, and a Claude agent never runs on a different Claude model than the one asked for. If no account has
+the model, the call fails naming it, or (for a reroute) the built-in agent runs.
 
 ## The Agents list (Settings)
 
 **Save Claude usage** (off by default) asks Claude to delegate substantial implementation, exploration,
-reviews and research to lastdrop agents first, choosing by description, even when a description says to
-prefer built-in Claude subagents. Claude works itself or uses built-in agents only when none fits.
-The catalog stores this as `saveClaude`; older catalogs decode it as false.
+reviews and research to the models added to the Agent tool's model parameter first, choosing by description,
+even when a description says to prefer built-in Claude subagents. Claude works itself or uses built-in agents
+only when none fits. The catalog stores this as `saveClaude`; older catalogs decode it as false.
 
 One global list. Each entry:
 
 | Field | Notes |
 | --- | --- |
-| name | Becomes the agent type. Stable slug. |
+| name | The value Claude passes as `model`. A slug; `sonnet`, `opus`, `haiku`, `fable`, `inherit`, `best`, `opusplan` and anything starting with `claude-` are reserved, because the native model wins. |
 | description | The role Claude reads ("Second opinion on tricky bugs"). Also sent to the backend as instructions. |
 | provider | Claude account pool, Codex, Z.ai, OpenRouter (Antigravity: see below). |
 | model | Picked from the provider's live list (Codex `model/list`, OpenRouter `/api/v1/models` filtered to tool use, Z.ai fixed list). |
-| effort | Preset (fixed level) or dynamic (use the call's `effort`, mapped per provider; levels the model lacks are an error, not a silent clamp). |
-| enabled | Off hides the type; calls already in flight, or stale ones, get a clear "disabled" error. |
+| effort | Preset (fixed level), or the call's `effort`, which wins over the preset (levels the model lacks are an error, not a silent clamp). |
+| enabled | Off removes it from the list; a call already in flight or a stale one gets a clear "not available" error. |
 
 lastdrop writes the list as a revisioned catalog in Application Support. Credentials never go in it.
+`lastdrop --agent-catalog` prints the enabled agents (reserved names left out) and `agentModels: true`, which
+tells the plugin the app speaks this design.
 
 ## How it reaches Claude Code
 
-The mod API has what's needed (research A §3): `$.agent.register({name, description, prompt, model})`
-registers `lastdrop:<name>` for the session, and `agent.offer` hides disabled types. The plugin syncs the
-catalog on session start and before each prompt, so changes apply from the next turn. Claude Code 2.1.310
-snapshots its agent definitions before those prompt hooks: a newly registered type otherwise fails
-with `Agent type '…' not found` for one turn. The plugin recovers only that exact core error after
-permission checks, running the enabled definition through lastdrop. Other errors stay errors.
+**The listing.** A `prompt.attachment` hook rewrites the `agent_listing_delta` row for the main loop only,
+when the engine wrote it and the text starts with `Available agent types`. Subagents' own copies, removal-only
+deltas and every other attachment are left alone.
+
+**Freezing.** Claude Code re-resolves replayed messages on resume, so a list that followed the catalog would
+change old messages and miss the prompt cache. The appended text is stored per session on first rewrite and
+reused for every later `Available agent types` text of that session. Compaction of the main loop clears it,
+so the fresh listing is current; so does `/clear`. Old sessions' entries are pruned (about the latest 100).
+
+**Notes.** The plugin syncs the catalog before each prompt. When the list differs from what the session was
+last told, `prompt.submit` attaches a short context note ("The models the user added to the Agent tool's model
+parameter changed. It now accepts: …", or "…were removed.") and remembers it. The first prompt of a session
+has nothing frozen yet, so no note. If a later prompt finds no frozen listing while agents exist, Claude Code's
+listing format probably changed: the plugin sends the whole list through the same note and shows its status
+once.
+
+**Routing (`tool.call`).** `fork` goes first, as before. Then, for a `model` that isn't `sonnet`, `opus`,
+`haiku` or `fable`:
+
+- unknown after a catalog resync → denied, naming what is available ("Model x isn't available. Use sonnet, opus,
+  haiku, fable, or: sol, argon.");
+- a known agent called with `agentId`, `name`, remote isolation or a `subagent_type` other than
+  `general-purpose`, `claude`, `Explore` or `Plan` → denied with a reason;
+- otherwise `lastdrop --agent-route` is asked with `agent: <name>` (and `role: Explore | Plan` for those types,
+  no `model`). Room is checked as today; no room → denied.
+
+The plugin then passes the call to the engine without `model` and without worktree isolation, so the engine
+validates it and creates its own task. The call's arguments in the transcript are not changed: the model's
+`model: "sol"` stays. `agent.spawn` claims the task, and `turn.step` runs `lastdrop --agent-run` and serves the
+report. Native models, `SendMessage` to older routes and every other call behave as before. A
+`subagent_type: "lastdrop:x"` from before the update is denied with `model: "x"` as the replacement; runs
+started under the old names can still be continued.
+
+**The `subagent_type` form.** Models often try the name as the agent type first (`subagent_type: "sol"`). When
+the name is in the catalog, the plugin takes it as the added model and runs the call as `general-purpose`. If the
+call also has a different `model`, it is denied naming both choices. A custom agent type with the same name wins:
+the plugin only accepts the form when it has seen the native listing, and otherwise says to use `model: "sol"`.
+
+**Report header.** A successful added-agent run starts with `Ran on <model>.`, plus ` Worktree: <path> (branch
+<branch>).` when it had one, and on a following line `Declined (needed approval): a; b` when the provider asked
+for approvals lastdrop declined. A Claude reroute with a worktree gets just the worktree line.
 
 Usage saving adds one named block through `prompt.context`, leaving the shared system prompt intact.
 Claude renders context before prompt-submit hooks, so the context hook reads the catalog itself and
-invalidates that cached answer for the next prompt. The next prompt reads toggle changes in running sessions; unchanged text
-preserves the model's prompt cache. Turning it off omits the block.
+invalidates that cached answer for the next prompt.
+
+Claude Code sends a block with an unrouted name in one copy, made when the conversation holds none, and a
+later answer doesn't add to, change or take back a copy that stands. In a running conversation:
+
+- Switched on: the next prompt carries the block, added at the end of the conversation.
+- Switched off, or the prompt text edited: the copy already sent stays, and the model keeps reading it until
+  compaction or `/clear`. New conversations and compacted ones use the current setting.
+
+No case changes what was already sent, so the switch keeps the prompt cache. A request capture (2026-10-30,
+Claude Code 2.1.311, local mock API) found `tools` and `system` unchanged by the switch, and each request's
+cached prefix byte-identical in the next through on, off and text edits. The instruction stayed in the request
+after switching off and left only with compaction. The earlier `/context` check logged the hook's answer, not
+what the model receives.
 See the [mod API declarations](https://github.com/anthropics/claude-code/blob/main/mods/types/claude-code.d.ts),
-`prompt.context` and `ui.invalidate`.
+`prompt.context`, `prompt.attachment` and `tool.call`.
 
-Live verification (2026-10-27): the enabled mode selected `lastdrop:gemini` for a read-only exploration.
-An on/off context check in one running Pro session used local `/context` commands, with zero model
-requests, and logged the instruction followed by its absence. Total: two Haiku model turns.
-[Evidence](research/G-save-claude-usage-evidence.jsonl).
-
-Verified live: re-registering a type under the same name doesn't re-announce a changed description to
-Claude. The plugin puts the current enabled catalog in the Agent tool's description (`tool.describe`) and
-invalidates it on each revision. This also exposes new types before the native listing catches up. See
-[the live verification](research/F-agent-registration-live.md). Fallback if the API is missing: generated files in `~/.claude/agents/lastdrop/`
-(watched every 2 s), but they run natively if the plugin is absent, so they can't guarantee routing alone.
+Evidence (Claude Code 2.1.311, no bypass flags): the requests are byte-identical in `tools` and `system` with and
+without the plugin, and only the listing text differs. A model passed outside the enum reaches `tool.call`
+before validation, and rewriting through `next` keeps the model's own `model: "sol"` in the transcript. With the
+"models the user added" wording, Sonnet used `sol` for reviews 10/10 and `argon` for opinions 10/10, and Opus 5/5
+each, all on the first try with `model`, and no added model for a search (Sonnet 0/10, Opus 0/5). These are small
+samples through `claude -p`. See [research H](research/H-agent-models.md) for the byte checks and live runs.
 
 ## Routing rules
 
-- A lastdrop type always goes to its provider: never the built-in agent, never another account. The
-  exclusions that apply today (forks, teammates, nested calls…) become errors for lastdrop types.
+- An added agent always runs on its provider and its model: never the built-in agent, never another provider,
+  never another model. A Claude-provider agent may move among the accounts in the pool (one at its limit, or
+  without the model, passes it on); the provider and model stay the same. The exclusions that apply today (forks, teammates, nested calls…) become errors for added agents.
 - Out of room, signed out, model not on the plan → an error that says which and when it resets.
 - The run keeps the provider, model, effort and session id it started with; `SendMessage` continues there even
-  if the entry was edited since.
-- Other agent types keep today's behaviour (opportunistic other-Claude-account, then built-in).
+  if the entry was edited since. A read-only role is kept too.
+- A plain Claude call (a native model, or none) goes through a chain: the other Claude accounts first, the one
+  with the most room; then the built-in agent itself, exactly as if lastdrop hadn't
+  touched the call. When no other account takes it before any work was done (every attempt was refused for a
+  limit or a plan without the model), the runner says `native` and the plugin lets the built-in agent run. The
+  model is never swapped on the way. A call with worktree isolation, whose built-in shell has none, and a run
+  already underway (its session moves on to the next account, the session's own last) stay with the runner.
+- Every account is tried: one that refuses the model (a plan without it) is skipped for that run only, with nothing
+  remembered between runs, so a plan or credit change is noticed at once.
+
+## Worktrees
+
+With `isolation: "worktree"`, Codex and Antigravity runs get `<repo>/.claude/worktrees/agent-<id>` on the branch
+`worktree-agent-<id>`, as Claude Code names its own, in the same subfolder the call was made from. A run that
+changed nothing (clean tree, no commits) has its worktree and branch removed, as Claude Code does, and reports
+none; one that changed something keeps it, and the report's `Worktree:` line names its top and branch.
+`SendMessage` continues in it. Claude-runner providers use Claude Code's own `--worktree`. As for native
+worktrees, git sees `.claude/worktrees/` as untracked unless the repository ignores it.
+
+## Roles
+
+`Explore` and `Plan` run read-only on an added agent, however the permission mode is set, and get a brief in
+their instructions (search and report; return a step-by-step plan). Codex gets the read-only sandbox,
+Antigravity plan mode, and the Claude-runner providers (Claude accounts, Z.ai, OpenRouter)
+`--disallowedTools Edit,Write,NotebookEdit`.
+
+## Limits
+
+- Main session only: subagents don't get the list and can't call added agents.
+- Added agents run only as `general-purpose`, `claude`, `Explore` or `Plan`.
+- On Claude-runner providers a read-only role still allows `Bash`, which can write. Native Explore has the same
+  gap there; its restriction is by instruction.
+- The Agent tool's schema still shows four values for `model`; Claude follows the listing, and the plugin
+  accepts the rest before validation.
+- Provider permission requests are declined and reported (`Declined (needed approval)`), not asked. Argon
+  (Antigravity) can't run shell commands headless: denied commands are reported, and it continues without
+  them (its turn ends at the denial, so lastdrop continues the conversation once with a short prompt).
+  `agy` does accept per-session allow rules (`--settings '{"permissions":{"allow":["command(<exact command>)"]}}'`),
+  which lastdrop doesn't turn on by itself.
+- In auto mode, reports from routed agents can carry Claude Code's notice that its safety classifier was
+  unavailable. Likely cause, not confirmed: the handoff classifier can't review a synthetic transcript.
+  lastdrop leaves this as it is rather than bypass a safety check.
+- During an update, an older runner that is still running can strip `role` and the worktree fields from the
+  ledger once, so a follow-up to a read-only agent started before the update may lose its read-only role. A brief,
+  transient limit.
+- A session started before the update gets the list at its next resume, with one prompt-cache miss.
 
 ## Backends
 
@@ -103,7 +204,7 @@ persistence, wait logic (B §2, with the bugs to leave behind). Mapping:
   servers Codex already configures itself (`config/read`), which keep Codex's entry (LCU needs its Codex adapter); the role
   goes in `developerInstructions`; CLAUDE.md content is passed explicitly (Codex only reads AGENTS.md).
 - Open in Terminal: `cd <cwd> && CODEX_HOME=<home> codex resume <threadId>` (stop the runner's copy first).
-- Worktree isolation: lastdrop creates the worktree before `thread/start`.
+- Worktree isolation: lastdrop creates the worktree before `thread/start`, named as Claude Code names its own (see Worktrees).
 
 **3. Antigravity: through the official `agy` CLI as a child process (the user decided to go ahead; no OAuth token reuse).** `agy -p --output-format stream-json` would work technically (research D §4),
 but Google's current FAQ calls wrapping `agy` in third-party coding agents unsupported on consumer plans,
@@ -114,7 +215,7 @@ OAuth client and User-Agent, which those same terms cover. Worth reviewing.
 
 ## Order of work
 
-1. Catalog + Settings list + `$.agent.register` + routing rules, using the Claude account pool as the only
+1. Catalog + Settings list + listing and routing hooks, using the Claude account pool as the only
    provider. Proves registration, live edits, disable and errors with no new backend.
 2. Z.ai and OpenRouter on the Claude Code runner (config dirs, env scrub, warm-pool keys, error classes).
 3. Codex runner.

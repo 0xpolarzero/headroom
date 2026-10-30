@@ -15,7 +15,7 @@ struct AgentJob: Sendable {
     var definition: AgentDefinition
     var prompt: String
     var cwd: String
-    /// The definition's effort, else the call's; nil leaves it to the provider.
+    /// The call's effort, else the definition's; nil leaves it to the provider.
     var effort: String?
     /// The session's permission mode as Claude Code names it (`default`, `acceptEdits`, `plan`, `auto`,
     /// `bypassPermissions`); each backend maps it to its provider's own.
@@ -26,6 +26,11 @@ struct AgentJob: Sendable {
     var mcpConfig: String?
     /// A follow-up (SendMessage): the run it continues, as the registry remembers it.
     var resume: AgentRegistry.Entry?
+    /// `Explore` or `Plan`: the agent may not change files, whatever the permission mode says.
+    var role: String?
+
+    /// The agent's role from the list, plus the brief of the read-only role it was called as.
+    var instructions: String { definition.instructions(role: role) }
 }
 
 /// What a backend reports while it runs; the runner turns it into the plugin's lines and the agent's log.
@@ -89,6 +94,11 @@ enum ClaudeBackend: AgentBackend {
     }
 
     static func run(_ job: AgentJob, _ events: AgentEvents) async -> SubagentRunner.Result {
+        // Claude Code ignores a level it doesn't know with a warning; the call should fail instead.
+        if let effort = job.effort, !efforts.contains(effort) {
+            return .init(text: "Claude agents take \(efforts.joined(separator: ", ")) effort; received \(effort).", isError: true,
+                         limitReached: false, turns: 0, permissionDenials: 0)
+        }
         let config = ClaudeAccountsConfig.load()
         let permissionMode = AgentRun.mappedPermissionMode(job.permissionMode)
         let onProcess = events.process
@@ -100,7 +110,7 @@ enum ClaudeBackend: AgentBackend {
             AgentRegistry.setRunning(account.id)
             let req = SubagentRunner.Request(prompt: job.prompt, model: entry.model, effort: entry.effort, permissionMode: permissionMode,
                                              sessionID: entry.sessionID, resume: true, mcpConfig: job.mcpConfig,
-                                             systemPrompt: job.definition.instructions)
+                                             systemPrompt: job.instructions, disallowedTools: job.role == nil ? [] : SubagentRunner.editingTools)
             var result = await SubagentRunner.run(req, on: account, in: entry.directory, onProcess: onProcess, check: check(account, entry.model, events),
                                                   onStep: events.step, onItem: events.item)
             if result.limitReached { await SubagentUsage.shared.markFull(account) }
@@ -111,13 +121,15 @@ enum ClaudeBackend: AgentBackend {
         let own = SubagentAccounts.ownAccountUUID()
         var tried = Set<String>()
         var last: SubagentRunner.Result?
+        let model = job.definition.model
         while let account = await AgentRun.pick(config.ordered, config: config, own: own, excluding: tried) {
             AgentRegistry.setRunning(account.id)
-            let req = SubagentRunner.Request(prompt: job.prompt, model: job.definition.model, effort: job.effort, worktree: job.worktree,
+            let req = SubagentRunner.Request(prompt: job.prompt, model: model, effort: job.effort, worktree: job.worktree,
                                              permissionMode: permissionMode, sessionID: UUID().uuidString.lowercased(),
-                                             mcpConfig: job.mcpConfig, systemPrompt: job.definition.instructions)
+                                             mcpConfig: job.mcpConfig, systemPrompt: job.instructions,
+                                             disallowedTools: job.role == nil ? [] : SubagentRunner.editingTools)
             var result = await SubagentRunner.run(req, on: account, in: job.cwd, onProcess: onProcess,
-                                                  check: check(account, job.definition.model, events),
+                                                  check: check(account, model, events),
                                                   onStep: events.step, onItem: events.item)
             result.account = account.id
             if result.sessionID == nil { result.sessionID = req.sessionID }
@@ -129,10 +141,18 @@ enum ClaudeBackend: AgentBackend {
                 last = result
                 continue
             }
+            // The plan doesn't include the model: another account may. It is never swapped for another model.
+            if result.modelUnavailable && result.toolUses == 0 && !AgentRegistry.wasStopped(job.agentID) {
+                tried.insert(account.id)
+                events.step("Moved off \(account.id): its plan doesn't include \(model)")
+                last = result
+                continue
+            }
             return result
         }
         var none = last ?? .init(text: "", isError: true, limitReached: true, turns: 0, permissionDenials: 0)
-        none.text = "No other Claude account has room for \(job.definition.name) right now."
+        none.text = none.modelUnavailable ? AgentRun.modelRefusal(model, none.text)
+            : "No other Claude account has room for \(job.definition.name) right now."
         return none
     }
 

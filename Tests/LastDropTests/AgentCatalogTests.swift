@@ -82,4 +82,31 @@ final class AgentCatalogTests: XCTestCase {
         let old = try JSONDecoder.lastdrop.decode(AgentCatalog.self, from: Data(#"{"agents":[],"revision":3,"saveClaude":true}"#.utf8))
         XCTAssertNil(old.saveClaudeText)
     }
+
+    func testReservedNamesAreRefusedAndLeftOutOfThePlugin() {
+        for name in ["sonnet", "opus", "haiku", "fable", "inherit", "best", "opusplan", "claude-opus-4-8", "claude-x"] {
+            XCTAssertNotNil(AgentCatalog().problem(with: agent(name)), name)
+        }
+        XCTAssertNil(AgentCatalog().problem(with: agent("claude")))
+        XCTAssertNil(AgentCatalog().problem(with: agent("opus-deep")))
+        // A catalog stored before the rule keeps them, but the native model wins.
+        let json = AgentCatalog(agents: [agent("opus"), agent("claude-x"), agent("sol")]).pluginJSON()
+        XCTAssertEqual((json["agents"] as? [[String: Any]])?.map { $0["name"] as? String }, ["sol"])
+    }
+
+    func testAgentsAreExtraModelsForTheAgentTool() {
+        XCTAssertEqual(AgentCatalog.defaultSavingInstruction, "Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to the models the user added to the Agent tool's model parameter, picking by their descriptions, even where a description says to prefer built-in Claude subagents. Work yourself or with built-in subagents only when no added model fits.")
+        XCTAssertFalse(AgentCatalog.defaultSavingInstruction.contains("lastdrop"))
+        XCTAssertEqual(AgentCatalog(agents: [agent("sol")]).agent("sol")?.name, "sol")
+        XCTAssertEqual(AgentCatalog(agents: [agent("sol")]).agent("lastdrop:sol")?.name, "sol")   // runs started before the update
+    }
+
+    func testReadOnlyRolesAddTheirBriefToTheInstructions() {
+        let sol = agent("sol")
+        XCTAssertEqual(sol.instructions(role: nil), sol.instructions)
+        XCTAssertTrue(sol.instructions(role: "Explore").hasPrefix(sol.instructions))
+        XCTAssertTrue(sol.instructions(role: "Explore").contains("search and read only, change no files"))
+        XCTAssertTrue(sol.instructions(role: "Plan").contains("step-by-step implementation plan"))
+        XCTAssertEqual(sol.instructions(role: "general-purpose"), sol.instructions)
+    }
 }

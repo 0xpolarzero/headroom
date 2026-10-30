@@ -5,13 +5,20 @@ import Foundation
 /// tool with it. Reads a JSON request on stdin and writes JSON lines on stdout:
 ///
 /// - `{"type":"no_room"}`: no other account has room; the plugin lets the built-in subagent run.
+/// - `{"type":"native"}`: a plain call's accounts all refused it (a limit, or a plan without the model) before any
+///   work happened, so the plugin lets the built-in agent run, exactly as if lastdrop hadn't touched it. It can come
+///   at any point before the result, after `started` too. A call with worktree isolation (the built-in shell has
+///   none) and a run already underway stay with the runner, which falls back to the session's own account.
 /// - `{"type":"error","text"}`: it couldn't start, for a reason that needs fixing (no fallback hides it).
 /// - `{"type":"started","agentId","account","model","outputFile"}`: Claude Code started as expected and
-///   is running, the agent's id fixed.
+///   is running, the agent's id fixed; `model` is the model that runs.
 /// - `{"type":"step","text"}`: a step the agent took ("Read: note.txt").
-/// - `{"type":"moved","account","reason"}`: the account reached its usage limit; another took over (before
-///   any work, from the start; partway through, continuing the same session).
-/// - `{"type":"result","text","isError",...}`: its final answer; `stopped` when TaskStop ended it.
+/// - `{"type":"moved","account","reason"}`: the account reached its usage limit or lacks the model; another
+///   took over (before any work, from the start; partway through, continuing the same session).
+/// - `{"type":"result","text","isError",...}`: its final answer; `stopped` when TaskStop ended it. An agent
+///   from lastdrop's list also reports `worktreePath`, `worktreeBranch` and `declined` when they apply.
+///
+/// The model asked for is the model that runs: no account or provider ever stands in with another one.
 enum AgentRun {
     /// Set in a subagent's environment: a subagent never starts subagents on yet another account.
     static let nestedMarker = "LASTDROP_SUBAGENT"
@@ -29,10 +36,16 @@ enum AgentRun {
         var parentModel: String?
         /// An agent this runner started earlier: continue it (SendMessage) on its account.
         var resume: String?
-        /// An agent type from lastdrop's list (`lastdrop:codex-deep`): it runs on its own provider, never elsewhere.
+        /// An extra model of lastdrop's list (`codex-deep`, or `lastdrop:codex-deep` from before): it runs on its
+        /// own provider, never elsewhere. Then `model` is absent.
         var agent: String?
+        /// `Explore` or `Plan` when the call's agent type is one of those: an `agent` run then changes no files.
+        var role: String?
         /// Claude Code's native task id, also used for lastdrop's logs, stop and resume.
         var id: String?
+
+        /// The model a run on the Claude accounts needs: the call's, else the session's own.
+        var wantedModel: String? { model ?? parentModel }
 
         var validID: Bool {
             guard let id else { return true }
@@ -101,9 +114,7 @@ enum AgentRun {
         let config = ClaudeAccountsConfig.load()
         guard let account = await pick(config.ordered, config: config, own: SubagentAccounts.ownAccountUUID(), excluding: [], log: false)
         else { return }
-        var model = request.model ?? request.parentModel
-        if let m = model, AgentRegistry.lacksModel(account.id, m) { model = SubagentRunner.fallbackModel }
-        let req = SubagentRunner.Request(prompt: "", subagentType: request.subagentType, model: model, effort: request.effort,
+        let req = SubagentRunner.Request(prompt: "", subagentType: request.subagentType, model: request.wantedModel, effort: request.effort,
                                          permissionMode: mappedPermissionMode(request.permissionMode), sessionID: "",
                                          mcpConfig: writeMCPConfig(directory: request.cwd))
         guard let spec = SubagentRunner.warmSpec(req, on: account, in: request.cwd, environment: ProcessInfo.processInfo.environment)
@@ -179,6 +190,8 @@ enum AgentRun {
                                             own: SubagentAccounts.ownAccountUUID(), tried: [],
                                             permissionMode: permissionMode, mcpConfig: mcpConfig)
             AgentRegistry.remember(agentID, entry: moved)
+            result.worktreePath = moved.worktreePath
+            result.worktreeBranch = moved.worktreeBranch
             finish(agentID, result, account: moved.account)
             return
         }
@@ -190,9 +203,18 @@ enum AgentRun {
         var tried = Set<String>()
         var refused: SubagentRunner.Result?
         while true {
-            // Admitted already: when the room it was admitted for is gone, the session's own account takes it,
-            // as a built-in subagent would have run there.
-            guard let account = await nextAccount(accounts, config: config, own: own, excluding: tried) else {
+            // The chain for a plain call: the other accounts, then the built-in agent. Only a call with worktree
+            // isolation (the built-in shell has none) goes on to the session's own account through the runner.
+            let next = request.isolation == "worktree"
+                ? await nextAccount(accounts, config: config, own: own, excluding: tried)
+                : await pick(accounts, config: config, own: own, excluding: tried)
+            guard let account = next else {
+                if request.isolation != "worktree" {
+                    // No work happened (every attempt was refused before a tool ran): the built-in agent takes it.
+                    AgentRegistry.forget(agentID)
+                    emit(["type": "native"])
+                    return
+                }
                 if launch.started {
                     finish(agentID, refused ?? .init(text: AgentRun.noRoom, isError: true, limitReached: true, turns: 0, permissionDenials: 0), account: nil)
                 } else {
@@ -200,19 +222,18 @@ enum AgentRun {
                 }
                 return
             }
-            var model = request.model ?? request.parentModel
-            if let m = model, AgentRegistry.lacksModel(account.id, m) { model = SubagentRunner.fallbackModel }
+            let model = request.wantedModel
             AgentRegistry.setRunning(account.id)
-            let firstModel = model
             let check = launch.check(subagentType: request.subagentType, account: account.id) { event in
                 // A native stop can end the runner before `run` returns. Keep its session from init onward.
                 AgentRegistry.remember(agentID, entry: .init(account: account.id, directory: event["cwd"] as? String ?? request.cwd,
-                                                           sessionID: event["session_id"] as? String ?? "", model: event["model"] as? String ?? firstModel,
+                                                           sessionID: event["session_id"] as? String ?? "", model: event["model"] as? String ?? model,
                                                            subagentType: request.subagentType, effort: request.effort, at: Date()))
-                emit(["type": "started", "agentId": agentID, "account": account.id, "model": firstModel ?? "", "outputFile": logURL(agentID).path])
+                emit(["type": "started", "agentId": agentID, "account": account.id, "model": event["model"] as? String ?? model ?? "",
+                      "outputFile": logURL(agentID).path])
                 log(agentID, "Started on the \(account.id) account: \(request.description ?? "")")
             }
-            var req = SubagentRunner.Request(prompt: request.prompt, subagentType: request.subagentType, model: model,
+            let req = SubagentRunner.Request(prompt: request.prompt, subagentType: request.subagentType, model: model,
                                              effort: request.effort, worktree: request.isolation == "worktree",
                                              permissionMode: permissionMode, sessionID: UUID().uuidString.lowercased(),
                                              mcpConfig: mcpConfig)
@@ -220,17 +241,15 @@ enum AgentRun {
             var result = await SubagentRunner.run(req, on: account, in: request.cwd, onProcess: onProcess, check: check) {
                 step(agentID, $0)
             } onItem: { item(agentID, $0) }
-            // Plans differ in models (Pro has no Fable): run it again with one every plan has.
-            if result.modelUnavailable, model != SubagentRunner.fallbackModel, !AgentRegistry.wasStopped(agentID) {
-                if let model { AgentRegistry.rememberLacking(account.id, model) }
-                req.model = SubagentRunner.fallbackModel
-                req.sessionID = UUID().uuidString.lowercased()
-                step(agentID, "Using Sonnet: the \(account.id) plan doesn't include \(model ?? "the default model")")
-                result = await SubagentRunner.run(req, on: account, in: request.cwd, onProcess: onProcess, check: check) {
-                    step(agentID, $0)
-                } onItem: { item(agentID, $0) }
-            }
             if !launch.started { return fail(agentID, result) }
+            // Plans differ in models (Pro has no Fable): another account may have it. Never another model.
+            if result.modelUnavailable && result.toolUses == 0 && !AgentRegistry.wasStopped(agentID) {
+                tried.insert(account.id)
+                refused = result
+                refused?.text = modelRefusal(model, result.text)
+                emit(["type": "moved", "account": account.id, "reason": "\(account.id) doesn't include \(model ?? "the model")"])
+                continue
+            }
             if result.limitReached && result.toolUses == 0 && !AgentRegistry.wasStopped(agentID) {
                 // Refused before doing anything: another account can take the task whole.
                 await SubagentUsage.shared.markFull(account)
@@ -240,10 +259,13 @@ enum AgentRun {
                 continue
             }
             var entry = AgentRegistry.Entry(account: account.id, directory: result.directory ?? request.cwd,
-                                            sessionID: result.sessionID ?? req.sessionID, model: req.model,
+                                            sessionID: result.sessionID ?? req.sessionID, model: model,
                                             subagentType: request.subagentType, effort: request.effort, at: Date())
             (result, entry) = await carryOn(agentID, entry: entry, result: result, accounts: accounts, config: config, own: own,
                                             tried: tried, permissionMode: permissionMode, mcpConfig: mcpConfig)
+            noteWorktree(&result, isolation: request.isolation, cwd: request.cwd)
+            entry.worktreePath = result.worktreePath
+            entry.worktreeBranch = result.worktreeBranch
             AgentRegistry.remember(agentID, entry: entry)
             finish(agentID, result, account: entry.account)
             return
@@ -254,49 +276,46 @@ enum AgentRun {
     static let continuePrompt = "Continue the task from where you left off and finish it."
 
     /// An agent an account stopped at its usage limit partway through: its session moves to the next account
-    /// with room, else to the calling session's own, and continues there. Whoever called the agent only ever
-    /// gets its report; the limit shows only when every account, the session's own included, is at one.
+    /// with room that has its model, else to the calling session's own, and continues there. An account that
+    /// refuses the model passes it on the same way. Whoever called the agent only ever gets its report; the
+    /// limit, or the model, shows only when every account, the session's own included, is out of room or lacks it.
     static func carryOn(_ agentID: String, entry: AgentRegistry.Entry, result: SubagentRunner.Result,
                         accounts: [ClaudeAccount], config: ClaudeAccountsConfig, own: String?, tried: Set<String>,
                         permissionMode: String, mcpConfig: String?) async -> (SubagentRunner.Result, AgentRegistry.Entry) {
         var entry = entry, result = result, tried = tried
         var toolUses = result.toolUses, durationMs = result.durationMs
-        while result.limitReached, !AgentRegistry.wasStopped(agentID),
+        while result.limitReached || result.modelUnavailable, !AgentRegistry.wasStopped(agentID),
               let from = accounts.first(where: { $0.id == entry.account }) {
-            await SubagentUsage.shared.markFull(from)
+            let cause: String
+            if result.modelUnavailable {
+                cause = "\(from.id) doesn't include \(entry.model ?? "the model")"
+            } else {
+                await SubagentUsage.shared.markFull(from)
+                cause = "\(from.id) is at its usage limit"
+            }
             tried.insert(from.id)
             guard let to = await nextAccount(accounts, config: config, own: own, excluding: tried) else { break }
             guard SessionTransfer.copy(entry.sessionID, from: from, to: to) else {
                 SubagentLog.write("\(agentID): session \(entry.sessionID) couldn't be copied from \(from.id) to \(to.id)")
                 break
             }
-            SubagentLog.write("\(agentID) continues on \(to.id): \(from.id) is at its usage limit")
-            emit(["type": "moved", "account": from.id, "reason": "\(from.id) is at its usage limit; continuing on \(to.id)"])
-            log(agentID, "\(from.id) is at its usage limit; continuing on the \(to.id) account.")
-            if let m = entry.model, AgentRegistry.lacksModel(to.id, m) { entry.model = SubagentRunner.fallbackModel }
+            SubagentLog.write("\(agentID) continues on \(to.id): \(cause)")
+            emit(["type": "moved", "account": from.id, "reason": "\(cause); continuing on \(to.id)"])
+            log(agentID, "\(cause); continuing on the \(to.id) account.")
             entry.account = to.id
             AgentRegistry.setRunning(to.id)
             AgentRegistry.remember(agentID, entry: entry)   // a stop or a follow-up finds it on its new account
-            var req = SubagentRunner.Request(prompt: continuePrompt, subagentType: entry.subagentType, model: entry.model,
+            let req = SubagentRunner.Request(prompt: continuePrompt, subagentType: entry.subagentType, model: entry.model,
                                              effort: entry.effort, permissionMode: permissionMode, sessionID: entry.sessionID,
                                              resume: true, mcpConfig: mcpConfig)
             let onProcess: @Sendable (Int32) -> Void = { AgentRegistry.setProcess(agentID, claude: $0) }
             result = await SubagentRunner.run(req, on: to, in: entry.directory, onProcess: onProcess) {
                 step(agentID, $0)
             } onItem: { item(agentID, $0) }
-            if result.modelUnavailable, let model = entry.model, model != SubagentRunner.fallbackModel,
-               !AgentRegistry.wasStopped(agentID), SessionTransfer.copy(entry.sessionID, from: from, to: to) {
-                AgentRegistry.rememberLacking(to.id, model)
-                entry.model = SubagentRunner.fallbackModel
-                req.model = entry.model
-                step(agentID, "Using Sonnet: the \(to.id) plan doesn't include \(model)")
-                result = await SubagentRunner.run(req, on: to, in: entry.directory, onProcess: onProcess) {
-                    step(agentID, $0)
-                } onItem: { item(agentID, $0) }
-            }
             toolUses += result.toolUses
             durationMs += result.durationMs
         }
+        if result.modelUnavailable, let model = entry.model { result.text = modelRefusal(model, result.text) }
         result.toolUses = toolUses
         result.durationMs = durationMs
         return (result, entry)
@@ -321,11 +340,12 @@ enum AgentRun {
     /// take it. Nothing stands in for it: no other provider, no built-in agent.
     static func runDefined(_ definition: AgentDefinition, _ request: Request, agentID: String, resume: AgentRegistry.Entry?,
                            mcpConfig: String?) async {
-        SubagentLog.write("\(agentID) \(resume == nil ? "start" : "continue") \(definition.type) on \(definition.summary)")
+        SubagentLog.write("\(agentID) \(resume == nil ? "start" : "continue") \(definition.name) on \(definition.summary)")
         let launch = Launch()
         let job = AgentJob(agentID: agentID, definition: definition, prompt: request.prompt, cwd: resume?.directory ?? request.cwd,
-                           effort: resume?.effort ?? definition.effort ?? request.effort, permissionMode: request.permissionMode ?? "default",
-                           worktree: request.isolation == "worktree", mcpConfig: mcpConfig, resume: resume)
+                           effort: effort(definition, request, resume: resume), permissionMode: request.permissionMode ?? "default",
+                           worktree: request.isolation == "worktree", mcpConfig: mcpConfig, resume: resume,
+                           role: resume?.role ?? request.role)
         let events = AgentEvents(
             process: { AgentRegistry.setProcess(agentID, claude: $0) },
             started: { place, model in
@@ -336,17 +356,69 @@ enum AgentRun {
             },
             step: { step(agentID, $0) },
             item: { item(agentID, $0) })
-        let result = await definition.provider.backend.run(job, events)
+        var result = await definition.provider.backend.run(job, events)
         guard launch.started else { return fail(agentID, result) }
-        let entry = resume ?? AgentRegistry.Entry(account: result.account ?? definition.provider.displayName, directory: request.cwd,
-                                                   sessionID: "", model: definition.model, subagentType: definition.type,
-                                                   effort: job.effort, at: Date(), definition: definition, accountID: result.accountID)
+        requireReport(&result, from: definition)
+        // The backends make their worktrees differently (detached, or on a branch of their own); where the run
+        // ended up tells which, whichever made it.
+        if let resume {
+            result.worktreePath = resume.worktreePath
+            result.worktreeBranch = resume.worktreeBranch
+        } else {
+            noteWorktree(&result, isolation: request.isolation, cwd: request.cwd)
+            // As Claude Code does for its own: a worktree where nothing changed is removed, so the run
+            // reports and continues (SendMessage) in the folder it was called in.
+            if let path = result.worktreePath, definition.provider == .codex || definition.provider == .antigravity,
+               AgentWorktree.isUnchanged(path), AgentWorktree.remove(path) {
+                result.worktreePath = nil
+                result.worktreeBranch = nil
+                result.directory = request.cwd
+            }
+        }
+        var entry = resume ?? AgentRegistry.Entry(account: result.account ?? definition.provider.displayName, directory: request.cwd,
+                                                   sessionID: "", model: definition.model, subagentType: definition.name,
+                                                   effort: job.effort, at: Date(), definition: definition, accountID: result.accountID,
+                                                   role: job.role)
+        if resume == nil {
+            entry.worktreePath = result.worktreePath
+            entry.worktreeBranch = result.worktreeBranch
+        }
         if let session = result.sessionID, !session.isEmpty {
             var updated = entry
             updated.sessionID = session
             AgentRegistry.remember(agentID, entry: updated, at: result.directory)
         }
-        finish(agentID, result, account: result.account ?? definition.provider.displayName)
+        finish(agentID, result, account: result.account ?? definition.provider.displayName, agent: true)
+    }
+
+    /// A run that reports nothing is a failure whatever the provider, never a silent success.
+    static func requireReport(_ result: inout SubagentRunner.Result, from definition: AgentDefinition) {
+        guard !result.isError, result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        result.isError = true
+        result.text = "\(definition.provider.displayName) returned an empty report for \(definition.name)."
+    }
+
+    /// Notes where a run with worktree isolation ended up, when that isn't the folder it was called in.
+    static func noteWorktree(_ result: inout SubagentRunner.Result, isolation: String?, cwd: String) {
+        guard isolation == "worktree", let directory = result.directory, directory != cwd else { return }
+        // Where it ran may be a subfolder of the worktree; the worktree is its top.
+        let top = AgentWorktree.root(of: directory) ?? directory
+        result.worktreePath = top
+        result.worktreeBranch = branch(of: top)
+    }
+
+    /// The branch a worktree has checked out; nil when it is detached or git can't say.
+    static func branch(of directory: String) -> String? {
+        let git = Process(), output = Pipe()
+        git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        git.arguments = ["-C", directory, "symbolic-ref", "--short", "-q", "HEAD"]
+        git.standardOutput = output
+        git.standardError = FileHandle.nullDevice
+        guard (try? git.run()) != nil else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        git.waitUntilExit()
+        let name = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return git.terminationStatus == 0 && !name.isEmpty ? name : nil
     }
 
     /// What a run's callbacks share: whether `started` went out, which happens once Claude Code's init
@@ -388,6 +460,17 @@ enum AgentRun {
 
     static let noRoom = "No other Claude account has room right now. Use built-in subagents."
 
+    /// The effort a run takes: a follow-up's own, else the call's, else the one the agent's definition fixes.
+    static func effort(_ definition: AgentDefinition, _ request: Request, resume: AgentRegistry.Entry?) -> String? {
+        resume?.effort ?? request.effort ?? definition.effort
+    }
+
+    /// What the caller reads when no account could run the model: never a different model in its place.
+    static func modelRefusal(_ model: String?, _ detail: String) -> String {
+        "No Claude account lastdrop can use includes \(model ?? "the model"), and no other model stands in for it. \(detail)"
+    }
+
+    /// The account with the most room.
     static func pick(_ accounts: [ClaudeAccount], config: ClaudeAccountsConfig, own: String?,
                              excluding tried: Set<String>, log: Bool = true) async -> ClaudeAccount? {
         var candidates: [SubagentAccounts.Candidate] = []
@@ -484,7 +567,7 @@ enum AgentRun {
         exit(0)
     }
 
-    private static func finish(_ agentID: String, _ result: SubagentRunner.Result, account: String?) {
+    private static func finish(_ agentID: String, _ result: SubagentRunner.Result, account: String?, agent: Bool = false) {
         AgentRegistry.setProcess(agentID, claude: nil)
         if AgentRegistry.takeStopped(agentID) {
             log(agentID, "Stopped.")
@@ -503,6 +586,9 @@ enum AgentRun {
         ]
         if let account { object["account"] = account }
         if let model = result.model { object["model"] = model }
+        if let path = result.worktreePath { object["worktreePath"] = path }
+        if let branch = result.worktreeBranch { object["worktreeBranch"] = branch }
+        if agent, !result.declined.isEmpty { object["declined"] = result.declined }
         emit(object)
     }
 
@@ -550,15 +636,50 @@ enum AgentRegistry {
         var definition: AgentDefinition?
         /// For an agent from lastdrop's list: the `Account.id` it runs on.
         var accountID: String?
+        /// `Explore` or `Plan` for an agent called as a read-only role: a follow-up stays read-only.
+        var role: String?
+        /// Where it ran when it had a worktree of its own, and the branch when that has one: a follow-up reports them again.
+        var worktreePath: String?
+        var worktreeBranch: String?
     }
     /// A running agent's processes: its runner's and Claude Code's.
     struct Processes: Codable { var runner: Int32; var claude: Int32 }
+    /// The ledger file. Older and newer lastdrop versions read and write it by turns, so it keeps every key an
+    /// older version requires (`lacking`, `fullUntil`), and no key here is required to decode: a missing or
+    /// unknown one never makes the whole ledger unreadable.
     struct Store: Codable {
         var agents: [String: Entry] = [:]
-        var lacking: [String: [String]] = [:]   // account → models its plan doesn't include
         var fullUntil: [String: Date] = [:]     // account → when to try it again after "limit reached"
         var processes: [String: Processes]? = [:]
         var stopped: [String]? = []             // agents TaskStop ended, until their runner reported it
+
+        init() {}
+
+        private enum Keys: String, CodingKey { case agents, lacking, fullUntil, processes, stopped }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            agents = try c.decodeIfPresent([String: Entry].self, forKey: .agents) ?? [:]
+            fullUntil = try c.decodeIfPresent([String: Date].self, forKey: .fullUntil) ?? [:]
+            processes = try c.decodeIfPresent([String: Processes].self, forKey: .processes) ?? [:]
+            stopped = try c.decodeIfPresent([String].self, forKey: .stopped) ?? []
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: Keys.self)
+            try c.encode(agents, forKey: .agents)
+            // Older versions require `lacking` (the models an account's plan lacked, which is no longer kept).
+            try c.encode([String: [String]](), forKey: .lacking)
+            try c.encode(fullUntil, forKey: .fullUntil)
+            try c.encode(processes ?? [:], forKey: .processes)
+            try c.encode(stopped ?? [], forKey: .stopped)
+        }
+
+        mutating func forget(_ id: String) {
+            agents[id] = nil
+            processes?[id] = nil
+            stopped?.removeAll { $0 == id }
+        }
     }
 
     private static func withStore<T>(_ body: (inout Store) -> T) -> T {
@@ -566,13 +687,26 @@ enum AgentRegistry {
         let lockFD = open(LastDropPaths.agentsLock.path, O_CREAT | O_RDWR, 0o600)
         if lockFD >= 0 { flock(lockFD, LOCK_EX) }
         defer { if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD) } }
-        var store = (try? Data(contentsOf: LastDropPaths.agents)).flatMap { try? JSONDecoder.lastdrop.decode(Store.self, from: $0) } ?? Store()
+        var (store, writable) = readStore(at: LastDropPaths.agents)
         let value = body(&store)
         if store.agents.count > 500 {
             store.agents = Dictionary(uniqueKeysWithValues: store.agents.sorted { $0.value.at > $1.value.at }.prefix(400).map { ($0.key, $0.value) })
         }
-        try? JSONEncoder.lastdrop.encode(store).write(to: LastDropPaths.agents, options: .atomic)
+        if writable { try? JSONEncoder.lastdrop.encode(store).write(to: LastDropPaths.agents, options: .atomic) }
         return value
+    }
+
+    /// The ledger at `url`, and whether this call may write it back. A missing file is a new ledger. A file that
+    /// exists but can't be read or decoded is never written over or deleted: it is moved to a unique
+    /// `<name>.unreadable-<timestamp>`, and only once that holds does this call start a new ledger. If the move
+    /// fails, the call works on an empty ledger it doesn't save: losing one update is better than the ledger.
+    static func readStore(at url: URL, move: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) })
+        -> (store: Store, writable: Bool) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return (Store(), true) }
+        if let data = try? Data(contentsOf: url), let store = try? JSONDecoder.lastdrop.decode(Store.self, from: data) {
+            return (store, true)
+        }
+        return (Store(), UnreadableFile.moveAside(url, move: move))
     }
 
     static func remember(_ id: String, entry: Entry, at directory: String? = nil) {
@@ -618,6 +752,11 @@ enum AgentRegistry {
         }
     }
 
+    /// Drops an agent that never ran, so a follow-up doesn't find an entry for the built-in agent's work.
+    static func forget(_ id: String) {
+        withStore { $0.forget(id) }
+    }
+
     static func lookup(_ id: String) -> Entry? { withStore { $0.agents[id] } }
 
     /// Agents whose runner is alive, newest first: read without the lock and without writing, for the panel.
@@ -628,12 +767,6 @@ enum AgentRegistry {
             guard p.claude > 0, kill(p.runner, 0) == 0, let entry = store.agents[id] else { return nil }
             return (id, entry)
         }.sorted { $0.entry.at > $1.entry.at }
-    }
-
-    static func lacksModel(_ account: String, _ model: String) -> Bool { withStore { $0.lacking[account]?.contains(model) ?? false } }
-
-    static func rememberLacking(_ account: String, _ model: String) {
-        withStore { store in if !(store.lacking[account]?.contains(model) ?? false) { store.lacking[account, default: []].append(model) } }
     }
 
     static func markFull(_ account: String) { withStore { $0.fullUntil[account] = Date().addingTimeInterval(600) } }

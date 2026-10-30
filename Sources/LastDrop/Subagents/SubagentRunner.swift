@@ -19,7 +19,12 @@ enum SubagentRunner {
         var systemPrompt: String?
         /// An isolated endpoint profile; these runs never claim an account's ready process.
         var endpoint: EndpointProfile?
+        /// Tools Claude Code must not offer (`--disallowedTools`), whatever the permission mode.
+        var disallowedTools: [String] = []
     }
+
+    /// The tools that change files, which a read-only role (Explore, Plan) never gets.
+    static let editingTools = ["Edit", "Write", "NotebookEdit"]
 
     struct Result: Equatable {
         var text: String
@@ -47,6 +52,11 @@ enum SubagentRunner {
         var account: String?
         /// For an agent from lastdrop's list: the `Account.id` it ran on, which a follow-up returns to.
         var accountID: String?
+        /// Short descriptions of the actions a provider asked approval for and lastdrop declined, as the caller reads them.
+        var declined: [String] = []
+        /// For an agent from lastdrop's list that ran in a worktree: where, and the branch when it has one.
+        var worktreePath: String?
+        var worktreeBranch: String?
     }
 
     /// What a run needs to know Claude Code is the one it expects, from its `system`/`init` event: nil when
@@ -61,9 +71,6 @@ enum SubagentRunner {
         return nil
     }
 
-    /// What a subagent falls back to when the account's plan lacks the model asked for: every paid plan has it.
-    static let fallbackModel = "sonnet"
-
     /// `claude -p` reads the prompt from stdin, so its length never meets the argument limit.
     static func arguments(_ request: Request) -> [String] {
         var args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", request.permissionMode]
@@ -74,6 +81,7 @@ enum SubagentRunner {
         if let model = request.model, !model.isEmpty { args += ["--model", model] }
         if let effort = request.effort, !effort.isEmpty { args += ["--effort", effort] }
         if request.worktree { args.append("--worktree") }
+        if !request.disallowedTools.isEmpty { args += ["--disallowedTools", request.disallowedTools.joined(separator: ",")] }
         if let mcp = request.mcpConfig { args += ["--mcp-config", mcp] }
         if let prompt = request.systemPrompt, !prompt.isEmpty { args += ["--append-system-prompt", prompt] }
         if let endpoint = request.endpoint { args += endpoint.arguments }
@@ -83,7 +91,7 @@ enum SubagentRunner {
     /// What a ready process must have been started with to take this run; nil for a follow-up.
     static func warmSpec(_ request: Request, on account: ClaudeAccount, in directory: String,
                          environment base: [String: String]) -> WarmPool.Spec? {
-        guard !request.resume, request.endpoint == nil else { return nil }
+        guard !request.resume, request.endpoint == nil, request.disallowedTools.isEmpty else { return nil }
         var args = arguments(request)
         if let i = args.firstIndex(of: "--session-id") { args.removeSubrange(i...i + 1) }
         return WarmPool.Spec(account: account.id, directory: directory, arguments: args,
@@ -129,6 +137,7 @@ enum SubagentRunner {
     /// where a ready process comes from.
     static func run(_ request: Request, on account: ClaudeAccount, in directory: String,
                     claim: (WarmPool.Spec) -> WarmPool.Claimed? = WarmPool.claim,
+                    executable override: String? = nil,
                     onProcess: @escaping @Sendable (Int32) -> Void = { _ in },
                     check: @escaping @Sendable ([String: Any]) -> String? = { _ in nil },
                     onStep: @escaping @Sendable (String) -> Void,
@@ -140,6 +149,9 @@ enum SubagentRunner {
         var sessionID = request.sessionID
         var pid: Int32 = 0
         var earlyInit: [String: Any]?
+        var switchedTo: String?
+        /// The model the run started on, from its init event: what it reports, whatever else `modelUsage` lists.
+        var startedOn: String?
         if let spec = warmSpec(request, on: account, in: directory, environment: base), let ready = claim(spec) {
             // Already started: switch it to this run's model and mode, then it only needs the prompt.
             pid = ready.pid
@@ -147,6 +159,8 @@ enum SubagentRunner {
             var it = ready.output.bytes.lines.makeAsyncIterator()
             if await switched(ready.input, &it, model: request.model, permissionMode: request.permissionMode, initEvent: &earlyInit) {
                 sessionID = ready.sessionID
+                // The init event it started with names the model it was warmed for, not the one it switched to.
+                if let model = request.model, !model.isEmpty { switchedTo = model }
                 ready.input.write(WarmPool.userMessage(request.prompt))
                 try? ready.input.close()
                 output = ready.output
@@ -161,7 +175,7 @@ enum SubagentRunner {
             }
         }
         if output == nil {
-            guard let claude = executable() else {
+            guard let claude = override ?? executable() else {
                 return Result(text: "Claude Code (`claude`) was not found on this Mac.", isError: true, limitReached: false,
                               turns: 0, permissionDenials: 0)
             }
@@ -197,6 +211,9 @@ enum SubagentRunner {
         func refuses(_ event: [String: Any]) -> Bool {
             guard ranIn == nil else { return false }
             ranIn = event.string("cwd") ?? directory
+            var event = event
+            if let switchedTo { event["model"] = switchedTo }
+            startedOn = event.string("model")
             refusal = check(event)
             if refusal != nil { terminate(pid) }
             return refusal != nil
@@ -247,6 +264,7 @@ enum SubagentRunner {
             return result
         }
         var result = parse(final, provider: request.endpoint?.provider)
+        result.model = startedOn
         result.toolUses = toolUses
         result.sessionID = sessionID
         result.directory = ranIn
@@ -336,6 +354,11 @@ enum SubagentRunner {
                 && (status == 429 || root.string("api_error") == "usage_limit_reached" || mentionsLimit(text))
         }
         let usage = root.dict("usage")
+        var declined: [String] = []
+        for denial in root["permission_denials"] as? [[String: Any]] ?? [] {
+            let line = describe(tool: denial.string("tool_name") ?? "tool", input: denial.dict("tool_input") ?? [:])
+            if !declined.contains(line) { declined.append(line) }
+        }
         return Result(text: text, isError: isError,
                       limitReached: limit,
                       modelUnavailable: modelUnavailable,
@@ -347,7 +370,7 @@ enum SubagentRunner {
                       outputTokens: Int(usage?.double("output_tokens") ?? 0),
                       cacheReadInputTokens: Int(usage?.double("cache_read_input_tokens") ?? 0),
                       cacheCreationInputTokens: Int(usage?.double("cache_creation_input_tokens") ?? 0),
-                      model: root.dict("modelUsage")?.keys.sorted().first)
+                      declined: declined)
     }
 
     /// Provider business codes survive Claude Code's flattened "API Error" strings.

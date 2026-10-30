@@ -8,7 +8,8 @@ import Foundation
 /// - `{"type":"failed","version","step","text"}`: what broke; the plugin shows it until a run passes.
 /// - `{"type":"skipped","reason"}`: nothing to test on (no account has room) or another session is testing.
 ///
-/// It costs two one-line Haiku answers on that account.
+/// It costs two one-line Haiku answers on that account. It also checks that Claude Code still has the
+/// flags read-only roles and effort use, which costs nothing.
 enum SelfTest {
     static func main() -> Never {
         Task.detached {
@@ -34,6 +35,12 @@ enum SelfTest {
         if let record = (try? Data(contentsOf: LastDropPaths.selfTest)).flatMap({ try? JSONDecoder.lastdrop.decode(Record.self, from: $0) }),
            record.version == version {
             return ["type": "ok", "version": version, "cached": true]
+        }
+
+        // Read-only roles and the call's effort lean on these flags; `claude --help` lists them without a request.
+        let help = output(of: claude, ["--help"])
+        for flag in ["--disallowedTools", "--effort"] where !help.contains(flag) {
+            return failed("flags", "Claude Code no longer has \(flag), which agents of lastdrop's list rely on")
         }
 
         LastDropPaths.ensure(LastDropPaths.support)
@@ -100,16 +107,21 @@ enum SelfTest {
 
     /// `claude --version`'s answer ("2.1.310 (Claude Code)"), or "" when it gave none.
     static func version(of claude: String) -> String {
+        output(of: claude, ["--version"]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// What `claude` prints for `arguments`, or "" when it didn't run.
+    static func output(of claude: String, _ arguments: [String]) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: claude)
-        process.arguments = ["--version"]
+        process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return "" }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(decoding: data, as: UTF8.self)
     }
 
     private final class Items: @unchecked Sendable {

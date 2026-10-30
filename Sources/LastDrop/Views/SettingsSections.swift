@@ -186,7 +186,7 @@ struct AgentsSections: View {
             }
             .sheet(isPresented: $editingPrompt) { SavingInstructionEditor(catalog: catalog) { catalog = AgentCatalog.load() } }
             PageSection("Your agents",
-                        info: "Agents run on your other plans. Claude Code calls them as lastdrop:<name> and picks one by its description. Changes apply from the next prompt.") {
+                        info: "Extra models for the Agent tool, run on your other plans. Claude Code passes the name as model and picks one by its description. Changes apply from the next prompt.") {
                 Button("New agent…") { editing = AgentDefinition(name: "", description: "", provider: .codex, model: "") }
             } content: {
                 if catalog.agents.isEmpty {
@@ -212,7 +212,7 @@ struct AgentsSections: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(agent.name).fontWeight(.medium)
-                    Text(agent.type).font(.caption.monospaced()).foregroundStyle(.tertiary)
+                    Text("model: \"\(agent.name)\"").font(.caption.monospaced()).foregroundStyle(.tertiary)
                     InfoTip(agent.description)
                 }
                 AgentBadges(agent: agent)

@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/71e4c020-37c8-4412-8ccc-0d7b69176202
 
 - **Any subscription as a subagent.** Make an agent on any connected plan: a name, when to use it, a model
   and an effort.
-- **Built in for Claude.** Claude calls it like its own subagents: `Agent({ subagent_type: "lastdrop:<name>" })`.
+- **Built in for Claude.** Claude calls it through the Agent tool's model: `Agent({ subagent_type: "general-purpose", model: "<name>" })`.
 - **Load-balanced.** Add several accounts per plan, Claude included. Each subagent runs on the account with
   the most usage left.
 - **Save Claude usage.** A switch that encourages Claude to delegate to your agents.
@@ -73,7 +73,7 @@ Turn on **Agents in Claude Code** in **Settings → Agents**. It works in the te
 desktop app.
 
 **Your agents.** Click **New agent…** and pick a name, when Claude should use it, a plan, a model and an
-effort. Claude sees it as `lastdrop:<name>`.
+effort. Claude sees it in the Agent tool's list of models.
 
 **Claude's subagents.** They run on your other Claude account with the most usage left (down to 10% by
 default), never on the session's own account. The panel marks that account **Next**. Each one is a normal

@@ -151,6 +151,144 @@ final class AntigravityBackendTests: XCTestCase {
         XCTAssertEqual(AntigravityBackend.terminal(job.resume!), "cd '/tmp/with '\\'' quote' || exit 1\nexec agy --conversation 'session; echo bad'")
     }
 
+    func testAReadOnlyRoleRunsInPlanModeWhateverTheModeIs() {
+        var job = job()
+        job.role = "Explore"
+        for mode in ["default", "acceptEdits", "auto", "bypassPermissions"] {
+            job.permissionMode = mode
+            let args = AntigravityBackend.arguments(job, slug: "gemini-3.8-flash-low")
+            XCTAssertEqual(args.firstIndex(of: "--mode").map { args[$0 + 1] }, "plan", mode)
+            XCTAssertFalse(args.contains("--dangerously-skip-permissions"), mode)
+        }
+        XCTAssertTrue(job.instructions.contains("search and read only"))
+    }
+
+    func testDeniedToolsAreListedAsDeclined() throws {
+        let log = Log()
+        var stream = AntigravityBackend.Stream(model: "m-low", directory: "/work", events: log.events)
+        try feed("""
+        {"event":"step_update","step_update":{"step_index":1,"step_type":"tool","state":"DONE","tool_name":"write_to_file","tool_info":{"parameters":{"TargetFile":"/work/a.txt"},"error":{"type":"PERMISSION_DENIED","message":"Write not allowed"}}}}
+        """, into: &stream)
+        XCTAssertEqual(stream.finish(exitCode: 1, stderr: "").declined, ["write_to_file: /work/a.txt"])
+    }
+
+    /// Captured from `agy` 2026-10-30 (gemini-4-argon-high, plan mode): the command was denied for want of an answer,
+    /// and the turn ended as a SUCCESS with an empty response.
+    func testADeniedCommandEndingInAnEmptySuccessIsAVisibleFailure() throws {
+        var stream = AntigravityBackend.Stream(model: "gemini-4-argon-high", directory: "/work", events: Log().events)
+        try feed("""
+        {"event":"init","conversation_id":"c1","init":{"cwd":"/work","model":"gemini-4-argon-high"}}
+        {"event":"step_update","step_update":{"conversation_id":"c1","step_index":0,"state":"DONE","step_type":"user_input"}}
+        {"event":"step_update","step_update":{"conversation_id":"c1","step_index":1,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":7178,"output_tokens":362}}}
+        {"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls -la /work"}}}}
+        {"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"ERROR","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls -la /work"},"error":{"type":"TOOL_ERROR","message":"permission check failed: user denied permission to run command"}}}}
+        {"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"","num_turns":1,"denied_actions":[{"action":"command","display_name":"RunCommand"}]}}
+        """, into: &stream)
+        let result = stream.finish(exitCode: 0, stderr: "")
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.text.contains("without writing a report"), result.text)
+        XCTAssertTrue(result.text.contains("run_command: ls -la /work"), result.text)
+        XCTAssertEqual(result.declined, ["run_command: ls -la /work"])
+        XCTAssertEqual(result.permissionDenials, 1)
+    }
+
+    func testAnEmptyReportIsAFailureForEveryProvider() {
+        let definition = AgentDefinition(name: "sol", description: "d", provider: .codex, model: "m")
+        for text in ["", "  \n"] {
+            var result = SubagentRunner.Result(text: text, isError: false, limitReached: false, turns: 1, permissionDenials: 0)
+            AgentRun.requireReport(&result, from: definition)
+            XCTAssertTrue(result.isError)
+            XCTAssertTrue(result.text.contains("empty report"))
+        }
+        var fine = SubagentRunner.Result(text: "done", isError: false, limitReached: false, turns: 1, permissionDenials: 0)
+        AgentRun.requireReport(&fine, from: definition)
+        XCTAssertFalse(fine.isError)
+    }
+
+    /// Captured shape: first turn denied and empty, then the same conversation is continued once and answers.
+    func testADeniedActionContinuesTheSameConversationOnce() async throws {
+        let folder = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("agy")
+        let script = """
+        #!/bin/bash
+        echo "$*" >> "\(folder.path)/calls"
+        cat >> "\(folder.path)/inputs"
+        if [ -z "$AGY_SECOND" ] && ! echo "$*" | grep -q -- "--conversation"; then
+          echo '{"event":"init","conversation_id":"c1","init":{"cwd":"\(folder.path)","model":"m"}}'
+          echo '{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"ERROR","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls"},"error":{"type":"TOOL_ERROR","message":"permission check failed"}}}}'
+          echo '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"","num_turns":1,"denied_actions":[{"action":"command","display_name":"RunCommand"}]}}'
+        else
+          echo '{"event":"init","conversation_id":"c1","init":{"cwd":"\(folder.path)","model":"m"}}'
+          echo '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"the report","num_turns":1}}'
+        fi
+        """
+        try script.write(to: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path.path)
+        var job = job(directory: folder.path)
+        job.permissionMode = "auto"
+        job.effort = nil
+        job.definition.model = "gemini-3.8-flash-low"
+        let result = await AntigravityBackend.run(job, Log().events, executable: path.path)
+        XCTAssertFalse(result.isError, result.text)
+        XCTAssertEqual(result.text, "the report")
+        XCTAssertEqual(result.declined, ["run_command: ls"])
+        let calls = try String(contentsOf: folder.appendingPathComponent("calls"), encoding: .utf8).split(separator: "\n").map(String.init)
+        let runs = calls.filter { $0.contains("--input-format") }
+        XCTAssertEqual(runs.count, 2)
+        XCTAssertFalse(runs[0].contains("--conversation"))
+        XCTAssertTrue(runs[1].contains("--conversation c1"))
+        for run in runs { XCTAssertTrue(run.contains("--model gemini-3.8-flash-low") && run.contains("--mode accept-edits"), run) }
+        XCTAssertTrue(try String(contentsOf: folder.appendingPathComponent("inputs"), encoding: .utf8).contains(AntigravityBackend.continuePrompt))
+    }
+
+    func testAStillEmptySecondTurnStaysAVisibleFailure() async throws {
+        let folder = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("agy")
+        let script = """
+        #!/bin/bash
+        echo "$*" >> "\(folder.path)/calls"
+        cat > /dev/null
+        echo '{"event":"init","conversation_id":"c1","init":{"cwd":"\(folder.path)","model":"m"}}'
+        echo '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"","num_turns":1,"denied_actions":[{"action":"command","display_name":"RunCommand"}]}}'
+        """
+        try script.write(to: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path.path)
+        var job = job(directory: folder.path)
+        job.definition.model = "gemini-3.8-flash-low"
+        let result = await AntigravityBackend.run(job, Log().events, executable: path.path)
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.text.contains("without writing a report"), result.text)
+        XCTAssertEqual(result.declined, ["RunCommand"])
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calls"), encoding: .utf8).split(separator: "\n").count, 2)
+    }
+
+    /// Needs a signed-in `agy`: a prompt that tempts a shell command still ends with a report.
+    func testLiveATemptedCommandStillEndsWithAReport() async throws {
+        guard ProcessInfo.processInfo.environment["LASTDROP_LIVE_AGY_DENIAL"] == "1" else {
+            throw XCTSkip("Set LASTDROP_LIVE_AGY_DENIAL=1 to run signed-in agy against a denied command.")
+        }
+        let repo = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try "def avg(xs):\n    return sum(xs)/len(xs)\n".write(to: repo.appendingPathComponent("util.py"), atomically: true, encoding: .utf8)
+        var reported = 0, total = 0
+        for mode in ["plan", "auto"] {
+            for _ in 0..<3 {
+                var job = job(directory: repo.path)
+                job.definition.model = "gemini-4-argon-high"
+                job.permissionMode = mode
+                job.prompt = "List the files in this folder with the shell command ls -la and run git log, then plan how to guard avg() against an empty list. Report your plan."
+                let result = await AntigravityBackend.run(job, Log().events)
+                total += 1
+                if !result.isError { reported += 1 }
+                print("LIVE-AGY \(mode) error=\(result.isError) declined=\(result.declined) text=\(result.text.prefix(60).replacingOccurrences(of: "\n", with: " "))")
+            }
+        }
+        print("LIVE-AGY reports \(reported)/\(total)")
+        XCTAssertGreaterThan(reported, 0)
+    }
+
     func testToolFailuresAndLongTextUseTranscriptLimits() throws {
         let log = Log()
         var stream = AntigravityBackend.Stream(model: "m-low", directory: "/work", events: log.events)
@@ -241,7 +379,7 @@ final class AntigravityBackendTests: XCTestCase {
         XCTAssertTrue(unavailable.text.contains("does not offer effort high"))
     }
 
-    func testWorktreeIsDetachedAndUsedByTheChild() async throws {
+    func testWorktreeIsNamedLikeClaudeCodesAndUsedByTheChild() async throws {
         let folder = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
         try git(["init", "-q", folder.path])
@@ -253,13 +391,10 @@ final class AntigravityBackendTests: XCTestCase {
         XCTAssertFalse(result.isError, result.text)
         let worktree = try XCTUnwrap(result.directory)
         XCTAssertNotEqual(worktree, folder.path)
-        XCTAssertTrue(worktree.contains("lastdrop-worktrees"))
+        XCTAssertEqual(URL(fileURLWithPath: worktree).resolvingSymlinksInPath().path, folder.resolvingSymlinksInPath().path + "/.claude/worktrees/agent-test")
         XCTAssertTrue(FileManager.default.fileExists(atPath: worktree + "/input"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path + "/input"))
-        let head = try String(contentsOfFile: worktree + "/.git", encoding: .utf8)
-        let gitDirectory = String(head.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst(8))
-        let reference = try String(contentsOfFile: gitDirectory + "/HEAD", encoding: .utf8)
-        XCTAssertFalse(reference.hasPrefix("ref:"))
+        XCTAssertEqual(AgentRun.branch(of: worktree), "worktree-agent-test")
     }
 
     func testLiveFlashAndResume() async throws {

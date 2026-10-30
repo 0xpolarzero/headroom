@@ -13,7 +13,7 @@ subagents. When another account has room (never the session's own, both threshol
 first), `lastdrop --agent-route` admits the call without starting a model or claiming a warm process.
 The engine still checks the call and creates its own task through `agent.spawn`'s `next(e)`. A separate
 `turn.step` hook runs `lastdrop --agent-run` inside that native task and serves the remote report without
-calling the session's model client. lastdrop-owned provider types (`lastdrop:<name>`) use the same adapter.
+calling the session's model client. Added agents (the Agent tool's `model: "<name>"`) use the same adapter.
 
 Claude Code owns foreground/background transitions, ctrl+b, notifications, waiting before print-mode
 exit, `ListAgents`, `TaskStop` and `SendMessage`. There are no plugin replacements for those tools or
@@ -133,7 +133,7 @@ Validation and live evidence are recorded below. All probes used this worktree, 
 development binary; `/Applications/lastdrop.app` was not replaced. Drivers used tiny prompts and Haiku.
 Main was at its weekly limit, so it could not be used as a real model driver for Pro:
 
-- A real Haiku driver on Pro exercised the enabled Codex-backed `lastdrop:sol` type for background,
+- A real Haiku driver on Pro exercised the enabled Codex-backed `sol` agent (then called `lastdrop:sol`) for background,
   foreground, SendMessage, TaskStop and ListAgents, both with plain input and stream-json input held open.
   All ten runs passed. The final outputs handled the native reports; SendMessage reused the same native
   id; ListAgents showed that native id while running; TaskStop executed the abort listener's stop command.

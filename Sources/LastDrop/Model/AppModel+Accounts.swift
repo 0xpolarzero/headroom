@@ -62,7 +62,7 @@ extension AppModel {
     }
 
     /// The account new work of this provider goes to, when there's a choice and agents use it: Claude
-    /// subagents, or a `lastdrop:` agent on this provider.
+    /// subagents, or an extra model of the Agent tool on this provider.
     private func nextAccountID(_ provider: ProviderID) -> String? {
         guard showsAgents else { return nil }
         let pool = accountsConfig.pool(provider).filter { localChecks[$0.id]?.agents == .ready }

@@ -13,7 +13,7 @@ enum LastDropPaths {
     static let agents = support.appendingPathComponent("subagents.json")
     static let agentsLock = support.appendingPathComponent("subagents.lock")
     static let agentsDir = support.appendingPathComponent("agents", isDirectory: true)
-    /// lastdrop's list of agents (Settings → Agents), which the plugin registers as agent types.
+    /// lastdrop's list of extra models for the Agent tool (Settings → Agents).
     static let agentCatalog = support.appendingPathComponent("agent-catalog.json")
     /// Each account's latest usage, written by the app as it refreshes, read by the subagent runner.
     static let usage = support.appendingPathComponent("usage.json")

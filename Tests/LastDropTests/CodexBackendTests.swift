@@ -152,6 +152,31 @@ final class CodexBackendTests: XCTestCase {
         XCTAssertEqual(requests.filter { $0.string("method") == "model/list" }.count, 2)
     }
 
+    func testDeclinedRequestsAreDescribedForTheCaller() async throws {
+        let fake = try fixture("standard")
+        let result = await CodexBackend.run(job(in: fake.deletingLastPathComponent().path), CodexEventLog().events, executable: fake.path)
+        XCTAssertTrue(["Bash", "Edit files", "Extra permissions", "mcpServer/elicitation/request"].allSatisfy(result.declined.contains), "\(result.declined)")
+        XCTAssertEqual(Set(result.declined).count, result.declined.count)
+        XCTAssertEqual(CodexBackend.describe(declined: "item/commandExecution/requestApproval", ["command": "git push\norigin"]), "Bash: git push origin")
+        XCTAssertEqual(CodexBackend.describe(declined: "execCommandApproval", ["command": ["rm", "-rf", "x"]]), "Bash: rm -rf x")
+    }
+
+    func testAReadOnlyRoleGetsTheReadOnlySandboxWhateverTheModeIs() async throws {
+        for mode in ["auto", "bypassPermissions", "acceptEdits"] {
+            let fake = try fixture("standard")
+            var request = job(in: fake.deletingLastPathComponent().path)
+            request.permissionMode = mode
+            request.role = "Plan"
+            let result = await CodexBackend.run(request, CodexEventLog().events, executable: fake.path)
+            XCTAssertFalse(result.isError, result.text)
+            let thread = try XCTUnwrap(try requests(fake).first { $0.string("method") == "thread/start" }?.dict("params"))
+            XCTAssertEqual(thread.string("sandbox"), "read-only", mode)
+            XCTAssertEqual(thread.string("approvalPolicy"), "never", mode)
+            XCTAssertEqual(thread.string("developerInstructions"), request.definition.instructions(role: "Plan"))
+            XCTAssertTrue(try XCTUnwrap(thread.string("developerInstructions")).contains("step-by-step implementation plan"))
+        }
+    }
+
     func testResumeUsesSavedDirectoryModelEffortAndTokenBaseline() async throws {
         let fake = try fixture("resume")
         var request = job(in: fake.deletingLastPathComponent().path)
@@ -253,7 +278,7 @@ final class CodexBackendTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
-    func testDetachedWorktreeExistsBeforeThreadStart() async throws {
+    func testNamedWorktreeExistsBeforeThreadStart() async throws {
         let fake = try fixture("standard")
         let directory = fake.deletingLastPathComponent().path
         try git(["init", "--quiet", directory])
@@ -265,6 +290,8 @@ final class CodexBackendTests: XCTestCase {
         defer { try? git(["-C", directory, "worktree", "remove", "--force", worktree]) }
         XCTAssertFalse(result.isError, result.text)
         XCTAssertNotEqual(worktree, directory)
+        XCTAssertTrue(worktree.hasSuffix("/.claude/worktrees/agent-test"))
+        XCTAssertEqual(AgentRun.branch(of: worktree), "worktree-agent-test")
         XCTAssertTrue(FileManager.default.fileExists(atPath: worktree + "/.git"))
         XCTAssertEqual(try requests(fake).first { $0.string("method") == "thread/start" }?.dict("params")?.string("cwd"), worktree)
     }
