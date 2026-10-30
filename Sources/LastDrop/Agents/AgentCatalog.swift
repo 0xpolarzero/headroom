@@ -32,6 +32,30 @@ enum AgentProvider: String, Codable, CaseIterable, Sendable, Identifiable {
     }
 }
 
+/// One entry of an agent's models, in the order they're tried: its first is the agent's own provider and model.
+struct AgentFallback: Codable, Hashable, Sendable, Identifiable {
+    /// Only the Settings rows use it, to tell them apart while they move: never stored, never compared.
+    var id = UUID()
+    var provider: AgentProvider
+    var model: String
+    var effort: String?
+
+    private enum CodingKeys: String, CodingKey { case provider, model, effort }
+
+    static func == (a: AgentFallback, b: AgentFallback) -> Bool { a.provider == b.provider && a.model == b.model && a.effort == b.effort }
+
+    func hash(into hasher: inout Hasher) { hasher.combine(provider); hasher.combine(model); hasher.combine(effort) }
+}
+
+extension Array where Element == AgentFallback {
+    /// Moves an entry up (negative) or down by its id, so the Settings rows stay what they were while they move.
+    mutating func move(_ id: UUID, by offset: Int) {
+        guard let from = firstIndex(where: { $0.id == id }) else { return }
+        let to = Swift.min(Swift.max(from + offset, 0), count - 1)
+        insert(remove(at: from), at: to)
+    }
+}
+
 /// One extra model of lastdrop's list: Claude passes its name as the Agent tool's `model` and it runs on
 /// its provider and model, whatever the call's agent type (general-purpose, Explore, Plan).
 struct AgentDefinition: Codable, Hashable, Sendable, Identifiable {
@@ -46,10 +70,45 @@ struct AgentDefinition: Codable, Hashable, Sendable, Identifiable {
     /// A fixed reasoning effort; nil lets each Agent call's `effort` decide.
     var effort: String?
     var enabled = true
+    /// Tried in order when an attempt fails before any work, for a reason about availability (a limit, a sign-in, the
+    /// model). Empty for most agents.
+    var fallbacks: [AgentFallback] = []
+
+    private enum CodingKeys: String, CodingKey { case id, name, description, provider, model, effort, enabled, fallbacks }
 
     /// "Codex · gpt-6.1-sol · high", where it runs as its row shows it.
     var summary: String {
+        ([Self.summary(provider, model, effort)] + fallbacks.map { Self.summary($0.provider, $0.model, $0.effort) }).joined(separator: ", then ")
+    }
+
+    private static func summary(_ provider: AgentProvider, _ model: String, _ effort: String?) -> String {
         ([provider == .claude ? "Claude" : provider.displayName, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
+    }
+
+    /// The models in the order they're tried, as Settings edits them.
+    var chain: [AgentFallback] {
+        get { [AgentFallback(provider: provider, model: model, effort: effort)] + fallbacks }
+        set {
+            guard let first = newValue.first else { return }
+            provider = first.provider
+            model = first.model
+            effort = first.effort
+            fallbacks = Array(newValue.dropFirst())
+        }
+    }
+
+    /// The primary, then each fallback, as agents of their own: this one's name and role, that attempt's provider,
+    /// model and effort, and no fallbacks.
+    var attempts: [AgentDefinition] {
+        var primary = self
+        primary.fallbacks = []
+        return [primary] + fallbacks.map { fallback in
+            var attempt = primary
+            attempt.provider = fallback.provider
+            attempt.model = fallback.model
+            attempt.effort = fallback.effort
+            return attempt
+        }
     }
 
     /// What the backend is told about its role: the same line Claude chose it by.
@@ -116,6 +175,13 @@ struct AgentCatalog: Codable, Equatable, Sendable {
         if agents.contains(where: { $0.name == definition.name && $0.id != definition.id }) { return "Another agent is named \(definition.name)." }
         if definition.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Say what the agent is for: Claude reads it to choose." }
         if definition.model.isEmpty { return "Pick a model." }
+        // The same model at another effort is a different attempt (`sol xhigh`, then `sol high`).
+        var seen = [AgentFallback(provider: definition.provider, model: definition.model, effort: definition.effort)]
+        for fallback in definition.fallbacks {
+            if fallback.model.isEmpty { return "Pick a model for each entry." }
+            if seen.contains(fallback) { return "\(fallback.model) on \(fallback.provider.displayName) is listed twice." }
+            seen.append(fallback)
+        }
         return nil
     }
 
@@ -166,5 +232,33 @@ extension AgentCatalog {
         revision = try values.decode(Int.self, forKey: .revision)
         saveClaude = try values.decodeIfPresent(Bool.self, forKey: .saveClaude) ?? false
         saveClaudeText = try values.decodeIfPresent(String.self, forKey: .saveClaudeText)
+    }
+}
+
+extension AgentDefinition {
+    /// `id`, `enabled` and the rest are required as before; only `effort` and `fallbacks` may be missing.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        description = try c.decode(String.self, forKey: .description)
+        provider = try c.decode(AgentProvider.self, forKey: .provider)
+        model = try c.decode(String.self, forKey: .model)
+        effort = try c.decodeIfPresent(String.self, forKey: .effort)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        fallbacks = try c.decodeIfPresent([AgentFallback].self, forKey: .fallbacks) ?? []
+    }
+
+    /// Without fallbacks the key is left out, so stored catalogs and ledger entries stay as they were.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(description, forKey: .description)
+        try c.encode(provider, forKey: .provider)
+        try c.encode(model, forKey: .model)
+        try c.encodeIfPresent(effort, forKey: .effort)
+        try c.encode(enabled, forKey: .enabled)
+        if !fallbacks.isEmpty { try c.encode(fallbacks, forKey: .fallbacks) }
     }
 }

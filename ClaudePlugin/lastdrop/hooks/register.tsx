@@ -273,10 +273,10 @@ class Run {
   }
 }
 
-type Begun = { run: Run; line: Line } | { noRoom: true } | { native: true } | { error: string }
+type Begun = { run: Run; line: Line; early: Line[] } | { noRoom: true } | { native: true } | { error: string }
 
 /**
- * Starts `lastdrop --agent-run` and reads it until the agent started: the run and its `started` line,
+ * Starts `lastdrop --agent-run` and reads it until the agent started: the run, its `started` line and the `moved`/`step` lines before it,
  * `noRoom` when no account has room, `native` when lastdrop leaves the run to the built-in agent, else the
  * error that kept it from starting.
  */
@@ -284,10 +284,12 @@ async function start($: EngineInterface, request: Record<string, unknown>): Prom
   try {
     const stream = $.process.spawn({ argv: [await runner($), '--agent-run'], input: JSON.stringify(request) })
     const run = new Run(stream[Symbol.asyncIterator]())
+    const early: Line[] = []
     for (let line = await run.next(); line; line = await run.next()) {
+      if (line.type === 'moved' || line.type === 'step') early.push(line)
       if (line.type === 'no_room') return { noRoom: true }
       if (line.type === 'native') return { native: true }
-      if (line.type === 'started') return { run, line }
+      if (line.type === 'started') return { run, line, early }
       if (line.type === 'error' || line.type === 'result') return { error: String(line.text ?? 'lastdrop could not start the agent.') }
     }
     return { error: 'lastdrop’s runner ended before the agent started.' }
@@ -340,6 +342,15 @@ async function record($: EngineInterface, id: string, line: Line): Promise<Remot
     quiet.delete(id)
     await showPane($)
   }
+  if (line.type === 'started') {
+    // A later attempt of the same run (a fallback): the row stays, and shows what really runs now.
+    await update($, agents, list => list.map(a => (a.id === id
+      ? { ...a, account: String(line.account ?? a.account), model: String(line.model ?? a.model),
+          provider: line.provider === undefined ? a.provider : String(line.provider) }
+      : a)))
+    $.ui.invalidate('ui.render')
+    return
+  }
   if (line.type === 'step' || line.type === 'moved') {
     const text = line.type === 'moved' ? `Moved off ${line.account}: ${line.reason}` : String(line.text)
     await update($, agents, list => list.map(a => (a.id === id ? { ...a, steps: [...a.steps, text].slice(-40) } : a)))
@@ -361,7 +372,8 @@ async function record($: EngineInterface, id: string, line: Line): Promise<Remot
       if (a.id !== id) return a
       agent = { ...a, status: stopped ? 'stopped' : failed ? 'failed' : 'done', endedAt: Date.now(),
                 result: stopped ? 'Stopped' : String(line.text ?? ''),
-                account: String(line.account ?? a.account), model: String(line.model ?? a.model) }
+                account: String(line.account ?? a.account), model: String(line.model ?? a.model),
+                provider: line.provider === undefined ? a.provider : String(line.provider) }
       return agent
     }),
   )
@@ -441,7 +453,8 @@ function header(route: Route, line: Line): string {
   if (!line.model) return ''
   const worktree = where ? ` ${where}` : ''
   const declined = Array.isArray(line.declined) && line.declined.length > 0 ? `\nDeclined (needed approval): ${line.declined.join('; ')}` : ''
-  return `Ran on ${String(line.model)}.${worktree}${declined}\n\n`
+  const skipped = Array.isArray(line.unavailable) && line.unavailable.length > 0 ? ` (${line.unavailable.join(', ')} unavailable)` : ''
+  return `Ran on ${String(line.model)}${skipped}.${worktree}${declined}\n\n`
 }
 
 function usageOf(line: Line, model: string): TurnUsage {
@@ -483,6 +496,8 @@ async function remoteTurn($: EngineInterface, e: TurnStepInput, route: Route, si
     run = begun.run
     if (String(begun.line.agentId) !== id) throw new Error('lastdrop’s runner did not keep the native agent id. Update the lastdrop app and plugin together.')
     await started($, begun.line, route.description, route.ran, route.toolUseId, plain)
+    // Switches made before the agent started (a fallback taken at once) still show in its row.
+    for (const line of begun.early) await record($, id, line)
     route.ran = true
     route.request.prompt = ''
     await $.store.set(`native-agent:${id}`, route)

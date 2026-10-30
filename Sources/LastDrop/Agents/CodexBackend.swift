@@ -6,8 +6,10 @@ import Foundation
 enum CodexBackend: AgentBackend {
     struct Failure: LocalizedError {
         var message: String
+        /// A failure about availability (the model or effort isn't offered), which an agent's fallback may take over.
+        var unavailable = false
         var errorDescription: String? { message }
-        init(_ message: String) { self.message = message }
+        init(_ message: String, unavailable: Bool = false) { self.message = message; self.unavailable = unavailable }
     }
 
     static func executable(environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -155,13 +157,21 @@ enum CodexBackend: AgentBackend {
         }
     }
 
+    /// An error about the account or the model, not the work: signed out, or a model Codex doesn't have.
+    static func unavailable(_ error: [String: Any]) -> Bool {
+        if error.string("codexErrorInfo") == "unauthorized" { return true }
+        let text = (error.string("message") ?? "").lowercased()
+        return text.contains("model") && ["not found", "not supported", "does not exist", "not available", "unknown model"].contains { text.contains($0) }
+    }
+
     static func limitReached(_ error: [String: Any], willRetry: Bool = false) -> Bool {
         !willRetry && error.string("codexErrorInfo") == "usageLimitExceeded"
     }
 
     static func run(_ job: AgentJob, _ events: AgentEvents) async -> SubagentRunner.Result {
         guard let path = executable() else {
-            return .init(text: "Codex (`codex`) was not found on this Mac.", isError: true, limitReached: false, turns: 0, permissionDenials: 0)
+            return .init(text: "Codex (`codex`) was not found on this Mac.", isError: true, limitReached: false, turns: 0, permissionDenials: 0,
+                         unavailable: true)
         }
         return await run(job, events, executable: path, account: AgentPool.account(.codex, resume: job.resume))
     }
@@ -184,11 +194,11 @@ enum CodexBackend: AgentBackend {
             return decline(method)
         }
         defer { server.stop() }
-        func result(_ text: String, error: Bool, limit: Bool = false, turns: Int = 0) -> SubagentRunner.Result {
+        func result(_ text: String, error: Bool, limit: Bool = false, unavailable: Bool = false, turns: Int = 0) -> SubagentRunner.Result {
             .init(text: text, isError: error, limitReached: limit, turns: turns, permissionDenials: state.denials,
                   toolUses: state.toolUses, durationMs: Int(Date().timeIntervalSince(startedAt) * 1000),
                   inputTokens: state.inputTokens, outputTokens: state.outputTokens, model: model,
-                  sessionID: sessionID, directory: directory, account: place, accountID: account.id, declined: declined.items)
+                  sessionID: sessionID, directory: directory, account: place, accountID: account.id, declined: declined.items, unavailable: unavailable)
         }
         do {
             try server.start()
@@ -197,8 +207,8 @@ enum CodexBackend: AgentBackend {
                 try await server.initialize()
                 if let effort {
                     let available = try await models(server)
-                    guard let selected = available.first(where: { $0.id == model }) else { throw Failure("Codex doesn't advertise model \(model); its reasoning effort cannot be validated.") }
-                    guard selected.efforts.contains(effort) else { throw Failure("Codex model \(model) doesn't support effort \(effort). Supported: \(selected.efforts.joined(separator: ", ")).") }
+                    guard let selected = available.first(where: { $0.id == model }) else { throw Failure("Codex doesn't advertise model \(model); its reasoning effort cannot be validated.", unavailable: true) }
+                    guard selected.efforts.contains(effort) else { throw Failure("Codex model \(model) doesn't support effort \(effort). Supported: \(selected.efforts.joined(separator: ", ")).", unavailable: true) }
                 }
                 if job.worktree && job.resume == nil {
                     directory = try AgentWorktree.create(in: directory, agentID: job.agentID).directory
@@ -265,7 +275,8 @@ enum CodexBackend: AgentBackend {
                         let error = turn.dict("error") ?? state.error
                         if turn.string("status") != "completed" {
                             return result(error?.string("message") ?? "Codex turn \(turn.string("status") ?? "failed").", error: true,
-                                          limit: error.map { limitReached($0) } ?? false, turns: 1)
+                                          limit: error.map { limitReached($0) } ?? false,
+                                          unavailable: error.map { unavailable($0) } ?? false, turns: 1)
                         }
                         guard !state.answer.isEmpty else { return result("Codex completed without an answer.", error: true, turns: 1) }
                         return result(state.answer, error: false, turns: 1)
@@ -276,7 +287,10 @@ enum CodexBackend: AgentBackend {
             } onCancel: { server.stop() }
         } catch {
             let data = (error as? CodexAppServer.RPCError)?.data as? [String: Any] ?? [:]
-            return result(error.localizedDescription, error: true, limit: limitReached(data) || state.error.map { limitReached($0) } == true)
+            let message = (error as? CodexAppServer.RPCError).map { ["message": $0.message].merging(data) { a, _ in a } } ?? [:]
+            return result(error.localizedDescription, error: true, limit: limitReached(data) || state.error.map { limitReached($0) } == true,
+                          unavailable: (error as? Failure)?.unavailable == true || unavailable(message)
+                              || state.error.map { unavailable($0) } == true)
         }
     }
 

@@ -1,14 +1,20 @@
 import SwiftUI
 
-/// Adding or editing one agent, in a sheet: its name and role, then where it runs.
+/// Adding or editing one agent, in a sheet: its name and role, then its models by priority.
 struct AgentEditor: View {
     @State var agent: AgentDefinition
     let catalog: AgentCatalog
     let save: (AgentDefinition) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var models: [AgentModel] = []
-    @State private var modelsError: String?
+    @State private var chain: [AgentFallback]
     @State private var error: String?
+
+    init(agent: AgentDefinition, catalog: AgentCatalog, save: @escaping (AgentDefinition) -> Void) {
+        _agent = State(initialValue: agent)
+        _chain = State(initialValue: agent.chain)
+        self.catalog = catalog
+        self.save = save
+    }
 
     private var isNew: Bool { !catalog.agents.contains { $0.id == agent.id } }
 
@@ -17,44 +23,32 @@ struct AgentEditor: View {
             Form {
                 Section {
                     TextField("Name", text: $agent.name, prompt: Text("reviewer"))
-                    TextField("When should Claude use it?", text: $agent.description,
-                              prompt: Text("Reviews code, plans and diffs that need strong reasoning."), axis: .vertical)
-                        .lineLimit(2...4)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Description")
+                        TextField("Description", text: $agent.description,
+                                  prompt: Text("Reviews code, plans and diffs that need strong reasoning."), axis: .vertical)
+                            .labelsHidden()
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(2...4)
+                    }
                 } footer: {
                     HStack(spacing: 4) {
                         Caption("Claude uses it as model: \"\(AgentDefinition.slug(agent.name))\" on the Agent tool.")
                         InfoTip("Claude picks agents by their description, so write it for Claude.")
                     }
                 }
-                Section("Runs on") {
-                    Picker("Provider", selection: $agent.provider) {
-                        ForEach(AgentProvider.allCases) { provider in
-                            HStack {
-                                ProviderLogo(id: provider.usageID, size: 13)
-                                Text(provider.displayName)
-                            }
-                            .tag(provider)
-                        }
+                Section {
+                    ForEach($chain) { $entry in
+                        let index = chain.firstIndex { $0.id == entry.id } ?? 0
+                        ModelRow(entry: $entry, index: index, count: chain.count,
+                                 move: { chain.move(entry.id, by: $0) },
+                                 remove: { chain.removeAll { $0.id == entry.id } })
                     }
-                    .onChange(of: agent.provider) { agent.model = ""; agent.effort = nil }
-                    if models.isEmpty {
-                        TextField("Model", text: $agent.model, prompt: Text("Model id"))
-                        if let modelsError { Caption(modelsError) }
-                    } else {
-                        Picker("Model", selection: $agent.model) {
-                            if !models.contains(where: { $0.id == agent.model }) { Text(agent.model.isEmpty ? "Choose…" : agent.model).tag(agent.model) }
-                            ForEach(models) { Text($0.name).tag($0.id) }
-                        }
-                        .onChange(of: agent.model) {
-                            if let effort = agent.effort, !efforts.contains(effort) { agent.effort = nil }
-                        }
-                    }
-                    if !efforts.isEmpty {
-                        Picker("Effort", selection: $agent.effort) {
-                            Text("Claude decides").tag(String?.none)
-                            ForEach(efforts, id: \.self) { Text($0.capitalized).tag(String?.some($0)) }
-                        }
-                    }
+                    Button("Add model") { chain.append(AgentFallback(provider: .codex, model: "", effort: nil)) }
+                } header: {
+                    Text("Models")
+                } footer: {
+                    Caption("Tried in order. The next one runs only if the one above can't start, never once work has begun.")
                 }
             }
             .formStyle(.grouped)
@@ -66,32 +60,128 @@ struct AgentEditor: View {
             }
             .padding(16)
         }
-        .frame(width: 460, height: 440)
-        .task(id: agent.provider) { await loadModels() }
+        .frame(width: 620, height: min(380 + CGFloat(chain.count) * 44, 640))
     }
 
     private func commit() {
         var next = agent
+        next.chain = chain
         next.name = AgentDefinition.slug(next.name)
         next.description = next.description.trimmingCharacters(in: .whitespacesAndNewlines)
         if let problem = catalog.problem(with: next) { error = problem; return }
         save(next)
         dismiss()
     }
+}
+
+/// One line of an agent's models: its place in the order, provider, model and effort, and buttons to move or remove it.
+private struct ModelRow: View {
+    @Binding var entry: AgentFallback
+    let index: Int
+    let count: Int
+    let move: (Int) -> Void
+    let remove: () -> Void
+    @State private var models: [AgentModel] = []
+    @State private var modelsError: String?
 
     /// The selected model's efforts; every level when the model isn't in the provider's list.
     private var efforts: [String] {
-        models.first { $0.id == agent.model }?.efforts ?? (agent.model.isEmpty ? [] : ClaudeBackend.efforts)
+        models.first { $0.id == entry.model }?.efforts ?? (entry.model.isEmpty ? [] : ClaudeBackend.efforts)
+    }
+
+    private var modelName: String {
+        models.first { $0.id == entry.model }?.name ?? (entry.model.isEmpty ? "Choose…" : entry.model)
+    }
+
+    private func logo(_ provider: AgentProvider) -> Image { Image(nsImage: Logos.colored(provider.usageID, size: 13)) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Text("\(index + 1)").font(.caption).monospacedDigit().foregroundStyle(.secondary).frame(width: 12, alignment: .leading)
+                ColumnMenu {
+                    ForEach(AgentProvider.allCases) { provider in
+                        // A new provider has other models: the reset belongs to this choice, not to a change of the row.
+                        Button { entry.provider = provider; entry.model = ""; entry.effort = nil } label: {
+                            logo(provider)
+                            Text(provider.displayName)
+                        }
+                    }
+                } label: {
+                    logo(entry.provider)
+                    Text(entry.provider.displayName)
+                }
+                .frame(width: 128)
+                Group {
+                    if models.isEmpty {
+                        TextField("Model", text: $entry.model, prompt: Text("Model id")).labelsHidden().textFieldStyle(.plain)
+                    } else {
+                        ColumnMenu {
+                            ForEach(models) { model in
+                                Button(model.name) {
+                                    entry.model = model.id
+                                    if let effort = entry.effort, !model.efforts.contains(effort) { entry.effort = nil }
+                                }
+                            }
+                        } label: {
+                            Text(modelName)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if !efforts.isEmpty {
+                        ColumnMenu {
+                            Button("Auto") { entry.effort = nil }
+                            ForEach(efforts, id: \.self) { effort in Button(effort.capitalized) { entry.effort = effort } }
+                        } label: {
+                            Text(entry.effort?.capitalized ?? "Auto")
+                        }
+                    }
+                }
+                .frame(width: 76, alignment: .leading)
+                HStack(spacing: 4) {
+                    Button { move(-1) } label: { Image(systemName: "chevron.up") }.disabled(index == 0).help("Move up")
+                    Button { move(1) } label: { Image(systemName: "chevron.down") }.disabled(index == count - 1).help("Move down")
+                    Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }.disabled(count == 1).help("Remove")
+                }
+                .buttonStyle(.borderless)
+                .frame(width: 66, alignment: .trailing)
+            }
+            if let modelsError { Caption(modelsError) }
+        }
+        .task(id: entry.provider) { await loadModels() }
     }
 
     private func loadModels() async {
         models = []
         modelsError = nil
         do {
-            models = try await agent.provider.backend.models()
-            if models.isEmpty { modelsError = "\(agent.provider.displayName) lists no models here: type the model's id." }
+            models = try await entry.provider.backend.models()
+            if models.isEmpty { modelsError = "\(entry.provider.displayName) lists no models here: type the model's id." }
         } catch {
-            modelsError = "Couldn't list \(agent.provider.displayName)'s models (\(error.localizedDescription)). Type the model's id."
+            modelsError = "Couldn't list \(entry.provider.displayName)'s models (\(error.localizedDescription)). Type the model's id."
         }
+    }
+}
+
+/// A menu that fills its column: its label starts at the column's left edge and its chevron ends at the right,
+/// so rows line up whatever they show. A `Picker` sizes to its content instead.
+private struct ColumnMenu<Items: View, Label: View>: View {
+    @ViewBuilder let items: () -> Items
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Menu(content: items) {
+            HStack(spacing: 6) {
+                label().lineLimit(1)
+                Spacer(minLength: 2)
+                Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
     }
 }
