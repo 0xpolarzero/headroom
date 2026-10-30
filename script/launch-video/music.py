@@ -1,13 +1,14 @@
-"""Score and sound design for the lastdrop launch film: 144 BPM, 22.5 bars, E phrygian.
+"""Score and sound design for the lastdrop launch film: 144 BPM, 20.75 bars, E phrygian.
 
 Everything is synthesized here: band-limited oscillators, a resonant state-variable filter,
-a ping-pong delay and a convolution reverb. Cue times match launch7.src.html (b(n) = n bars)."""
+a ping-pong delay and a convolution reverb. Cue times match launch.src.html (b(n) = n bars)."""
 import numpy as np
 from scipy import signal
 import wave, sys
 
 SR = 48000
-DUR = 22.5 * 4 * 60 / 144
+OPEN_BARS = 9                                   # the opening; the reel's cues count from its end
+DUR = (OPEN_BARS + 11.75) * 4 * 60 / 144
 N = int(SR * DUR)
 BPM = 144
 BEAT = 60 / BPM
@@ -292,9 +293,10 @@ def post_sweep(y, f_hi, f_lo, tau):
     fc = f_lo + (f_hi - f_lo) * np.exp(-t / tau)
     return np.stack([svf(y[0], fc, 0.35), svf(y[1], fc, 0.35)])
 
-# ---------------------------------------------------------------- arrangement (cues match launch7.src.html)
-HIT = b(1); GROW = HIT + .9; S3 = b(4); ROLL = [b(5.75), b(6.75)]; M0 = b(8); S5 = b(11); FLIP = b(12); SWAP = b(13)
-S6 = b(14); CLICK = b(16); S7 = b(18); LAND = b(18.5)
+# ---------------------------------------------------------------- arrangement (cues match launch.src.html)
+O = b(OPEN_BARS)
+HIT = O + b(.5); GROW = HIT + .9; ROWS = [HIT + b(1), HIT + b(1.4), HIT + b(1.8)]; S5 = HIT + b(3.5); FLIP = S5 + b(1); SWAP = FLIP + .35
+S6 = S5 + b(2.5); CLICK = S6 + b(1.25); S7 = CLICK + b(1); LAND = S7 + b(.5)
 E1, E2 = 28, 40
 drums = np.zeros(N); bassb = np.zeros(N); sfx = np.zeros(N); sfx_wet = np.zeros(N)
 pluckb = np.zeros((2, N)); mellowb = np.zeros((2, N)); padb = np.zeros((2, N))
@@ -305,9 +307,9 @@ def place2(buf, x, t, gain=1.0):
 
 K = kick()
 def groove(t0): return (HIT <= t0 < S5) or (S6 <= t0 < S7)
-for bar in range(23):
+for bar in range(13):
     for beat in range(4):
-        t0 = b(bar) + beat * BEAT
+        t0 = O + b(bar) + beat * BEAT
         if groove(t0):
             place(drums, K, t0, 1.0)
             i = at(t0); n = at(0.22)
@@ -319,9 +321,9 @@ for bar in range(23):
                 cut = 650 + 500 * (0.5 + 0.5 * np.sin(2 * np.pi * (t0 / (BAR * 8))))
                 place(bassb, bass_note(m, S16 * 0.92, 1.3 if s == 1 else 0.9, cut), t0 + s * S16, 0.8)
             place(drums, hat(True), t0 + BEAT / 2, 0.22)
-            if t0 >= b(3):
+            if t0 >= HIT:
                 for s in (1, 3): place(drums, hat(False), t0 + s * S16, 0.08 + 0.04 * (s == 3))
-            if beat in (1, 3) and t0 >= b(5): place(drums, hp(rng.standard_normal(at(0.12)), 1800) * np.exp(-np.arange(at(0.12)) / SR * 40), t0, 0.12)
+            if beat in (1, 3) and t0 >= HIT + b(1): place(drums, hp(rng.standard_normal(at(0.12)), 1800) * np.exp(-np.arange(at(0.12)) / SR * 40), t0, 0.12)
 
 HOOK_A = [(0, 0, 1), (3, 0, 0), (6, 3, 1), (8, 1, 0), (10, 0, 0), (11, -5, 0), (14, -4, 1),
           (16, 0, 1), (19, 0, 0), (22, 5, 1), (24, 3, 0), (26, 1, 0), (27, 0, 0), (30, -2, 0)]
@@ -340,21 +342,47 @@ def render_plucks(notes, buf, gain_fn, bright_fn):
         y = serum_note(dict(PLUCK, fil_cutoff_hz=900 + 2600 * u + (700 if acc else 0)), m, S16 * 1.6, 112 if acc else 84, tail=0.6)
         y = post_sweep(y, 3500 + 6000 * u + (2500 if acc else 0), 700 + 900 * u, 0.07 + 0.05 * u)
         place2(buf, y, tt, gain_fn(tt) * (1.0 if acc else 0.8))
-sweep = lambda tt: 0.5 - 0.5 * np.cos(2 * np.pi * (tt - b(3)) / (BAR * 8))
+sweep = lambda tt: 0.5 - 0.5 * np.cos(2 * np.pi * (tt - HIT) / (BAR * 8))
 # no melody: drums, bass, pads and the sound design carry it
 CH = [E2 + 12, E2 + 19, E2 + 24, E2 + 26, E2 + 31]
 def pad_at(t0, t1, cut, gain):
     y = serum_seq(dict(PAD, fil_cutoff_hz=cut), [(0, t1 - t0, m, 90) for m in CH], t1 - t0, tail=3)
     place2(padb, y, t0, gain)
-pad_at(0, HIT + .3, 900, 1.0)
 pad_at(S5 - .6, S6 + .1, 1400, 1.0)
 pad_at(LAND - .2, DUR - 0.5, 1100, 1.0)
-sub = np.sin(2 * np.pi * mtof(E1) * np.arange(at(HIT)) / SR) * np.linspace(0, 1, at(HIT)) ** 2 * 0.35
-place(bassb, sub, 0)
+sub = np.sin(2 * np.pi * mtof(E1) * np.arange(at(BAR)) / SR) * np.linspace(0, 1, at(BAR)) ** 2 * 0.35
+place(bassb, sub, HIT - BAR)
+
+# ---- the opening: quiet and explanatory, a pulse that gathers, then one held bar while the drop falls
+pad_at(0, b(3.5), 750, 0.8); pad_at(b(3.4), b(6.5), 1000, 0.9); pad_at(b(6.4), HIT + .3, 1300, 1.0)
+for bar in range(1, OPEN_BARS + 1):
+    for beat in range(4):
+        t0 = b(bar) + beat * BEAT
+        if t0 >= O: continue
+        lift = bar / (OPEN_BARS + 1)
+        place(bassb, bass_note(E1, S16 * 1.6, 0.8, 380 + 420 * lift), t0, 0.3 + 0.3 * lift)
+        if bar >= 4: place(drums, hat(False), t0 + BEAT / 2, 0.05 + 0.05 * lift)
+        if bar >= 6:
+            place(drums, K, t0, 0.55)
+            i = at(t0); n = at(0.22); sc[i:i + n] = np.minimum(sc[i:i + n], 1 - 0.35 * np.exp(-np.arange(n) / SR * 13))
 
 # ---- sound design: each cue is a moment in the picture
-for i in range(8): place(sfx, tick(0.95 + 0.04 * i, 0.32), 0.14 + i * 0.05)                                        # the line rises in, word by word
-place(sfx_wet, tink(88, 0.9, 0.12), 0.72)                                                    # the drop forms
+CARDS = [b(.1 + i * .35) for i in range(3)]; NAME_LEN = [8, 7, 7]; FB = [b(1.25), b(1.6)]; FOLD = b(2.75); BOX = b(3.25); FLY = [b(3.5), b(3.75), b(4)]; SCROLL = b(5.75); AM = [b(6.25), b(6.4), b(6.55)]; CALLS = [b(7.25), b(7.4)]
+for c, l, m in zip(CARDS, NAME_LEN, (76, 79, 83)):                                           # each agent is typed in
+    for k in range(l): place(sfx, tick(1.1 + 0.03 * k, 0.3), c + .1 + k * .05)
+    place(sfx_wet, tink(m, 0.5, 0.12), c + .3)
+for f, m in zip(FB, (83, 86)): place(sfx, tick(1.0, 0.35), f); place(sfx_wet, tink(m, 0.5, 0.16), f)    # a fallback joins the list
+place(sfx, whoosh(0.6, 3000, 500, 0.16), FOLD)                                               # the cards fold into tags
+place(sfx, whoosh(0.6, 500, 2600, 0.12), BOX)                                                # the blue block opens
+for f, m in zip(FLY, (76, 79, 83)):                                                          # each tag lands on its line
+    place(sfx, whoosh(0.4, 700, 2400, 0.1), f); place(sfx_wet, tink(m, 0.45, 0.16), f + .42)
+    for k in range(7): place(sfx, tick(1.2 + 0.02 * k, 0.16), f + .42 + k * .07)
+place(sfx, whoosh(0.8, 800, 3200, 0.16), SCROLL)                                             # the page scrolls to the tools
+for a, m in zip(AM, (76, 79, 83)): place(sfx_wet, tink(m, 0.6, 0.2), a); place(sfx, tick(1.0, 0.35), a)   # each name joins the model list
+for a in CALLS: place(sfx, tick(0.8, 0.5), a)
+place(sfx, whoosh(0.7, 3000, 500, 0.16), b(8.57))                                            # the page closes into the bead
+
+place(sfx_wet, tink(88, 0.9, 0.12), O)                                                    # the drop forms
 place(sfx, whoosh(0.5, 400, 3800, 0.18, 0.7), HIT - 0.48)                                    # the drop falls
 place(sfx, plip(620, 2100, 0.1, 0.9), HIT); place(sfx_wet, plip(620, 2100, 0.1, 0.8), HIT)
 place(sfx, boom(1.6), HIT, 0.7)
@@ -363,13 +391,10 @@ for k in range(4): place(sfx, tick(1.0 + 0.08 * k, 0.35), HIT + 0.42 + k * 0.03)
 for k in range(4):                                                                           # each plan grows
     f = mtof([59, 64, 67, 71][k]); tt = GROW + k * 0.06
     place(sfx, plip(f * 0.6, f * 1.5, 0.08, 0.45), tt); place(sfx_wet, plip(f * 0.6, f * 1.5, 0.08, 0.5), tt)
-place(sfx, whoosh(0.8, 3000, 400, 0.18), S3)                                                 # the plans move under the call
-for tt in [S3 + .9] + [r + .25 for r in ROLL]: place(sfx_wet, tink(83, 0.4, 0.18), tt)
-for r in ROLL + [SWAP]:
+for k, tt in enumerate(ROWS): place(sfx, tick(1.0, 0.45), tt); place(sfx_wet, tink([76, 79, 83][k], 0.4, 0.18), tt + .12)   # each agent starts, its plan lights up
+for r in [SWAP]:
     for k in range(6): place(sfx, tick(1.3 - k * 0.05, 0.35), r + (1 - (1 - k / 6) ** 1.7) * 0.4)
-place(sfx, whoosh(0.9, 500, 4500, 0.24), M0)                                                 # the call becomes a row
-for k in range(3): place(sfx_wet, tink([76, 79, 83][k], 0.3, 0.12), M0 + .85 + k * .04)      # the plans become chips
-place(sfx, whoosh(0.7, 3500, 500, 0.2), S5)                                                  # the window folds into the card
+place(sfx, whoosh(0.7, 3500, 500, 0.2), S5)                                                  # the plans give way to the switch
 place(sfx, tick(0.6, 0.9), FLIP); place(sfx, tick(0.8, 0.6), FLIP + 0.05)                     # the switch
 place(sfx_wet, tink(76, 1.4, 0.26), FLIP + 0.1); place(sfx_wet, tink(83, 1.4, 0.15), FLIP + 0.14)
 place(sfx, riser(BAR, 0.55), S6 - BAR)
@@ -403,7 +428,7 @@ mix = music + to(sfx_mix, -20)
 mix = hp(mix, 25)
 lim = pb.load_plugin(VST + 'FabFilter Pro-L 2.vst3')
 lim.gain = 0.0; lim.output_level = -1.0
-grv = mix[:, at(b(3)):at(b(10))]
+grv = mix[:, at(HIT):at(S5)]
 mix = mix * 10 ** ((-18.5 - 20 * np.log10(np.sqrt(np.mean(grv ** 2)))) / 20)   # the groove sits at -18.5 dB RMS before the limiter
 pre = mix.copy()
 lim.gain = 4.5
