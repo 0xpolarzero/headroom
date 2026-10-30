@@ -7,8 +7,8 @@
 <p align="center"><b>Every last drop out of your AI plans.</b></p>
 
 <p align="center">
-  A macOS menu bar app that shows what's left of every AI plan you pay for,<br>
-  and lets Claude Code run its subagents on whichever of them has room.
+  Use any AI subscription as built-in subagents in Claude Code,<br>
+  load-balanced across your accounts. A macOS menu bar app.
 </p>
 
 <p align="center">
@@ -20,22 +20,20 @@ https://github.com/user-attachments/assets/d3fbf598-a908-459f-b1b2-ebee54d4bc30
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-limits-dark.png">
-    <img src="docs/images/panel-limits-light.png" width="320" alt="The lastdrop panel: two Claude accounts, Codex, Antigravity, Z.ai and OpenRouter, each with what's left of its session and week">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-agents-dark.png">
+    <img src="docs/images/panel-agents-light.png" width="320" alt="The lastdrop panel, Agents tab: Claude Code subagents, Save Claude usage, and agents on other plans">
   </picture>
 </p>
 
 ## What it does
 
-- **Every limit at a glance.** Claude, Codex, Antigravity, Z.ai and OpenRouter: what's left of each session
-  and week, when it resets, and any extra credits. Pick what each account shows in the menu bar.
-- **Several accounts per plan.** A Max and a Pro, a work and a personal account: add them all.
-- **Subagents on the account with room.** When Claude Code starts a subagent, lastdrop runs it on whichever
-  of your Claude accounts has the most left. Nothing changes in how you work.
-- **Your other plans as agents.** Codex, Gemini (Antigravity), GLM (Z.ai) and any OpenRouter model show up
-  in Claude Code as agents it can call, next to its own.
-- **Save Claude usage.** One switch, and Claude plans and checks the work while your other plans do the
-  coding, searching and research.
+- **Any subscription as a subagent.** Make an agent on any connected plan: a name, when to use it, a model
+  and an effort.
+- **Built in for Claude.** Claude calls it like its own subagents: `Agent({ subagent_type: "lastdrop:<name>" })`.
+- **Load-balanced.** Add several accounts per plan, Claude included. Each subagent runs on the account with
+  the most usage left.
+- **Save Claude usage.** A switch that encourages Claude to delegate to your agents.
+- **Limits in the menu bar.** Usage left on each account, and when it resets.
 
 ## Install
 
@@ -49,7 +47,7 @@ You need macOS 15 or later. The agent features need [Claude Code](https://docs.a
 xattr -dr com.apple.quarantine /Applications/lastdrop.app
 ```
 
-3. Open it. Setup walks you through two steps: your accounts, then agents (optional).
+3. Open it and follow the setup: your accounts, then agents (optional).
 
 To build it yourself, you need the Swift 6 toolchain (Command Line Tools are enough):
 
@@ -67,47 +65,21 @@ rm -rf /Applications/lastdrop.app && cp -R dist/lastdrop.app /Applications/
   </picture>
 </p>
 
-## Accounts
-
-Logins already on your Mac show up on their own. Everything else is one button in **Settings → Accounts →
-Add account…**:
-
-| Plan | How you connect it | Agents |
-| --- | --- | --- |
-| Claude | Sign in with Claude, in your browser | Subagents |
-| Codex | Sign in with ChatGPT, in your browser | Yes |
-| Antigravity | Sign in with Google, in your browser | Yes, first account only |
-| Z.ai | A Coding Plan API key | Yes |
-| OpenRouter | An API key | Yes |
-
-Add as many accounts of a plan as you like. Each account has its own row: what it shows in the menu bar
-(nothing, its session, its week, or both) and when it notifies you (at 25% left, 10% left, or used up).
-With nothing picked, the menu bar shows just the drop.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-accounts-dark.png">
-    <img src="docs/images/settings-accounts-light.png" width="680" alt="Settings, Accounts: each account with its menu bar and notification choice">
-  </picture>
-</p>
-
 ## Agents in Claude Code
 
-Turn on **Agents in Claude Code** in **Settings → Agents**. lastdrop adds its plugin to Claude Code for all
-your sessions, in the terminal and in the Claude desktop app.
+Turn on **Agents in Claude Code** in **Settings → Agents**. It works in the terminal and in the Claude
+desktop app.
 
-**Subagents on your other Claude accounts.** When Claude starts a subagent, it runs on the account with
-the most left (by default, until it has 10% of its session or week left). The panel marks that account
-**Next**. A session never sends subagents to its own account. The subagent is a normal Claude Code process
-in the same folder, with the same model, permissions and MCP servers. You can watch it, background it,
-message it or stop it like any other, and `/agents-elsewhere` lists what runs where.
+**Your agents.** Click **New agent…** and pick a name, when Claude should use it, a plan, a model and an
+effort. Claude sees it as `lastdrop:<name>`.
 
-**Your agents on other plans.** Click **New agent…**, give it a name, say when Claude should use it, and
-pick the plan, model and effort. Claude sees it as `lastdrop:<name>` and picks it by its description. On a
-plan with several accounts, it runs on the one with the most left.
+**Claude's subagents.** They run on your other Claude account with the most usage left (down to 10% by
+default), never on the session's own account. The panel marks that account **Next**. Each one is a normal
+Claude Code process with the same folder, model, permissions and MCP servers. `/agents-elsewhere` lists
+what runs where.
 
-**Save Claude usage.** Claude hands implementation, exploration, reviews and research to your agents
-first. **Edit…** shows the exact prompt it adds, and lets you rewrite it.
+**Save Claude usage.** Adds a prompt that encourages Claude to delegate implementation, exploration, reviews
+and research. **Edit…** shows it and lets you change it.
 
 <p align="center">
   <picture>
@@ -118,6 +90,27 @@ first. **Edit…** shows the exact prompt it adds, and lets you rewrite it.
 
 How it works, with the tests behind it: [docs/claude-accounts.md](docs/claude-accounts.md) and
 [docs/agents.md](docs/agents.md).
+
+## Accounts
+
+Logins already on your Mac show up on their own. To add one, use **Settings → Accounts → Add account…**
+
+| Plan | How you connect it | Agents |
+| --- | --- | --- |
+| Claude | Sign in with Claude, in your browser | Subagents |
+| Codex | Sign in with ChatGPT, in your browser | Yes |
+| Antigravity | Sign in with Google, in your browser | Yes, first account only |
+| Z.ai | A Coding Plan API key | Yes |
+| OpenRouter | An API key | Yes |
+
+Add as many accounts per plan as you like. For each, pick what the menu bar shows and when you get notified.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-accounts-dark.png">
+    <img src="docs/images/settings-accounts-light.png" width="680" alt="Settings, Accounts: each account with its menu bar and notification choice">
+  </picture>
+</p>
 
 ## Privacy
 
