@@ -34,6 +34,10 @@ struct PanelView: View {
                 .padding(.vertical, 8)
             }
             Divider()
+            if model.updater.showsInPanel {
+                UpdateBanner(updater: model.updater)
+                Divider()
+            }
             footer
         }
         .frame(width: 320)

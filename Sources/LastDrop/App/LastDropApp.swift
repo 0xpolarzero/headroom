@@ -13,6 +13,9 @@ enum Entry {
         if CommandLine.arguments.contains("--agent-stop") { AgentRun.stopMain() }
         if CommandLine.arguments.contains("--agent-selftest") { SelfTest.main() }
         if CommandLine.arguments.contains("--agent-catalog") { AgentCatalog.printMain() }
+        if let i = CommandLine.arguments.firstIndex(of: "--update"), i + 1 < CommandLine.arguments.count {
+            UpdateCheck.main(as: CommandLine.arguments[i + 1], install: CommandLine.arguments.contains("--install"))
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--app-icon"), i + 1 < CommandLine.arguments.count {
             MainActor.assumeIsolated { BrandImages.writeIconSet(to: URL(fileURLWithPath: CommandLine.arguments[i + 1])) }
             exit(0)
@@ -59,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel()
         model.start()
+        model.startUpdates()
         self.model = model
         NSApp.mainMenu = Self.mainMenu()
         statusBar = StatusBarController(model: model)

@@ -94,13 +94,14 @@ struct MainWindowView: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts, agents
+    case accounts, agents, updates
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .accounts: "Accounts"
         case .agents: "Agents"
+        case .updates: "Updates"
         }
     }
 
@@ -109,6 +110,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .accounts: "Your plans, what each shows in the menu bar, and when it notifies you."
         case .agents: "In Claude Code: subagents on your other Claude accounts, and agents on your other plans."
+        case .updates: "New releases of lastdrop, from GitHub."
         }
     }
 
@@ -116,6 +118,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .accounts: "person.2"
         case .agents: "sparkle"
+        case .updates: "arrow.down.circle"
         }
     }
 }
@@ -153,6 +156,10 @@ struct SettingsView: View {
                     AgentsSections(model: model)
                     ClaudeAccountsSection(model: model)
                 }
+            }
+        case .updates:
+            Page(title: "Updates", info: SettingsPage.updates.about) {
+                UpdatesSection(model: model)
             }
         }
     }

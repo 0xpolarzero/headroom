@@ -47,6 +47,10 @@ xattr -dr com.apple.quarantine /Applications/lastdrop.app
 
 3. Open it and follow the setup: your accounts, then agents (optional).
 
+lastdrop keeps itself up to date: it looks for a new release every hour and downloads it in the background. Your
+panel then offers **Restart**. Running subagents keep going, and **Settings → Updates** has the switch. Coming from
+Headroom 0.1.0, install this version by hand once.
+
 To build it yourself, you need the Swift 6 toolchain (Command Line Tools are enough):
 
 ```sh

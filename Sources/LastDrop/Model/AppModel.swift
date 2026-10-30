@@ -86,6 +86,17 @@ final class AppModel {
     @ObservationIgnored private var pluginChanges = 0
     @ObservationIgnored private var pluginTask: Task<Void, Never>?
 
+    let updater = Updater()
+    /// Look for new releases by itself; Settings' Updates page turns it off.
+    var checkUpdates: Bool {
+        didSet { defaults.set(checkUpdates, forKey: "checkUpdates") }
+    }
+    /// The release "Skip" was chosen for: not offered again until a newer one, or until you check by hand.
+    var skippedUpdate: String? {
+        get { defaults.string(forKey: "skippedUpdate") }
+        set { defaults.set(newValue, forKey: "skippedUpdate") }
+    }
+
     /// Windows already announced; an entry clears once usage drops below the account's level.
     private var alerted: Set<String> {
         didSet { defaults.set(Array(alerted), forKey: "alertedLimits") }
@@ -104,6 +115,7 @@ final class AppModel {
         let saved = (defaults.stringArray(forKey: "providerOrder") ?? []).compactMap(ProviderID.init)
         order = saved + ProviderID.allCases.filter { !saved.contains($0) }
         alerted = Set(defaults.stringArray(forKey: "alertedLimits") ?? [])
+        checkUpdates = defaults.object(forKey: "checkUpdates") as? Bool ?? true
         agentsEnabled = SubagentInstaller.isInstalled() || SubagentInstaller.oldIsInstalled()
         if Self.isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
         migrateAccountSettings()
@@ -167,6 +179,8 @@ final class AppModel {
         if accountsConfig.accounts.contains(where: { $0.notifyAt != nil }) { requestNotificationPermission() }
         // The plugin under the app's old name: replaced by this one's, which keeps agents on.
         if SubagentInstaller.oldIsInstalled() && !SubagentInstaller.isInstalled() { setAgents(true) }
+        // This version's plugin, the first time it runs.
+        if SubagentInstaller.isStale() { updatePlugin() }
         refreshLocalChecks()
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -175,6 +189,19 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(15))
             }
         }
+    }
+
+    /// Starts looking for new releases, and says once when one is ready to restart into.
+    func startUpdates() {
+        updater.automatic = { [weak self] in self?.checkUpdates ?? false }
+        updater.skipped = { [weak self] in self?.skippedUpdate }
+        updater.onSkip = { [weak self] in self?.skippedUpdate = $0 }
+        updater.onReady = { [weak self] version in
+            guard let self, defaults.string(forKey: "announcedUpdate") != version else { return }
+            defaults.set(version, forKey: "announcedUpdate")
+            post("lastdrop \(version) is ready. Open the panel to restart into it.", id: "update-\(version)")
+        }
+        updater.start()
     }
 
     /// Every 5 minutes, or 60 s after a failure.
@@ -296,6 +323,24 @@ final class AppModel {
                 agentsEnabled = true
             } catch {
                 claudeError = error.localizedDescription
+            }
+            pluginChanges -= 1
+            syncPlugin()
+        }
+    }
+
+    /// Brings the plugin to this version of the app, unless agents were turned off meanwhile.
+    private func updatePlugin() {
+        pluginChanges += 1
+        let previous = pluginTask
+        pluginTask = Task {
+            await previous?.value
+            if agentsEnabled {
+                do {
+                    try await SubagentInstaller.update()
+                } catch {
+                    claudeError = error.localizedDescription
+                }
             }
             pluginChanges -= 1
             syncPlugin()

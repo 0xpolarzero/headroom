@@ -1,0 +1,60 @@
+name: Release
+
+# Push a tag like v0.2.0 to build a universal lastdrop.app and publish it as a GitHub release. Installed copies find it
+# on their own.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test
+        timeout-minutes: 20
+        run: swift test
+
+      # One certificate for every release: the in-app updater only installs a release signed by the same certificate
+      # as the running app. Without it this job fails rather than publish a release nobody could update to.
+      - name: Import signing certificate
+        env:
+          CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+      - name: Build and zip
+        run: VERSION="${GITHUB_REF_NAME#v}" ./script/release.sh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          ### Install
+          1. Download `lastdrop.zip`, unzip it and move **lastdrop.app** to Applications.
+          2. The app isn't notarized yet, so clear the download flag once:
+             ```
+             xattr -dr com.apple.quarantine /Applications/lastdrop.app
+             ```
+          3. Open it and follow the setup.
+
+          Already installed? lastdrop offers new releases itself, in its panel.
+
+          Requires macOS 15 or later. Universal (Apple silicon and Intel).
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/lastdrop.zip dist/lastdrop.zip.sha256 \
+            --title "lastdrop ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes --target "$GITHUB_SHA"

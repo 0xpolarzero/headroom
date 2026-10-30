@@ -1,8 +1,8 @@
 import Foundation
 
 /// Installs lastdrop's Claude Code plugin for every session (user scope), through Claude Code's own
-/// `claude plugin` commands. The plugin ships inside lastdrop.app as a folder marketplace, which Claude
-/// Code reads in place, so it updates with the app.
+/// `claude plugin` commands. The plugin ships inside lastdrop.app as a folder marketplace. Claude Code runs its own
+/// copy, made at install and kept by version, so each new version of the app updates it (`isStale`, `update`).
 enum SubagentInstaller {
     static let marketplace = "lastdrop"
     static let plugin = "lastdrop@lastdrop"
@@ -37,6 +37,19 @@ enum SubagentInstaller {
         return root.dict("enabledPlugins")?[name] as? Bool == true
     }
 
+    /// Installed, at another version than this copy of the app carries.
+    static func isStale() -> Bool {
+        guard isInstalled(), let folder = marketplaceFolder else { return false }
+        func json(_ path: String) -> [String: Any]? {
+            (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        }
+        guard let bundled = json(folder + "/lastdrop/.claude-plugin/plugin.json")?.string("version"),
+              let installed = json(NSHomeDirectory() + "/.claude/plugins/installed_plugins.json")?.dict("plugins")?
+                  .array(plugin)?.first(where: { $0.string("scope") == "user" })?.string("version")
+        else { return false }
+        return bundled != installed
+    }
+
     static func install() async throws {
         guard let folder = marketplaceFolder else { throw InstallError.noPlugin }
         if oldIsInstalled() {
@@ -46,6 +59,13 @@ enum SubagentInstaller {
         _ = try? await claude(["plugin", "marketplace", "remove", marketplace])
         try await claude(["plugin", "marketplace", "add", folder])
         try await claude(["plugin", "install", plugin, "--scope", "user"])
+    }
+
+    /// To the version this copy of the app carries, keeping the plugin's data and any install in another scope, which
+    /// removing the marketplace (as `install` does) would lose.
+    static func update() async throws {
+        try await claude(["plugin", "marketplace", "update", marketplace])
+        try await claude(["plugin", "update", plugin, "--scope", "user"])
     }
 
     static func uninstall() async throws {
