@@ -1,10 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// What the panel shows while agents are on.
+/// What the panel shows. Agents only while agents are on.
 enum PanelTab: String, CaseIterable {
     case limits = "Limits"
     case agents = "Agents"
+    case stats = "Stats"
 }
 
 struct PanelView: View {
@@ -12,22 +13,33 @@ struct PanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.showsAgents {
-                Picker("Show", selection: $model.panelTab) {
-                    ForEach(PanelTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
+            Picker("Show", selection: Binding { tab } set: { model.panelTab = $0 }) {
+                ForEach(tabs, id: \.self) { Text($0.rawValue).tag($0) }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
             // Never taller than the space under the menu bar, or macOS shifts the popover.
             CappedScroll(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 120) {
-                TimelineView(.periodic(from: .now, by: 5)) { context in
-                    if tab == .limits {
-                        LimitsList(model: model, now: context.date)
+                Group {
+                    if tab == .stats {
+                        // Outside the timeline: nothing here changes with the clock.
+                        StatsPanel(stats: model.stats)
+                            .task {
+                                while !Task.isCancelled {
+                                    model.refreshStats()
+                                    try? await Task.sleep(for: .seconds(StatsModel.scanThrottle))
+                                }
+                            }
                     } else {
-                        AgentsPanel(model: model, now: context.date)
+                        TimelineView(.periodic(from: .now, by: 5)) { context in
+                            if tab == .limits {
+                                LimitsList(model: model, now: context.date)
+                            } else {
+                                AgentsPanel(model: model, now: context.date)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -44,8 +56,12 @@ struct PanelView: View {
         .tint(Brand.accent)
     }
 
+    private var tabs: [PanelTab] {
+        PanelTab.allCases.filter { $0 != .agents || model.showsAgents }
+    }
+
     private var tab: PanelTab {
-        model.showsAgents ? model.panelTab : .limits
+        tabs.contains(model.panelTab) ? model.panelTab : .limits
     }
 
     private var footer: some View {

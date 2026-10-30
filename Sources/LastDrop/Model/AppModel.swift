@@ -57,8 +57,10 @@ final class AppModel {
     private(set) var agentsEnabled: Bool {
         didSet { defaults.set(agentsEnabled, forKey: "agentsEnabled") }
     }
-    /// The panel's tab while agents are on.
     var panelTab = PanelTab.limits
+    /// The Stats tab.
+    let stats = StatsModel()
+    private let launched = Date()
     var settingsPage = SettingsPage.accounts
     /// The window shows setup instead of Settings.
     var settingUp = false
@@ -186,6 +188,7 @@ final class AppModel {
             while !Task.isCancelled {
                 await self?.refreshDue()
                 await self?.claudeTick()
+                self?.keepStatsCurrent()
                 try? await Task.sleep(for: .seconds(15))
             }
         }
@@ -224,6 +227,31 @@ final class AppModel {
         Task { await refresh(due) }
         Task { await claudeTick() }
         refreshLocalChecks()
+        refreshStats()
+    }
+
+    /// Reads new transcripts, unless that just happened.
+    func refreshStats(after interval: TimeInterval = StatsModel.scanThrottle) {
+        let names = Dictionary(accountsConfig.accounts.map { ($0.id, statsName($0)) }) { first, _ in first }
+        stats.refresh(accounts: { id in names[id] ?? Self.statsName(id: id) }, after: interval)
+    }
+
+    /// In the background, not while the app is starting up.
+    private func keepStatsCurrent() {
+        guard Date().timeIntervalSince(launched) > 30 else { return }
+        refreshStats(after: StatsModel.backgroundInterval)
+    }
+
+    private func statsName(_ account: Account) -> String {
+        let detail = account.name ?? state(of: account).snapshot?.plan
+        return [account.provider.displayName, detail].compactMap { $0 }.joined(separator: " ")
+    }
+
+    /// An account no longer in lastdrop: "claude.Pro" → "Claude Pro".
+    nonisolated static func statsName(id: String) -> String {
+        let parts = id.split(separator: ".", maxSplits: 1).map(String.init)
+        let provider = ProviderID(rawValue: parts[0])?.displayName ?? parts[0]
+        return parts.count == 2 && parts[1] != Account.mainKey ? "\(provider) \(parts[1])" : provider
     }
 
     func refreshAll() {
@@ -394,6 +422,7 @@ final class AppModel {
         agentsEnabled = true
         subagentsInstalled = true
         launchAtLogin = true
+        stats.loadDemo()
     }
 
     /// Drops what a removed account showed.

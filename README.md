@@ -32,6 +32,8 @@ https://github.com/user-attachments/assets/71e4c020-37c8-4412-8ccc-0d7b69176202
   the most usage left.
 - **Save Claude usage.** A switch that encourages Claude to delegate to your agents.
 - **Limits in the menu bar.** Usage left on each account, and when it resets.
+- **Stats.** Tokens, API prices and agents by day, project, account and model, across Claude Code, Codex and
+  Antigravity.
 
 ## Install
 
@@ -119,6 +121,10 @@ Add as many accounts per plan as you like. For each, pick what the menu bar show
 Everything stays on your Mac. lastdrop reads usage from each provider with the logins you already have, and
 keeps its own keys in the keychain. The one thing it writes back is an expiring Codex token, renewed the
 way the Codex CLI does it. Logs are in `~/Library/Logs/lastdrop`.
+
+The Stats tab reads the transcripts these tools keep on your Mac and saves only hourly totals, in
+`~/Library/Application Support/lastdrop/usage.sqlite`: tokens, models and project names, never your messages.
+Prices are what the same tokens would cost on each provider's API, not what you paid.
 
 ## Development
 

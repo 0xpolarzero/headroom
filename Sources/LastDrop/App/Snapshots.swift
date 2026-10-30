@@ -46,6 +46,20 @@ enum Snapshots {
             model.settingsPage = .accounts
             model.panelTab = .agents
             await capture(PanelView(model: model), nil, to: folder, "panel-agents")
+            // LASTDROP_STATS_DB shows a copy of a real index in place of the made-up usage.
+            if let path = ProcessInfo.processInfo.environment["LASTDROP_STATS_DB"] { model.stats.loadForSnapshots(path: path) }
+            model.panelTab = .stats
+            for period in StatsPeriod.allCases {
+                model.stats.pick(period)
+                await capture(PanelView(model: model), nil, to: folder, "panel-stats-\(period.days)")
+            }
+            model.stats.pick(.week)
+            if let bar = model.stats.page.bars.dropLast().last { model.stats.toggle(bar: bar.start) }
+            await capture(PanelView(model: model), nil, to: folder, "panel-stats-day")
+            if let bar = model.stats.selection.day { model.stats.toggle(bar: bar) }
+            model.stats.open(project: model.stats.page.projects.first?.name)
+            await capture(PanelView(model: model), nil, to: folder, "panel-stats-project")
+            model.stats.open(project: nil)
             for step in SetupView.Step.allCases {
                 await capture(windowed(SetupView(model: model, step: step)), WindowPresenter.size, titled: "lastdrop", to: folder, "setup-\(step.rawValue)")
             }
