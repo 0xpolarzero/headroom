@@ -207,6 +207,18 @@ struct AgentCatalog: Codable, Equatable, Sendable {
         try JSONEncoder.lastdrop.encode(next).write(to: url, options: .atomic)
     }
 
+    /// Changes the list as the file holds it now, under a lock: the app and `lastdrop --agents` can save at once.
+    /// An edit that throws saves nothing.
+    static func update(at url: URL = LastDropPaths.agentCatalog, _ edit: (inout AgentCatalog) throws -> Void) throws {
+        LastDropPaths.ensure(url.deletingLastPathComponent())
+        let lockFD = open(url.path + ".lock", O_CREAT | O_RDWR, 0o600)
+        if lockFD >= 0 { flock(lockFD, LOCK_EX) }
+        defer { if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD) } }
+        var next = load(from: url)
+        try edit(&next)
+        try next.save(to: url)
+    }
+
     /// What the plugin reads: the revision and the enabled agents. A stored name that became reserved is
     /// left out: the native model wins.
     func pluginJSON() -> [String: Any] {

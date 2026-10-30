@@ -14,7 +14,7 @@
   <a href="#install">Install</a>
 </p>
 
-https://github.com/user-attachments/assets/71e4c020-37c8-4412-8ccc-0d7b69176202
+https://github.com/user-attachments/assets/e549592d-0bb9-40e1-b210-6d1a49780c2d
 
 <p align="center">
   <picture>

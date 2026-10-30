@@ -12,6 +12,8 @@ const CATALOG = { revision: 3, agents: [
 ] }
 const LIST = '- sol: Reviews: hard bugs. (Codex · gpt-6.1-sol · high)\n- argon: Advisor: trade-offs. (Antigravity · gemini-4-argon)'
 const ADDED = "The Agent tool's model parameter also accepts these models the user added:\n"
+const POINTER = '\nOnly if the user asks to change these, run '
+const COMMAND = `${POINTER}${new URL('..', import.meta.url).pathname.replace(/\/$/, '')}/../../../MacOS/lastdrop --agents --help`
 const NATIVE_LISTING = 'Available agent types for the Agent tool:\n- general-purpose: Does things.'
 const HANDBACK = '<system-reminder>\nYour final report is delivered through SubagentHandback: when your work is complete, call SubagentHandback({message: <your full report>}). The call ends your run, so make it your last step. Only a SubagentHandback call reaches your caller as your result; plain text you write at the end is not delivered. Do not also send the report with SendMessage: your caller would get it twice.\n</system-reminder>'
 type Body = Parameters<typeof test>[1] extends infer B ? (B extends (...args: infer A) => unknown ? A : never) : never
@@ -575,6 +577,16 @@ test('Claude reroutes and failed agent runs get no header', async ($, on) => {
 test('the main loop listing gets the added agents', async ($, on) => {
   engine([$, on], { catalog: CATALOG })
   await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  expect(await listing($)).toBe(`${NATIVE_LISTING}\n\n${ADDED}${LIST}${COMMAND}`)
+})
+
+test('the pointer to the command stays out of notes, and a listing frozen without it keeps its bytes', async ($, on) => {
+  const e = engine([$, on], { catalog: CATALOG })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  await listing($)
+  e.store.delete('announced:session-1')
+  expect(await submit($)).toBeUndefined()
+  e.store.set('listing:session-1', LIST)
   expect(await listing($)).toBe(`${NATIVE_LISTING}\n\n${ADDED}${LIST}`)
 })
 
@@ -600,7 +612,7 @@ test('the first listing is frozen for the session and replays after a change kee
   const e = engine([$, on], { liveCatalog: () => live, sessionId: () => id })
   await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
   const first = await listing($)
-  expect(e.store.get('listing:session-1')).toBe(LIST)
+  expect(e.store.get('listing:session-1')).toBe(`${LIST}${COMMAND}`)
   live = { revision: 9, agents: [{ ...CATALOG.agents[0], description: 'Changed.' }] }
   await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
   expect(await listing($)).toBe(first)
@@ -622,7 +634,7 @@ test('a compaction of the main loop clears the frozen listing; a subagent compac
   expect(e.store.has('announced:session-1')).toBe(false)
   live = { revision: 9, agents: [CATALOG.agents[1]] }
   await $.classic.UserPromptSubmit({ prompt: 'again' } as never)
-  expect(await listing($)).toBe(`${NATIVE_LISTING}\n\n${ADDED}- argon: Advisor: trade-offs. (Antigravity · gemini-4-argon)`)
+  expect(await listing($)).toBe(`${NATIVE_LISTING}\n\n${ADDED}- argon: Advisor: trade-offs. (Antigravity · gemini-4-argon)${COMMAND}`)
 })
 
 test('a new session id after /clear starts without a frozen listing', async ($, on) => {
@@ -634,7 +646,7 @@ test('a new session id after /clear starts without a frozen listing', async ($, 
   expect(e.store.has('listing:after')).toBe(false)
   expect(await submit($)).toBeUndefined()
   await listing($)
-  expect(e.store.get('listing:after')).toBe(LIST)
+  expect(e.store.get('listing:after')).toBe(`${LIST}${COMMAND}`)
 })
 
 test('the stored listings of old sessions are pruned to the latest hundred', async ($, on) => {
@@ -730,7 +742,7 @@ test('the first-prompt grace lives in the store and ends with the listing reset'
 test('a store that refuses writes never breaks the listing or the prompt', async ($, on) => {
   engine([$, on], { catalog: CATALOG, storeFailure: true })
   await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
-  expect(await listing($)).toBe(`${NATIVE_LISTING}\n\n${ADDED}${LIST}`)
+  expect(await listing($)).toBe(`${NATIVE_LISTING}\n\n${ADDED}${LIST}${COMMAND}`)
   expect(await submit($)).toBeUndefined()
 })
 
@@ -740,7 +752,7 @@ test('a nearly full store is pruned before the listing is written, and long list
   for (let i = 0; i < 20; i++) e.store.set(`native-agent:old${i}`, { pad: 'y'.repeat(5) })
   await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
   await listing($)
-  expect(e.store.get('listing:session-1')).toBe(LIST)
+  expect(e.store.get('listing:session-1')).toBe(`${LIST}${COMMAND}`)
   expect(e.store.has('listing:old0')).toBe(false)
 })
 
@@ -749,7 +761,7 @@ test('a long list is cut to a byte budget', async ($, on) => {
   const big = engine([$, on], { catalog: many })
   await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
   await listing($)
-  expect(new TextEncoder().encode(String(big.store.get('listing:session-1'))).length).toBeLessThan(8001)
+  expect(new TextEncoder().encode(String(big.store.get('listing:session-1')).split(POINTER)[0]).length).toBeLessThan(8001)
 })
 
 test('old routes are pruned oldest first, never those of running agents', async ($, on) => {

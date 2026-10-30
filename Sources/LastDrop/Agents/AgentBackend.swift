@@ -1,7 +1,7 @@
 import Foundation
 
 /// A model a provider offers, as the Agents list's picker shows it.
-struct AgentModel: Hashable, Sendable, Identifiable {
+struct AgentModel: Hashable, Sendable, Identifiable, Encodable {
     var id: String
     var name: String
     /// The reasoning efforts it takes, lowest first; empty when it takes none.
