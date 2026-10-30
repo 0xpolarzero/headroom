@@ -4,8 +4,6 @@
 
 <h1 align="center">lastdrop</h1>
 
-<p align="center"><b>Every last drop out of your AI plans.</b></p>
-
 <p align="center">
   Use any AI subscription as built-in subagents in Claude Code,<br>
   load-balanced across your accounts. A macOS menu bar app.
