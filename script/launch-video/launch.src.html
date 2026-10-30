@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>lastdrop launch</title>
+<style>
+  /* One system: three type sizes (64 display, 40 body/code, 24 labels), one caption position, one entrance curve. */
+  :root {
+    --ink: #06101A; --water: #2B6FE6; --accent: #5A9BFF; --shallow: #8FD0FF; --warm: #FF9F5A;
+    --text: #EAF2FA; --dim: #8FA3B8; --faint: #55697D; --panel: rgba(14,25,38,.96); --line: rgba(255,255,255,.09);
+    --sans: "SF Pro Display", -apple-system, "Helvetica Neue", sans-serif;
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--ink); }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; font-family: var(--sans); color: var(--text);
+    -webkit-font-smoothing: antialiased; background: var(--ink); }
+  .abs { position: absolute; }
+  .full { left: 0; top: 0; width: 1920px; height: 1080px; }
+  #glow { inset: 0; background: radial-gradient(1400px 800px at 50% 120%, rgba(43,111,230,.22), transparent 60%); }
+  .cap { left: 0; width: 1920px; top: 880px; text-align: center; font-size: 56px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.1; white-space: nowrap; }
+  .cap em { font-style: normal; color: var(--shallow); }
+  .cap .w { color: #FFB25A; }
+
+  #limit { left: 0; width: 1920px; top: 512px; text-align: center; font-family: var(--mono); font-size: 44px; white-space: pre; }
+  #limit .wd { display: inline-block; overflow: hidden; vertical-align: top; line-height: 1.3; }
+  #limit .wi { display: inline-block; }
+
+  .tlab { position: absolute; width: 240px; text-align: center; transform-origin: 50% 0; }
+  .tlab .pct { font-size: 40px; font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .tlab .nm { font-size: 24px; font-weight: 600; margin-top: 2px; color: var(--dim); }
+
+  #call { left: 0; top: 0; font-family: var(--mono); font-size: 56px; line-height: 80px; letter-spacing: -0.01em; white-space: pre; transform-origin: 0 0; }
+  #call .k { color: var(--dim); }
+  #slot { position: relative; display: inline-block; height: 104px; margin: -12px 0; overflow: hidden; vertical-align: top; }
+  #slot span { position: absolute; left: 0; top: 12px; line-height: 80px; white-space: pre; color: var(--shallow); }
+
+  #term { left: 300px; top: 170px; width: 1320px; height: 560px; border-radius: 24px; background: var(--panel);
+    border: 1px solid var(--line); box-shadow: 0 50px 140px rgba(0,0,0,.5); overflow: hidden; }
+  #termbar { position: absolute; left: 0; right: 0; top: 0; height: 56px; border-bottom: 1px solid rgba(255,255,255,.06); display: flex; align-items: center; padding: 0 22px; gap: 10px; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: rgba(255,255,255,.14); }
+  #termtitle { margin-left: 14px; font-family: var(--mono); font-size: 20px; color: var(--faint); }
+  .line { position: absolute; left: 44px; font-family: var(--mono); font-size: 30px; white-space: nowrap; }
+  .subl { position: absolute; left: 44px; font-family: var(--mono); font-size: 24px; white-space: nowrap; color: var(--dim); }
+  .bullet { color: var(--accent); }
+  .muted { color: var(--dim); }
+  .chip { position: absolute; height: 46px; border-radius: 23px; padding: 0 18px 0 13px; display: flex; align-items: center; gap: 9px;
+    font-size: 24px; font-weight: 600; background: rgba(90,155,255,.14); border: 1px solid rgba(90,155,255,.38); white-space: nowrap; }
+  .chip span { color: var(--dim); font-weight: 500; }
+  .chip.warm { background: rgba(255,159,90,.12); border-color: rgba(255,159,90,.45); }
+  #term .chip { right: 32px; }
+
+  #saveRow { left: 0; width: 1920px; top: 150px; display: flex; justify-content: center; align-items: center; gap: 36px; transform-origin: 1700px -130px; }
+  #saveRow .lbl { font-size: 64px; font-weight: 600; letter-spacing: -0.035em; }
+  #sw { width: 128px; height: 76px; border-radius: 38px; position: relative; }
+  #kn { position: absolute; top: 7px; left: 7px; width: 62px; height: 62px; border-radius: 50%; background: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+  #ctx { left: 300px; top: 300px; width: 1320px; height: 322px; border-radius: 24px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+  .ttl { position: absolute; left: 40px; top: 28px; font-size: 22px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  .ctxl { position: absolute; left: 40px; font-family: var(--mono); font-size: 24px; color: var(--faint); white-space: nowrap; }
+  #ins { position: absolute; left: 26px; right: 26px; top: 80px; height: 124px; border-radius: 16px; background: rgba(90,155,255,.12); border: 1px solid rgba(90,155,255,.45);
+    padding: 24px 22px 18px; font-family: var(--mono); font-size: 26px; line-height: 38px; color: var(--text); }
+  #ins b { position: absolute; right: 18px; top: -16px; font-family: var(--sans); font-size: 20px; font-weight: 600; color: #8FD0FF; background: #13314F; padding: 4px 14px; border-radius: 12px; }
+  #act { left: 300px; top: 662px; width: 1320px; height: 96px; border-radius: 20px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+  #act .ttl { top: 36px; }
+  #actSlot { position: absolute; left: 230px; top: 0; height: 96px; width: 760px; overflow: hidden; }
+  #actSlot div { position: absolute; left: 0; top: 0; line-height: 96px; font-family: var(--mono); font-size: 30px; white-space: pre; }
+  #act .chip { right: 26px; top: 25px; }
+
+  #mbwrap { left: 0; top: 0; width: 1920px; height: 1080px; }
+  #menubar { position: absolute; left: 0; top: 0; width: 1920px; height: 46px; background: rgba(28,36,48,.8); backdrop-filter: blur(30px);
+    border-bottom: 1px solid rgba(255,255,255,.07); display: flex; align-items: center; justify-content: flex-end; padding: 0 28px; gap: 26px;
+    font-size: 19px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .mbitem { display: flex; align-items: center; gap: 7px; }
+  .sys { display: flex; align-items: center; gap: 22px; }
+  .stack { display: flex; flex-direction: column; font-size: 11px; font-weight: 700; line-height: 11px; text-align: right; }
+  #glyphbox { padding: 4px 8px; border-radius: 7px; display: flex; align-items: center; gap: 12px; }
+  #panel { position: absolute; width: 576px; background: #1E1E1E; border-radius: 20px; overflow: hidden; box-shadow: 0 50px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08); transform-origin: 50% 0; }
+  #panel img { position: absolute; left: 0; top: 0; display: block; width: 576px; }
+  #ptogs { position: absolute; inset: 0; }
+  .ptog { position: absolute; left: 486px; width: 64px; height: 29px; border-radius: 15px; background: #2F7BF6; }
+  #pring { position: absolute; left: 14px; top: 414px; width: 548px; height: 76px; border-radius: 14px; border: 2px solid #5A9BFF; box-shadow: 0 0 24px rgba(90,155,255,.35); }
+  .ptog div { position: absolute; right: 2px; top: 2px; width: 25px; height: 25px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+  #cursor { position: absolute; left: 0; top: 0; transform-origin: 3px 2px; }
+  #h6 { left: 200px; top: 440px; font-size: 64px; font-weight: 600; letter-spacing: -0.035em; line-height: 1.05; white-space: nowrap; }
+  #h6 em { font-style: normal; color: var(--shallow); }
+  #wslot { position: relative; display: inline-block; height: 68px; overflow: hidden; vertical-align: top; }
+  #wslot span { position: absolute; left: 0; top: 0; }
+
+  #mark { left: 0; top: 0; width: 220px; height: 220px; transform-origin: 0 0; }
+  #word { font-size: 132px; font-weight: 600; letter-spacing: -0.045em; line-height: 1; white-space: nowrap; }
+  #tag { width: 1920px; text-align: center; font-size: 36px; line-height: 1.3; color: var(--dim); white-space: nowrap; }
+  #url { width: 1920px; text-align: center; font-size: 28px; font-weight: 500; color: var(--shallow); font-family: var(--mono); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="glow" class="abs"></div>
+  <div id="cam" class="abs full">
+    <div id="term" class="abs">
+      <div id="termbar"><div class="dot"></div><div class="dot"></div><div class="dot"></div><div id="termtitle">claude · ~/billing</div></div>
+      <div id="l0" class="line" style="top: 88px"><span class="bullet">›</span> Refactor billing. Have <b style="color: var(--shallow)">sol</b> review it and <b style="color: var(--shallow)">flash</b> write the tests</div>
+      <div id="l2" class="line" style="top: 180px"><span class="bullet">⏺</span> Explore<span class="muted">(Map the billing module)</span></div>
+      <div id="c2" class="chip" style="top: 174px">__CLAUDE__Team</div>
+      <div id="s2" class="subl" style="top: 230px">  ⎿ Running on your Team account · <span id="n2"></span></div>
+      <div id="l3" class="line" style="top: 310px"><span class="bullet">⏺</span> lastdrop:sol<span class="muted">(Review the diff)</span></div>
+      <div id="c3" class="chip" style="top: 304px">__CODEX__Codex <span>gpt-6.1-sol</span></div>
+      <div id="s3" class="subl" style="top: 360px">  ⎿ Running on your Personal Codex account · <span id="n3"></span></div>
+      <div id="l4" class="line" style="top: 440px"><span class="bullet">⏺</span> lastdrop:flash<span class="muted">(Write the tests)</span></div>
+      <div id="c4" class="chip" style="top: 434px">__ZAI__Z.ai <span>glm-5.3-flash</span></div>
+      <div id="s4" class="subl" style="top: 490px">  ⎿ Running on Z.ai · <span id="n4"></span></div>
+    </div>
+
+    <svg id="tubes" class="abs full" width="1920" height="1080"></svg>
+    <div id="tlabs" class="abs full"></div>
+    <div id="limit" class="abs"></div>
+    <svg id="fx" class="abs full" width="1920" height="1080"></svg>
+
+    <div id="call" class="abs"><span id="callA" class="k">Agent({ subagent_type: </span><span id="slot"></span><span id="callB" class="k"> })</span></div>
+
+    <div id="s5" class="abs full">
+      <div id="saveRow" class="abs"><span class="lbl">Save Claude usage</span><div id="sw"><div id="kn"></div></div></div>
+      <div id="ctx" class="abs">
+        <div class="ttl">What Claude reads</div>
+        <div id="ctxl0" class="ctxl" style="top: 92px"># CLAUDE.md · project instructions</div>
+        <div id="ctxl1" class="ctxl" style="top: 140px"># Tools · Agent, Bash, Edit, Read, …</div>
+        <div id="ctxl2" class="ctxl" style="top: 188px"># Agents · Explore, lastdrop:sol, lastdrop:flash, …</div>
+        <div id="ins"><b>Added by lastdrop</b>Claude usage is being saved: delegate substantial work (implementation, exploration, reviews, research) to lastdrop's agents…</div>
+      </div>
+      <div id="act" class="abs"><div class="ttl">Next step</div><div id="actSlot">
+        <div id="actA"><span class="bullet">⏺</span> Edit<span class="muted">(src/api/limits.ts)</span></div>
+        <div id="actB"><span class="bullet">⏺</span> lastdrop:flash<span class="muted">(Implement rate limiting)</span></div></div>
+        <div id="actChipA" class="chip warm">__CLAUDE__Claude Max</div>
+        <div id="actChipB" class="chip">__ZAI__Z.ai <span>glm-5.3-flash</span></div>
+      </div>
+    </div>
+
+    <div id="cap1" class="abs cap">Your Max plan is <span class="w">dry</span>.</div>
+    <div id="cap2" class="abs cap">Your other accounts <em>still have room</em>.</div>
+    <div id="cap3" class="abs cap">The Agent tool Claude already knows.</div>
+    <div id="cap4" class="abs cap">Each one runs on the account with <em>the most left</em>.</div>
+    <div id="cap5" class="abs cap">In Claude Code, they're <em>just subagents</em>.</div>
+    <div id="cap6" class="abs cap">Switched on, Claude is encouraged to <em>delegate</em>.</div>
+
+    <div id="mbwrap" class="abs">
+      <div id="menubar">
+        <div id="glyphbox">
+          <svg width="22" height="22" viewBox="0 0 100 100"><defs><mask id="gm"><rect width="100" height="100" fill="#fff"/><path d="M22 59 C32 52 42 64 52 58 C62 52 70 62 80 56" fill="none" stroke="#000" stroke-width="9" stroke-linecap="round"/></mask></defs><path id="glyph" d="M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z" fill="#fff" mask="url(#gm)"/></svg>
+          <div class="mbitem">__CLAUDEW__<div class="stack"><span>2%</span><span>54%</span></div><div class="stack"><span>79%</span><span>77%</span></div></div>
+          <div class="mbitem">__CODEXW__<div class="stack"><span>57%</span><span>82%</span></div></div>
+          <div class="mbitem">__ZAIW__<span>69%</span></div>
+        </div>
+<div class="sys"><svg width="24" height="18" viewBox="0 0 24 18"><path d="M12 15.5 L14.6 12.6 A3.8 3.8 0 0 0 9.4 12.6 Z M5.8 9.2 A8.6 8.6 0 0 1 18.2 9.2 L16.4 11.1 A6 6 0 0 0 7.6 11.1 Z M2 5.4 A14 14 0 0 1 22 5.4 L20.2 7.3 A11.4 11.4 0 0 0 3.8 7.3 Z" fill="#fff"/></svg>
+          <svg width="30" height="16" viewBox="0 0 30 16"><rect x=".75" y=".75" width="25" height="14.5" rx="4" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="1.5"/><rect x="3" y="3" width="18" height="10" rx="2" fill="#fff"/><rect x="27" y="5.5" width="2" height="5" rx="1" fill="rgba(255,255,255,.55)"/></svg>
+          <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5.5" fill="none" stroke="#fff" stroke-width="1.8"/><path d="M11.6 11.6 L16 16" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <svg width="20" height="18" viewBox="0 0 20 18"><rect x="1" y="2" width="18" height="6" rx="3" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="15.5" cy="5" r="1.8" fill="#fff"/><rect x="1" y="10" width="18" height="6" rx="3" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="4.5" cy="13" r="1.8" fill="#fff"/></svg></div>
+        <div>Wed 9:41</div>
+      </div>
+      <div id="panel"><img id="pL" src="panel-limits.png" alt=""><img id="pA" src="panel-agents.png" alt=""><div id="ptogs"><div class="ptog" style="top: 83px"><div></div></div><div class="ptog" style="top: 211px"><div></div></div><div class="ptog" style="top: 287px"><div></div></div><div class="ptog" style="top: 362px"><div></div></div><div class="ptog" style="top: 438px"><div></div></div><div class="ptog" style="top: 514px"><div></div></div><div id="pring"></div></div></div>
+      <svg id="cursor" width="30" height="42" viewBox="0 0 28 40"><path d="M3 2 L3 31 L10 24 L15 36 L20 34 L15 22 L25 22 Z" fill="#111" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
+    </div>
+    <div id="h6" class="abs">Every <span id="wslot"><span id="wL">limit</span><span id="wA">agent</span></span>,<br><em>one glance away.</em></div>
+
+    <svg id="mark" class="abs" viewBox="0 0 100 100">
+      <defs>
+        <linearGradient id="gw" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8FD0FF"/><stop offset="1" stop-color="#2B6FE6"/></linearGradient>
+        <mask id="cut"><rect width="100" height="100" fill="#fff"/><path id="cutline" d="M22 59 C32 52 42 64 52 58 C62 52 70 62 80 56" fill="none" stroke="#000" stroke-width="5.5" stroke-linecap="round"/></mask>
+      </defs>
+      <path d="M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z" fill="url(#gw)" mask="url(#cut)"/>
+    </svg>
+    <div id="word" class="abs">lastdrop</div>
+    <div id="tag" class="abs">Use any AI subscription as built-in subagents<br>in Claude Code, load-balanced across your accounts.</div>
+    <div id="url" class="abs">github.com/amontlabs/lastdrop</div>
+  </div>
+</div>
+
+<script>
+const LOGOS = __LOGOS__;
+const $ = id => document.getElementById(id);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, p) => a + (b - a) * p;
+/* Two curves for the whole film: a strong ease-out for anything arriving, an in-out for anything travelling. */
+const out = p => 1 - Math.pow(1 - p, 4);
+const io = p => p === 0 ? 0 : p === 1 ? 1 : p < .5 ? Math.pow(2, 20 * p - 10) / 2 : (2 - Math.pow(2, -20 * p + 10)) / 2;
+const inC = p => p * p * p;
+function vis(el, o) { el.style.opacity = o; el.style.visibility = o < .002 ? 'hidden' : 'visible'; }
+function place(el, o, dx = 0, dy = 0, s = 1) { vis(el, o); el.style.transform = `translate(${dx}px, ${dy}px) scale(${s})`; }
+let T = 0;
+/* Arrive: fade up 18 px over half a second. Leave: fade and lift 12 px over a quarter second. */
+function life(el, a, z, dist = 18) { const p = out(seg(T, a, a + .5)), q = inC(seg(T, z - .25, z)); place(el, Math.min(seg(T, a, a + .35), 1 - q), (1 - p) * 0, (1 - p) * dist - q * 12); }
+function logoSVG(key, size, fill) { const l = LOGOS[key]; return `<svg width="${size}" height="${size}" viewBox="${l.viewBox}">${l.d.map(d => `<path d="${d}" fill="${fill}"/>`).join('')}</svg>`; }
+const DROP = 'M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z';
+const BEAT = 60 / 144, BAR = BEAT * 4, b = n => n * BAR;   // every cue sits on the music's grid
+
+/* ---------- Timeline (bars) ---------- */
+const HIT = b(1);                     // the drop lands on the first downbeat of the groove
+const S3 = b(4), ROLL = [b(5.75), b(6.75)], M0 = b(8), S5 = b(11), FLIP = b(12), SWAP = b(13), S6 = b(14), CLICK = b(16), S7 = b(18), LAND = b(18.5);
+window.DURATION = b(22.5);
+
+/* ---------- 1. The limit line ---------- */
+const WORDS = ['✻', 'Claude', 'usage', 'limit', 'reached', '·', 'resets', '9pm'];
+$('limit').innerHTML = WORDS.map((w, i) => `<span class="wd"><span class="wi"${i ? '' : ' style="color: #E08A68"'}>${w}</span></span>`).join(' ');
+const words = [...$('limit').querySelectorAll('.wi')];
+const IMP_X = 960, LINE_Y = (() => { const r = $('limit').getBoundingClientRect(); return r.top + r.height / 2; })();
+/* A drop as one path: k = 1 is a circle, k > 1 pulls a tip upwards. */
+function dropPath(cx, cy, r, m) {
+  const k = lerp(1, 2.05, m), c1 = lerp(.5523, .1, m), d = lerp(0, .45, m) * r, e = lerp(.5523, 1.0, m);
+  const ty = cy - k * r;
+  return `M${cx} ${ty} C${cx + c1 * r} ${ty + d} ${cx + r} ${cy - e * r} ${cx + r} ${cy} A${r} ${r} 0 0 1 ${cx - r} ${cy} C${cx - r} ${cy - e * r} ${cx - c1 * r} ${ty + d} ${cx} ${ty} Z`;
+}
+const ring = (cx, cy, ro, ri) => `M${cx - ro} ${cy} a${ro} ${ro} 0 1 0 ${2 * ro} 0 a${ro} ${ro} 0 1 0 ${-2 * ro} 0 Z M${cx - ri} ${cy} a${ri} ${ri} 0 1 1 ${2 * ri} 0 a${ri} ${ri} 0 1 1 ${-2 * ri} 0 Z`;
+const DROP_R = 22, DROP_Y0 = LINE_Y - 330, FORM = .7, FALL = HIT - .46, RING_R = 1250;
+
+/* ---------- Plans ---------- */
+// several accounts per plan, grouped by provider; g is the group
+const TUBES = [
+  { key: 'claude', name: 'Max', low: true, lv: .02, g: 0 },
+  { key: 'claude', name: 'Team', lv: .88, g: 0 },
+  { key: 'claude', name: 'Pro', lv: .41, g: 0 },
+  { key: 'codex', name: 'Work', lv: .34, g: 1 },
+  { key: 'codex', name: 'Personal', lv: .66, g: 1 },
+  { key: 'zai', name: 'Z.ai', lv: .79, g: 2 },
+];
+const LA = { x0: 424, gap: 150, ge: 70, w: 112, top: 250, h: 420 };   // the row on its own
+const LC = { x0: 565, gap: 120, ge: 50, w: 90, top: 470, h: 220 };    // under the call
+$('tlabs').innerHTML = TUBES.map((c, i) => `<div id="tl${i}" class="tlab"><div style="display:flex;justify-content:center;margin-bottom:16px">${logoSVG(c.key, 36, '#EAF2FA')}</div>
+  <div id="tp${i}" class="pct"></div><div class="nm">${c.name}</div></div>`).join('');
+const tubeX = (L, i) => L.x0 + i * L.gap + TUBES[i].g * L.ge;
+const BAR_W = tubeX(LA, TUBES.length - 1) + LA.w - LA.x0;   // the bar is exactly as wide as the row of plans
+function mix(A, B, p) { const o = {}; for (const k in A) o[k] = lerp(A[k], B[k], p); return o; }
+let DIM = TUBES.map(() => 1);
+function drawTubes(L, op, hf, lv, glow, labO, morph) {
+  let s = `<defs><linearGradient id="cw" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8FD0FF"/><stop offset="1" stop-color="#2B6FE6"/></linearGradient>
+    <linearGradient id="co" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFC27A"/><stop offset="1" stop-color="#F0872B"/></linearGradient>`;
+  const geo = TUBES.map((c, i) => {
+    const H = Math.max(8, L.h * hf[i]);
+    let g = { x: tubeX(L, i), y: L.top + L.h - H, w: L.w, h: H, r: Math.min(L.w * .3, H / 2) };
+    if (morph && morph[i]) g = morph[i](g);
+    return g;
+  });
+  geo.forEach((g, i) => s += `<clipPath id="cl${i}"><rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="${g.r}"/></clipPath>`);
+  s += '</defs>';
+  TUBES.forEach((c, i) => {
+    const g = geo[i], o = op * (g.o ?? 1) * DIM[i]; if (o < .002) { $('tl' + i).style.visibility = 'hidden'; return; }
+    const y0 = g.y + g.h * (1 - lv[i]);
+    const stroke = c.low ? `rgba(255,159,90,${.5 + glow[i] * .5})` : `rgba(${lerp(255, 143, glow[i])},${lerp(255, 208, glow[i])},255,${.14 + glow[i] * .86})`;
+    const sh = glow[i] > .01 ? `filter: drop-shadow(0 0 ${glow[i] * 40}px rgba(90,155,255,.9))` : '';
+    const solid = 1 - seg(hf[i], 0, .1);   // still the dash it grew from
+    const water = g.water ?? 1;
+    s += `<g opacity="${o}"><rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="${g.r}" fill="${g.fill || `rgba(255,255,255,${.04 * hf[i]})`}"/>
+      <rect clip-path="url(#cl${i})" x="${g.x}" y="${y0}" width="${g.w}" height="${g.y + g.h - y0}" fill="url(#${c.low ? 'co' : 'cw'})" opacity="${water}"/>
+      <rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="${g.r}" fill="${c.low ? `rgba(255,159,90,${solid})` : `rgba(143,208,255,${solid})`}" stroke="${g.stroke || stroke}" stroke-width="${glow[i] > .1 ? 3 : c.low ? 2 : 1.4}" style="${sh}"/></g>`;
+    const lab = $('tl' + i), sc = L.w / 140, lo = op * labO[i] * (g.labO ?? 1) * DIM[i];
+    lab.style.left = (tubeX(L, i) + L.w / 2 - 120) + 'px'; lab.style.top = (L.top - 58 * sc) + 'px';
+    lab.style.transform = `translateY(${(1 - out(clamp(labO[i] * 1.2))) * 10}px) scale(${sc})`; vis(lab, lo);
+    lab.querySelector('.pct').style.marginTop = (L.h / sc + 24) + 'px';
+    $('tp' + i).textContent = Math.round(lv[i] * 100) + '%'; $('tp' + i).style.color = c.low ? '#FFB25A' : '#EAF2FA';
+  });
+  $('tubes').innerHTML = s;
+}
+
+/* ---------- 3. The call ---------- */
+const NAMES = ['"Explore"', '"lastdrop:sol"', '"lastdrop:flash"'];
+const RUNS = [1, 4, 5];   // the account each name runs on: the one in its plan with the most left
+$('slot').innerHTML = NAMES.map((n, i) => `<span id="nm${i}">${n}</span>`).join('');
+const CW = (() => { const m = document.createElement('span'); m.style.cssText = 'font: 56px "SF Mono", ui-monospace, Menlo, monospace; position: absolute; visibility: hidden; white-space: pre';
+  m.textContent = 'x'.repeat(40); document.body.appendChild(m); const w = m.getBoundingClientRect().width / 40; m.remove(); return w; })();
+const PRE = 'Agent({ subagent_type: '.length, POST = ' })'.length;
+const CALL_Y = 250, CALL_X = 960 - (PRE + POST + NAMES[2].length) * CW / 2;   // the left edge never moves
+
+/* ---------- Terminal geometry, for the hand-offs ---------- */
+const TERM = { x: 300, y: 170, w: 1320, h: 560 }, CTX = { x: 300, y: 300, w: 1320, h: 322 };
+const chipBox = id => { const e = $(id); return { x: TERM.x + e.offsetLeft, y: TERM.y + e.offsetTop, w: e.offsetWidth, h: e.offsetHeight }; };
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+function render(t) {
+  T = t;
+  const cam = $('cam');
+  // a slow push while the line sits there, released as the plans appear
+  const push = lerp(1, 1.05, out(seg(t, 0, HIT))) ;
+  const camS = lerp(push, 1, io(seg(t, HIT + .3, HIT + 1.3)));
+  cam.style.transformOrigin = `960px ${LINE_Y}px`; cam.style.transform = `scale(${camS})`;
+
+  /* ===== 1. The line rises in word by word; a drop forms, falls, and lands on the first downbeat. ===== */
+  words.forEach((w, i) => { const q = out(seg(t, .12 + i * .05, .62 + i * .05)); w.style.transform = `translateY(${(1 - q) * 110}%)`; });
+  // the hit sends a ring out across the frame; the text goes where the ring has been
+  const ro = RING_R * out(seg(t, HIT, HIT + .95)), ri = RING_R * out(seg(t, HIT + .06, HIT + 1.05));
+  const ri2 = Math.max(0, ri - 1);
+  $('limit').style.webkitMaskImage = t > HIT ? `radial-gradient(circle at ${IMP_X}px ${LINE_Y - 512}px, transparent ${ri2}px, #000 ${ri2 + 1}px)` : 'none';
+  $('limit').style.visibility = t < HIT + .7 ? 'visible' : 'hidden';
+
+  let fx = '';
+  if (t > HIT && ri < RING_R - 2) {
+    fx += `<path d="${ring(IMP_X, LINE_Y, ro, ri)}" fill="#2B6FE6" fill-rule="evenodd"/>`;
+    // a thin echo, a beat behind
+    const re = RING_R * out(seg(t, HIT + .14, HIT + 1.2));
+    if (re > 2) fx += `<circle cx="${IMP_X}" cy="${LINE_Y}" r="${re}" fill="none" stroke="#8FD0FF" stroke-opacity="${.55 * (1 - seg(t, HIT + .6, HIT + 1.1))}" stroke-width="2"/>`;
+  }
+  if (t > FORM && t < HIT) {
+    // a point swells into a bead, the bead grows its tip, then it falls, stretching with speed
+    const r = DROP_R * out(seg(t, FORM, FORM + .5)), m = io(seg(t, FORM + .2, FALL + .05));
+    const f = seg(t, FALL, HIT), y = lerp(DROP_Y0, LINE_Y - DROP_R, Math.pow(f, 2.2));
+    const st = 1 + .32 * Math.pow(f, 1.6);
+    fx += `<g transform="translate(${IMP_X} ${y}) scale(${1 / Math.sqrt(st)} ${st})"><path d="${dropPath(0, 0, r, m)}" fill="#8FD0FF"/></g>`;
+  }
+  // on contact the drop squashes into a bar, the bar spreads to the width of the row, then breaks in four
+  const sq = out(seg(t, HIT, HIT + .1)), spread = out(seg(t, HIT + .04, HIT + .42));
+  const halfW = lerp(lerp(DROP_R, 34, sq), BAR_W / 2, spread), barH = lerp(DROP_R * 2, 8, sq);
+  const sp = io(seg(t, HIT + .42, HIT + .9)), GROW = HIT + .9;
+  if (t >= HIT && t < GROW + .05) {
+    if (sp === 0) fx += `<rect x="${IMP_X - halfW}" y="${LINE_Y - barH}" width="${2 * halfW}" height="${barH}" rx="${Math.min(barH / 2, halfW)}" fill="#8FD0FF"/>`;
+    else TUBES.forEach((c, i) => {
+      const q = 2 * halfW / TUBES.length, gap = 18 * Math.sin(seg(sp, 0, .4) * Math.PI / 2);
+      let x0 = IMP_X - halfW + i * q + (i ? gap / 2 : 0), x1 = IMP_X - halfW + (i + 1) * q - (i < TUBES.length - 1 ? gap / 2 : 0);
+      x0 = lerp(x0, tubeX(LA, i), sp); x1 = lerp(x1, tubeX(LA, i) + LA.w, sp);
+      const yc = lerp(LINE_Y - 4, LA.top + LA.h - 4, sp);
+      const col = c.low ? `rgb(${lerp(143, 255, sp) | 0},${lerp(208, 159, sp) | 0},${lerp(255, 90, sp) | 0})` : '#8FD0FF';
+      fx += `<rect x="${x0}" y="${yc - 4}" width="${Math.max(0, x1 - x0)}" height="8" rx="4" fill="${col}"/>`;
+    });
+  }
+
+  /* ===== 2–3. The plans: grow together, fill once; shrink under the call; become chips in Claude Code. ===== */
+  const toC = io(seg(t, S3, S3 + .8));
+  const L = mix(LA, LC, toC);
+  const hf = TUBES.map((_, i) => out(seg(t, GROW + i * .06, GROW + i * .06 + .6)));
+  let active = -1; if (t > S3 + .9) active = 0; ROLL.forEach((a, k) => { if (t > a + .1) active = k + 1; });
+  const lv = TUBES.map((c, i) => {
+    let v = c.lv * out(seg(t, GROW + .1 + i * .06, GROW + .9 + i * .06));
+    const k = RUNS.indexOf(i);                     // the plan the current name runs on spends a little while it works
+    if (k >= 0) { const a = k === 0 ? S3 + .9 : ROLL[k - 1] + .25; v -= .05 * io(seg(t, a + .3, a + 1.4)); }
+    return v;
+  });
+  // each name picks, in its plan, the account with the most left: it lights up, its siblings stay half lit, other plans step back
+  const PH = [S3 + .9, ROLL[0] + .1, ROLL[1] + .1];
+  const w = PH.map((a, k) => out(seg(t, a, a + .3)) * (k < PH.length - 1 ? 1 - out(seg(t, PH[k + 1], PH[k + 1] + .3)) : 1));
+  const glow = TUBES.map((c, i) => t > M0 + .2 ? 0 : RUNS.reduce((acc, r, k) => acc + (r === i ? w[k] : 0), 0));
+  const release = 1 - seg(t, M0 - .2, M0);
+  DIM = TUBES.map((c, i) => 1 - release * RUNS.reduce((acc, r, k) => acc + w[k] * (1 - (r === i ? 1 : TUBES[r].g === c.g ? .6 : .3)), 0));
+  const labO = TUBES.map((_, i) => out(seg(t, GROW + .35 + i * .06, GROW + .8 + i * .06)));
+  // at the hand-off each plan becomes the chip on its row in Claude Code; Max steps out
+  const mo = io(seg(t, M0 + .15, M0 + .95));
+  const morph = t > M0 ? TUBES.map((c, i) => g => {
+    const chip = { 1: 'c2', 4: 'c3', 5: 'c4' }[i];
+    if (!chip) return { ...g, o: 1 - seg(t, M0, M0 + .35), labO: 1 - seg(t, M0, M0 + .25) };
+    const cb = chipBox(chip);
+    return { x: lerp(g.x, cb.x, mo), y: lerp(g.y, cb.y, mo), w: lerp(g.w, cb.w, mo), h: lerp(g.h, cb.h, mo), r: lerp(g.r, cb.h / 2, mo),
+      water: 1 - seg(mo, .3, .8), fill: `rgba(90,155,255,${.14 * mo})`, stroke: `rgba(90,155,255,${lerp(.3, .38, mo)})`, labO: 1 - seg(t, M0, M0 + .25), o: 1 - seg(t, M0 + .85, M0 + 1.0) };
+  }) : null;
+  if (t > GROW - .02 && t < M0 + 1.05) drawTubes(L, 1, hf, lv, glow, labO, morph);
+  else { $('tubes').innerHTML = ''; TUBES.forEach((_, i) => $('tl' + i).style.visibility = 'hidden'); }
+
+  life($('cap1'), HIT + 1.25, b(2.75)); life($('cap2'), b(2.75), S3 + .1);
+  life($('cap3'), S3 + .55, b(6)); life($('cap4'), b(6), M0);
+
+  // the call: the left edge stays put; only the name's slot changes
+  let idx = 0, roll = 0; ROLL.forEach((a, k) => { if (t >= a) { idx = k; roll = io(seg(t, a, a + .4)); } });
+  const from = t < ROLL[0] ? 0 : idx, to = t < ROLL[0] ? 0 : idx + 1, p = t < ROLL[0] ? 0 : roll;
+  NAMES.forEach((n, i) => { let y = 200; if (i === from) y = -p * 104; if (i === to && t >= ROLL[0]) y = (1 - p) * 104; if (t < ROLL[0] && i === 0) y = 0;
+    $('nm' + i).style.transform = `translateY(${y}px)`; });
+  const nameW = lerp(NAMES[from].length, NAMES[to].length, p) * CW;
+  $('slot').style.width = nameW + 'px';
+  const callIn = out(seg(t, S3 + .55, S3 + 1.05));
+  const morphC = io(seg(t, M0, M0 + .8));
+  const row = { x: TERM.x + 44 + CW * 30 / 56 * 2, y: TERM.y + 440 + (40 - 30 * 80 / 56) / 2 - 2 };   // where "lastdrop:flash" sits in the terminal
+  const scl = lerp(1, 30 / 56, morphC);
+  const cx = lerp(CALL_X, row.x - (PRE + 1) * CW * scl, morphC), cy = lerp(CALL_Y + (1 - callIn) * 18, row.y, morphC);
+  const callO = Math.min(seg(t, S3 + .55, S3 + .9), 1 - seg(t, M0 + .7, M0 + .85));
+  vis($('call'), callO); $('call').style.transform = `translate(${cx}px, ${cy}px) scale(${scl})`;
+  ['callA', 'callB'].forEach(id => $(id).style.opacity = 1 - seg(t, M0, M0 + .3));
+
+  /* ===== 4. Claude Code: the window opens around the row ===== */
+  const tIn = io(seg(t, M0 + .1, M0 + .9));
+  const toCard = io(seg(t, S5, S5 + .7));       // and later folds into the card Claude reads
+  const term = $('term');
+  vis(term, seg(t, M0 + .1, M0 + .25) * (1 - seg(t, S5 + .6, S5 + .75)));
+  const tb = mix(TERM, CTX, toCard);
+  term.style.left = tb.x + 'px'; term.style.top = tb.y + 'px'; term.style.width = tb.w + 'px'; term.style.height = tb.h + 'px';
+  term.style.clipPath = `inset(${lerp(440 - 8, 0, tIn)}px ${lerp(24, 0, tIn)}px ${lerp(560 - 440 - 56, 0, tIn)}px ${lerp(24, 0, tIn)}px round 24px)`;
+  const inner = 1 - seg(t, S5, S5 + .25);
+  const rowIn = (id, at) => { const q = out(seg(t, at, at + .45)); place($(id), q * inner, 0, (1 - q) * 10); };
+  vis($('l4'), seg(t, M0 + .65, M0 + .8) * inner); vis($('termbar'), inner);
+  ['c2', 'c3', 'c4'].forEach(id => vis($(id), seg(t, M0 + .8, M0 + 1.0) * inner));
+  rowIn('l0', M0 + .3); rowIn('l2', M0 + .36); rowIn('l3', M0 + .42); rowIn('s2', M0 + .7); rowIn('s3', M0 + .76); rowIn('s4', M0 + .82);
+  const count = (id, a, n) => $(id).textContent = plural(Math.round(n * seg(t, a, S5)), 'tool use');
+  count('n2', M0 + .7, 14); count('n3', M0 + .76, 9); count('n4', M0 + .82, 17);
+  life($('cap5'), M0 + 1.2, S5);
+
+  /* ===== 5. Save Claude usage: the window folds into the card; one switch adds one instruction. ===== */
+  const s5 = $('s5'), s5Out = io(seg(t, S6, S6 + .6));
+  // leaving: everything shrinks toward the drop in the menu bar, where the switch lives
+  vis(s5, t > S5 + .5 ? 1 - seg(t, S6 + .3, S6 + .6) : 0);
+  s5.style.transformOrigin = `${glyphX()}px 23px`; s5.style.transform = `scale(${lerp(1, .2, s5Out)})`;
+  const ctxO = seg(t, S5 + .6, S5 + .75); vis($('ctx'), ctxO);
+  [0, 1, 2].forEach(i => { const q = out(seg(t, S5 + .7 + i * .06, S5 + 1.1 + i * .06)); place($('ctxl' + i), q, 0, (1 - q) * 8 + out(seg(t, FLIP + .1, FLIP + .5)) * 136); });
+  const sr = out(seg(t, S5 + .5, S5 + 1.0)); place($('saveRow'), seg(t, S5 + .5, S5 + .8), 0, (1 - sr) * 18);
+  const on = io(seg(t, FLIP, FLIP + .22));
+  $('kn').style.transform = `translateX(${on * 52}px)`;
+  $('sw').style.background = `rgba(${lerp(255, 90, on)}, ${lerp(255, 155, on)}, 255, ${lerp(.16, 1, on)})`;
+  const ins = out(seg(t, FLIP + .1, FLIP + .5)); place($('ins'), seg(t, FLIP + .1, FLIP + .3), 0, (1 - ins) * -14);
+  const aIn = out(seg(t, S5 + .8, S5 + 1.3)); place($('act'), seg(t, S5 + .8, S5 + 1.1), 0, (1 - aIn) * 18);
+  const swap = io(seg(t, SWAP, SWAP + .45));
+  $('actA').style.transform = `translateY(${-swap * 96}px)`; $('actB').style.transform = `translateY(${(1 - swap) * 96}px)`;
+  vis($('actChipA'), 1 - seg(t, SWAP, SWAP + .2)); { const q = out(seg(t, SWAP + .15, SWAP + .5)); place($('actChipB'), seg(t, SWAP + .15, SWAP + .35), 0, (1 - q) * 10); }
+  life($('cap6'), FLIP + .15, S6 + .2);
+
+  /* ===== 6. The menu bar: first the limits, then a click on Agents. ===== */
+  const mb = $('mbwrap'), mbIn = io(seg(t, S6, S6 + .6)), mbOut = io(seg(t, S7, S7 + .5));
+  vis(mb, t > S6 ? 1 - seg(t, S7 + .2, S7 + .5) : 0);
+  $('menubar').style.transform = `translateY(${(1 - mbIn) * -46 - mbOut * 46}px)`;
+  const gx = glyphX(); $('glyphbox').style.background = t > S6 + .5 && t < S7 ? 'rgba(255,255,255,.16)' : 'transparent';
+  const pn = $('panel'), po = out(seg(t, S6 + .5, S6 + 1.0)), pl = Math.min(1920 - 576 - 40, gx - 288);
+  pn.style.left = pl + 'px'; pn.style.top = '56px';
+  place(pn, seg(t, S6 + .5, S6 + .7) * (1 - mbOut), 0, (1 - po) * -14 - mbOut * 30, lerp(.97, 1, po));
+  const tab = t >= CLICK;
+  const tx = seg(t, CLICK, CLICK + .12); vis($('pL'), 1 - tx); vis($('pA'), tx); vis($('ptogs'), tx);   // the switch is on: we turned it on
+  pn.style.height = lerp(994, 643, out(seg(t, CLICK, CLICK + .4))) + 'px';
+  const cur = $('cursor'), cm = io(seg(t, CLICK - 1.0, CLICK - .1)), co = seg(t, CLICK - 1.0, CLICK - .8) * (1 - seg(t, CLICK + .6, CLICK + .9));
+  const press = t > CLICK - .06 && t < CLICK + .08 ? .86 : 1;
+  vis(cur, co); vis($('pring'), 0); cur.style.transform = `translate(${lerp(pl + 160, pl + 346 - 3, cm)}px, ${lerp(700, 56 + 40 - 2, cm)}px) scale(${press})`;
+  const wr = io(seg(t, CLICK, CLICK + .35));
+  $('wL').style.transform = `translateY(${-wr * 68}px)`; $('wA').style.transform = `translateY(${(1 - wr) * 68}px)`;
+  $('wslot').style.width = lerp($('wL').offsetWidth, $('wA').offsetWidth, wr) + 'px';
+  $('h6').style.left = (pl - 120 - H6W) + 'px'; life($('h6'), S6 + .4, S7 + .2);
+
+  /* ===== 7. End: the drop leaves the menu bar and becomes the mark. ===== */
+  const mark = $('mark'), fl = io(seg(t, S7, LAND));
+  const WW = $('word').offsetWidth, VIS = 220 * .48, GAP = 44, X0 = 960 - (VIS + GAP + WW) / 2, MX = X0 - 220 * .26, MY = 286, WX = X0 + VIS + GAP;
+  const mx = lerp(gx - 11, MX, fl), my = lerp(12, MY, fl) - Math.sin(fl * Math.PI) * 60, ms = lerp(22 / 220, 1, fl);
+  vis(mark, t > S7 ? 1 : 0); mark.style.transform = `translate(${mx}px, ${my}px) scale(${ms})`;
+  const cut = $('cutline'); cut.style.strokeDasharray = 62; cut.style.strokeDashoffset = 62 * (1 - out(seg(t, LAND, LAND + .45)));
+  const wp = out(seg(t, LAND + .3, LAND + 1.0)), word = $('word');
+  word.style.left = WX + 'px'; word.style.top = '334px'; word.style.clipPath = `inset(-20% ${100 - wp * 100}% -20% 0)`; word.style.transform = `translateX(${(1 - wp) * -24}px)`;
+  vis(word, t > LAND + .3 ? 1 : 0);
+  $('tag').style.left = '0px'; $('tag').style.top = '520px'; life($('tag'), LAND + 1.2, 99, 12);
+  $('url').style.left = '0px'; $('url').style.top = '650px'; life($('url'), LAND + 1.6, 99, 12);
+  $('glyph').style.opacity = t > S7 ? 0 : 1;
+  $('fx').innerHTML = fx;
+}
+const H6W = (() => { const h = $('h6'); h.style.visibility = 'hidden'; return h.offsetWidth; })();
+function glyphX() { const g = $('glyphbox'); return g.offsetLeft + 19; }
+window.render = render;
+render(0);
+</script>
+</body>
+</html>
