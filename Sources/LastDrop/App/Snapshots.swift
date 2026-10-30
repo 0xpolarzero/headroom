@@ -29,6 +29,10 @@ enum Snapshots {
             await capture(windowed(SettingsView(model: model)), WindowPresenter.size, titled: "lastdrop", to: folder, "settings-repair")
             model.claudeError = nil
             await capture(SavingInstructionEditor(catalog: AgentCatalog.load()) {}, nil, to: folder, "save-instruction")
+            let demoAgent = AgentDefinition(name: "sol", description: "Reviews code, plans and diffs that need strong reasoning.", provider: .codex,
+                                            model: "gpt-6.1-sol", effort: "high",
+                                            fallbacks: [.init(provider: .antigravity, model: "gemini-4-argon", effort: "high"), .init(provider: .zai, model: "glm-5.3", effort: nil)])
+            await capture(AgentEditor(agent: demoAgent, catalog: AgentCatalog()) { _ in }, nil, to: folder, "agent-editor")
             model.panelTab = .limits
             await capture(PanelView(model: model), nil, to: folder, "panel-limits")
             model.settingsPage = .general

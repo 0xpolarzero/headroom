@@ -20,7 +20,7 @@ type Message = { role: 'user' | 'assistant'; content: { type: string; text?: str
 type Options = {
   route?: object; background?: boolean; fork?: boolean; workflow?: boolean; refusal?: string; 
   outputs?: object[]; gate?: Promise<void>; wrongID?: boolean; noStart?: boolean; catalog?: typeof CATALOG; handback?: boolean
-  storeFailure?: boolean; selfTest?: object; nativeTasks?: boolean; liveCatalog?: () => object; runnerFails?: boolean; agentModels?: boolean; spawnId?: () => string; noAgentTool?: boolean; storeLimit?: number; sessionId?: () => string
+  storeFailure?: boolean; selfTest?: object; nativeTasks?: boolean; liveCatalog?: () => object; runnerFails?: boolean; agentModels?: boolean; before?: object[]; spawnId?: () => string; noAgentTool?: boolean; storeLimit?: number; sessionId?: () => string
 }
 
 function engine([$test, on]: Body, options: Options = {}) {
@@ -76,6 +76,7 @@ function engine([$test, on]: Body, options: Options = {}) {
     else if (flag === '--agent-selftest') yield { stream: 'stdout', text: lines(options.selfTest ?? { type: 'ok' }) }
     else if (flag === '--agent-run') {
       runCount++
+      if (options.before) yield { stream: 'stdout', text: lines(...options.before) }
       if (!options.noStart) yield { stream: 'stdout', text: lines({ type: 'started', agentId: options.wrongID ? 'old-runner-id' : request.id, account: 'Pro', model: 'haiku' }) }
       if (options.gate) await options.gate
       yield { stream: 'stdout', text: lines(...(options.outputs ?? [RESULT])) }
@@ -889,4 +890,42 @@ test('added-agent ids outlive the routes cap', async ($, on) => {
   expect(e.store.has(`native-agent:${ID}`)).toBe(false)
   // The in-memory route would still answer here; after a reload only the list tells.
   expect(e.store.get('added-agents')).toContain(ID)
+})
+
+test('the header names the models skipped as unavailable', async ($, on) => {
+  const outputs: object[] = [{ ...RESULT, model: 'gemini-4-argon-high', unavailable: ['gpt-6.1-sol'] }]
+  const e = engine([$, on], { catalog: CATALOG, outputs })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  await e.launch({ model: 'sol' })
+  expect(report(await step($))).toBe(`Ran on gemini-4-argon-high (gpt-6.1-sol unavailable).\n\n${RESULT.text}`)
+  outputs[0] = { ...RESULT, model: 'c', unavailable: ['a', 'b'], worktreePath: '/w/x', worktreeBranch: 'agent-x', declined: ['git push'] }
+  await e.launch({ model: 'sol', tool_use_id: 'toolu_2' })
+  expect(report(await step($, 'turn-2'))).toBe(`Ran on c (a, b unavailable). Worktree: /w/x (branch agent-x).\nDeclined (needed approval): git push\n\n${RESULT.text}`)
+})
+
+test('a fallback attempt updates the pane row and creates no second one', async ($, on) => {
+  const e = engine([$, on], { catalog: CATALOG, outputs: [
+    { type: 'moved', account: 'Codex', reason: 'usage limit' },
+    { type: 'started', agentId: ID, account: 'Antigravity', model: 'gemini-4-argon-high', provider: 'antigravity' },
+    { ...RESULT, account: 'Antigravity', model: 'gemini-4-argon-high', provider: 'antigravity', unavailable: ['gpt-6.1-sol'] },
+  ] })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  await e.launch({ model: 'sol' })
+  await step($)
+  const ui = await $.ui.mount({ plugin: 'lastdrop', component: 'Pane', requestId: 'lastdrop-agents', props: {}, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /on Antigravity · gemini-4-argon-high/ }))?.text).toContain('gemini-4-argon-high')
+  expect(await ui.find({ type: 'Text', text: /on Pro/ })).toBeFalsy()
+  const rows = await ui.findAll({ type: 'Button', text: /Show transcript/ })
+  expect(rows.length).toBe(1)
+  await ui.unmount()
+})
+
+test('a switch made before the agent started still reaches its row', async ($, on) => {
+  const e = engine([$, on], { catalog: CATALOG, before: [{ type: 'moved', account: 'Codex', reason: 'usage limit' }] })
+  await $.classic.UserPromptSubmit({ prompt: 'hi' } as never)
+  await e.launch({ model: 'sol' })
+  await step($)
+  const ui = await $.ui.mount({ plugin: 'lastdrop', component: 'Pane', requestId: 'lastdrop-agents', props: {}, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Moved off Codex: usage limit/ }))?.text).toContain('usage limit')
+  await ui.unmount()
 })

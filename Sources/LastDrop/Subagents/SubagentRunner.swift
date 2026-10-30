@@ -57,6 +57,15 @@ enum SubagentRunner {
         /// For an agent from lastdrop's list that ran in a worktree: where, and the branch when it has one.
         var worktreePath: String?
         var worktreeBranch: String?
+        /// It failed before starting any work for a reason about availability that no limit or model flag says: the
+        /// provider isn't installed, signed in or keyed, or doesn't take this effort. An agent's fallback may take it.
+        var unavailable = false
+        /// For an agent with fallbacks: the models tried before this one ran and skipped.
+        var skipped: [String] = []
+
+        /// Failed with nothing done, because the provider, account or model couldn't take it: what a fallback is for.
+        /// Anything after a tool use, and any other error, is not.
+        var failedToStart: Bool { isError && toolUses == 0 && (unavailable || limitReached || modelUnavailable) }
     }
 
     /// What a run needs to know Claude Code is the one it expects, from its `system`/`init` event: nil when
@@ -177,7 +186,7 @@ enum SubagentRunner {
         if output == nil {
             guard let claude = override ?? executable() else {
                 return Result(text: "Claude Code (`claude`) was not found on this Mac.", isError: true, limitReached: false,
-                              turns: 0, permissionDenials: 0)
+                              turns: 0, permissionDenials: 0, unavailable: true)
             }
             let started = Process()
             started.executableURL = URL(fileURLWithPath: claude)
@@ -336,13 +345,17 @@ enum SubagentRunner {
         var text = root.string("result") ?? ""
         let isError = root["is_error"] as? Bool ?? false
         let status = root.double("api_error_status").map(Int.init)
-        let modelUnavailable = isError && Self.modelUnavailable(text)
+        var unauthorized = false
+        var modelUnavailable = isError && Self.modelUnavailable(text)
         let limit: Bool
         if let provider, provider == .zai || provider == .openrouter {
             let errors = (root["errors"] as? [String] ?? []).joined(separator: "\n")
             if !errors.isEmpty { text += (text.isEmpty ? "" : "\n") + errors }
+            // The model's absence is read from everything the endpoint said, `errors` included.
+            modelUnavailable = isError && (Self.modelUnavailable(text) || endpointModelMissing(text, status: status))
             limit = isError && endpointLimit(text, status: status, provider: provider)
             if isError, status == 401 || hasCode(401, in: text) {
+                unauthorized = true
                 text = "\(provider.displayName) authentication failed. " + EndpointProfile.missingKey(provider) + "\n" + text
             } else if limit, provider == .openrouter {
                 text = "OpenRouter credits exhausted. Add credits or raise this key's budget.\n" + text
@@ -350,6 +363,8 @@ enum SubagentRunner {
                 text = "OpenRouter management keys can't run models. Add a regular API key in lastdrop's Settings.\n" + text
             }
         } else {
+            // A Claude account whose sign-in expired can't take the run, but another model or provider may.
+            if isError, status == 401 { unauthorized = true }
             limit = isError && !modelUnavailable
                 && (status == 429 || root.string("api_error") == "usage_limit_reached" || mentionsLimit(text))
         }
@@ -370,12 +385,20 @@ enum SubagentRunner {
                       outputTokens: Int(usage?.double("output_tokens") ?? 0),
                       cacheReadInputTokens: Int(usage?.double("cache_read_input_tokens") ?? 0),
                       cacheCreationInputTokens: Int(usage?.double("cache_creation_input_tokens") ?? 0),
-                      declined: declined)
+                      declined: declined, unavailable: unauthorized)
     }
 
     /// Provider business codes survive Claude Code's flattened "API Error" strings.
     static func hasCode(_ code: Int, in text: String) -> Bool {
         text.range(of: "(?<![0-9])\(code)(?![0-9])", options: .regularExpression) != nil
+    }
+
+    /// An endpoint that doesn't have the model: Z.ai and OpenRouter answer with a 404 or a "model not found" text
+    /// (OpenRouter's retired models: "No endpoints found for …").
+    static func endpointModelMissing(_ text: String, status: Int?) -> Bool {
+        let t = text.lowercased()
+        return status == 404 || hasCode(404, in: text) || t.contains("no endpoints found") || t.contains("model not found")
+            || t.contains("is not a valid model") || (t.contains("model") && t.contains("does not exist"))
     }
 
     static func endpointLimit(_ text: String, status: Int?, provider: AgentProvider) -> Bool {

@@ -97,7 +97,7 @@ enum ClaudeBackend: AgentBackend {
         // Claude Code ignores a level it doesn't know with a warning; the call should fail instead.
         if let effort = job.effort, !efforts.contains(effort) {
             return .init(text: "Claude agents take \(efforts.joined(separator: ", ")) effort; received \(effort).", isError: true,
-                         limitReached: false, turns: 0, permissionDenials: 0)
+                         limitReached: false, turns: 0, permissionDenials: 0, unavailable: true)
         }
         let config = ClaudeAccountsConfig.load()
         let permissionMode = AgentRun.mappedPermissionMode(job.permissionMode)
@@ -151,6 +151,7 @@ enum ClaudeBackend: AgentBackend {
             return result
         }
         var none = last ?? .init(text: "", isError: true, limitReached: true, turns: 0, permissionDenials: 0)
+        none.unavailable = true
         none.text = none.modelUnavailable ? AgentRun.modelRefusal(model, none.text)
             : "No other Claude account has room for \(job.definition.name) right now."
         return none

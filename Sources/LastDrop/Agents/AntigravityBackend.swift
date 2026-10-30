@@ -61,15 +61,15 @@ enum AntigravityBackend: AgentBackend {
     static func slug(model: String, effort: String?, models: [AgentModel]) throws -> String {
         if suffix(model) != nil { return model }
         guard let offered = models.first(where: { $0.id == model }) else {
-            throw Failure("Antigravity does not offer model \(model). Run `agy models` to check access.")
+            throw Failure("Antigravity does not offer model \(model). Run `agy models` to check access.", unavailable: true)
         }
         guard !offered.efforts.isEmpty else {
-            if let effort { throw Failure("Antigravity model \(model) does not offer effort \(effort).") }
+            if let effort { throw Failure("Antigravity model \(model) does not offer effort \(effort).", unavailable: true) }
             return model
         }
         let selected = effort ?? offered.defaultEffort ?? "medium"
         guard offered.efforts.contains(selected) else {
-            throw Failure("Antigravity model \(model) does not offer effort \(selected) (available: \(offered.efforts.joined(separator: ", "))).")
+            throw Failure("Antigravity model \(model) does not offer effort \(selected) (available: \(offered.efforts.joined(separator: ", "))).", unavailable: true)
         }
         return model + "-" + selected
     }
@@ -92,7 +92,7 @@ enum AntigravityBackend: AgentBackend {
 
     static func run(_ job: AgentJob, _ events: AgentEvents) async -> SubagentRunner.Result {
         guard let executable = executable() else {
-            return failure("Antigravity (`agy`) was not found on this Mac.", directory: job.cwd)
+            return failure("Antigravity (`agy`) was not found on this Mac.", directory: job.cwd, unavailable: true)
         }
         return await run(job, events, executable: executable)
     }
@@ -136,7 +136,7 @@ enum AntigravityBackend: AgentBackend {
             merged.declined = result.declined + second.declined.filter { !result.declined.contains($0) }
             return merged
         } catch {
-            return failure(error.localizedDescription, directory: directory)
+            return failure(error.localizedDescription, directory: directory, unavailable: (error as? Failure)?.unavailable == true)
         }
     }
 
@@ -193,19 +193,26 @@ enum AntigravityBackend: AgentBackend {
 
     struct Failure: LocalizedError {
         var errorDescription: String?
-        init(_ message: String) { errorDescription = message }
+        /// A failure about availability (the model or effort isn't offered), which an agent's fallback may take over.
+        var unavailable = false
+        init(_ message: String, unavailable: Bool = false) { errorDescription = message; self.unavailable = unavailable }
     }
 
     private static func message(_ text: String) -> String {
         let lower = text.lowercased()
         let detail = String(text.trimmingCharacters(in: .whitespacesAndNewlines).suffix(2000))
-        if lower.contains("authentication required") || lower.contains("not authenticated") || lower.contains("not signed in")
-            || lower.contains("unauthenticated") || lower.contains("token expired") || lower.contains("not logged in")
-            || lower.contains("please log in") || lower.contains("please sign in") || lower.contains("invalid_grant") {
+        if needsSignIn(text) {
             return "Antigravity needs sign-in. Open `agy` in Terminal and authenticate. \(detail)"
         }
         if modelUnavailable(text) { return "Antigravity cannot use this model on the current account. \(detail)" }
         return detail
+    }
+
+    static func needsSignIn(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("authentication required") || lower.contains("not authenticated") || lower.contains("not signed in")
+            || lower.contains("unauthenticated") || lower.contains("token expired") || lower.contains("not logged in")
+            || lower.contains("please log in") || lower.contains("please sign in") || lower.contains("invalid_grant")
     }
 
     static func modelUnavailable(_ text: String) -> Bool {
@@ -220,9 +227,9 @@ enum AntigravityBackend: AgentBackend {
             || lower.contains("limit reached") || lower.contains("quota limit"))
     }
 
-    private static func failure(_ text: String, directory: String) -> SubagentRunner.Result {
+    private static func failure(_ text: String, directory: String, unavailable: Bool = false) -> SubagentRunner.Result {
         .init(text: message(text), isError: true, limitReached: mentionsLimit(text), modelUnavailable: modelUnavailable(text),
-              turns: 0, permissionDenials: 0, directory: directory, account: "Antigravity")
+              turns: 0, permissionDenials: 0, directory: directory, account: "Antigravity", unavailable: unavailable || needsSignIn(text))
     }
 
     /// A turn's NDJSON state. DONE closes a step; the final result never duplicates its text item.
@@ -344,7 +351,8 @@ enum AntigravityBackend: AgentBackend {
                          permissionDenials: permissionDenials, toolUses: tools.count,
                          durationMs: Int((final?.double("duration_seconds") ?? 0) * 1000),
                          inputTokens: Int(input + cached), outputTokens: Int(output),
-                         model: model, sessionID: sessionID ?? final?.string("conversation_id"), directory: directory, account: "Antigravity", declined: declined)
+                         model: model, sessionID: sessionID ?? final?.string("conversation_id"), directory: directory, account: "Antigravity", declined: declined,
+                         unavailable: failed && needsSignIn(diagnostic))
         }
 
         private static func render(_ value: Any?) -> String {

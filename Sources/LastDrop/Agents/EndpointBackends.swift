@@ -138,22 +138,25 @@ struct EndpointProfile: Equatable, Sendable {
     }
 
     static func run(_ job: AgentJob, _ events: AgentEvents, provider: AgentProvider) async -> SubagentRunner.Result {
-        func failure(_ message: String) -> SubagentRunner.Result {
-            .init(text: message, isError: true, limitReached: false, turns: 0, permissionDenials: 0, account: provider.displayName)
+        func failure(_ message: String, unavailable: Bool = false) -> SubagentRunner.Result {
+            .init(text: message, isError: true, limitReached: false, turns: 0, permissionDenials: 0, account: provider.displayName,
+                  unavailable: unavailable)
         }
         let account = AgentPool.account(provider, resume: job.resume)
         let place = AgentPool.place(account)
-        guard let key = apiKey(provider, account: account) else { return failure(missingKey(provider)) }
+        guard let key = apiKey(provider, account: account) else { return failure(missingKey(provider), unavailable: true) }
         do {
-            if provider == .openrouter { try await OpenRouterProvider.validateInferenceKey(key) }
+            if provider == .openrouter {
+                do { try await OpenRouterProvider.validateInferenceKey(key) } catch { return failure(error.localizedDescription, unavailable: true) }
+            }
             let model = job.resume?.model ?? job.definition.model
             let effort = job.resume.map { $0.effort } ?? job.effort
             if provider == .zai, let effort, !["low", "high", "max"].contains(effort) {
-                return failure("Z.ai supports low, high, or max effort; received \(effort).")
+                return failure("Z.ai supports low, high, or max effort; received \(effort).", unavailable: true)
             }
             // Claude Code ignores a level it doesn't know with a warning; the call should fail instead.
             if provider == .openrouter, let effort, !ClaudeBackend.efforts.contains(effort) {
-                return failure("OpenRouter agents take \(ClaudeBackend.efforts.joined(separator: ", ")) effort; received \(effort).")
+                return failure("OpenRouter agents take \(ClaudeBackend.efforts.joined(separator: ", ")) effort; received \(effort).", unavailable: true)
             }
             let profile = EndpointProfile(provider: provider, directory: directory(for: provider, account: account), model: model, effort: effort,
                                           accountID: account.isMain ? nil : account.id)

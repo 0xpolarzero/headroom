@@ -133,6 +133,34 @@ samples through `claude -p`. See [research H](research/H-agent-models.md) for th
 - Every account is tried: one that refuses the model (a plan without it) is skipped for that run only, with nothing
   remembered between runs, so a plan or credit change is noticed at once.
 
+## Fallbacks
+
+An agent has one or more models by priority, each with its own provider, model and optional effort. The catalog
+keeps the first as the agent's own and the rest as `fallbacks` (Settings → Agents, **Models**, one list by priority, at least one entry: "Tried in order. The next one runs only if the one above can't start, never once
+work has begun."). The list is empty by default, so an agent without one reads and behaves as before, and the
+stored catalog doesn't even carry the key.
+
+The list shows the chain, so Claude knows what it is choosing: `sol: Reviews… (Codex · gpt-6.1-sol · high, then
+Antigravity · gemini-4-argon)`.
+
+A fallback is tried only when an attempt fails before any work happened, and for a reason about availability: a
+usage limit, a sign-in or key, a provider that isn't installed, a model the account doesn't have, or an effort the
+provider doesn't take (an error, never a silent clamp). Never after a tool ran, and never for another error: an
+empty report, a bug, or a stop (`TaskStop` ends the whole chain at once). The call's `effort` wins over each
+attempt's own. The read-only role and worktree isolation apply to every attempt, and a worktree a failed attempt
+made is removed before the next starts.
+
+For the plugin, each switch is a `moved` line (with the next `provider` and `model`), followed by a new `started`
+line with the same `agentId` and the attempt's own `account`, `model` and `provider`, which updates the same row.
+The `result` line carries `provider` (what ran) and `unavailable`, the models tried and skipped, when there are
+any, and the report starts `Ran on gemini-4-argon-high (gpt-6.1-sol unavailable).` If every attempt fails the
+error lists each one and why. Claude never stands in, unless the user put a Claude entry in the list.
+
+The same model at another effort is its own attempt (`sol` at `xhigh`, then `sol` at `high`). A catalog saved by an
+older version of the app drops fallbacks, which it doesn't know.
+
+A follow-up (`SendMessage`) continues on the attempt that ran, from the entry saved for it, with no chain.
+
 ## Worktrees
 
 With `isolation: "worktree"`, Codex and Antigravity runs get `<repo>/.claude/worktrees/agent-<id>` on the branch

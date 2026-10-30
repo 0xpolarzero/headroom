@@ -122,7 +122,13 @@ enum AgentRun {
         WarmPool.warm(spec)
     }
 
+    /// Tests read the lines here instead of standard output.
+    nonisolated(unsafe) static var sink: (([String: Any]) -> Void)?
+    /// The backend that runs an agent's provider; tests stand fakes in for the real ones.
+    nonisolated(unsafe) static var backends: (AgentProvider) -> any AgentBackend.Type = { $0.backend }
+
     static func emit(_ object: [String: Any]) {
+        if let sink { return sink(object) }
         guard var data = try? JSONSerialization.data(withJSONObject: object, options: .withoutEscapingSlashes) else { return }
         data.append(0x0A)
         FileHandle.standardOutput.write(data)
@@ -341,23 +347,82 @@ enum AgentRun {
     static func runDefined(_ definition: AgentDefinition, _ request: Request, agentID: String, resume: AgentRegistry.Entry?,
                            mcpConfig: String?) async {
         SubagentLog.write("\(agentID) \(resume == nil ? "start" : "continue") \(definition.name) on \(definition.summary)")
-        let launch = Launch()
-        let job = AgentJob(agentID: agentID, definition: definition, prompt: request.prompt, cwd: resume?.directory ?? request.cwd,
-                           effort: effort(definition, request, resume: resume), permissionMode: request.permissionMode ?? "default",
-                           worktree: request.isolation == "worktree", mcpConfig: mcpConfig, resume: resume,
-                           role: resume?.role ?? request.role)
-        let events = AgentEvents(
-            process: { AgentRegistry.setProcess(agentID, claude: $0) },
-            started: { place, model in
-                guard launch.begin() else { return }
-                emit(["type": "started", "agentId": agentID, "account": place, "model": model, "provider": definition.provider.rawValue,
-                      "outputFile": logURL(agentID).path])
-                log(agentID, "Started \(definition.name) on \(place) (\(model)): \(request.description ?? "")")
-            },
-            step: { step(agentID, $0) },
-            item: { item(agentID, $0) })
-        var result = await definition.provider.backend.run(job, events)
-        guard launch.started else { return fail(agentID, result) }
+        // A follow-up continues on the model that ran, with no chain; a new run goes through the primary, then each
+        // fallback, while an attempt fails before any work for a reason about availability.
+        let attempts = resume == nil ? definition.attempts : [definition]
+        // The stop command finds a runner by this record, between attempts as well as during one.
+        AgentRegistry.setProcess(agentID, claude: 0)
+        var failures: [String] = []
+        var skipped: [(provider: AgentProvider, model: String)] = []
+        var last: SubagentRunner.Result?
+        var anyStarted = false
+        func name(_ entry: (provider: AgentProvider, model: String)) -> String {
+            // A model that appears twice in the chain is told apart by its provider.
+            attempts.filter { $0.model == entry.model }.count > 1 ? "\(entry.provider.displayName) \(entry.model)" : entry.model
+        }
+        for (index, attempt) in attempts.enumerated() {
+            if index > 0, AgentRegistry.wasStopped(agentID), let last {
+                // Stopped between two attempts: no other one starts.
+                if anyStarted { finish(agentID, last, account: last.account, agent: true, provider: attempts[index - 1].provider) } else { fail(agentID, last) }
+                return
+            }
+            let launch = Launch()
+            let job = AgentJob(agentID: agentID, definition: attempt, prompt: request.prompt, cwd: resume?.directory ?? request.cwd,
+                               effort: effort(attempt, request, resume: resume), permissionMode: request.permissionMode ?? "default",
+                               worktree: request.isolation == "worktree", mcpConfig: mcpConfig, resume: resume,
+                               role: resume?.role ?? request.role)
+            let events = AgentEvents(
+                process: { AgentRegistry.setProcess(agentID, claude: $0) },
+                started: { place, model in
+                    guard launch.begin() else { return }
+                    emit(["type": "started", "agentId": agentID, "account": place, "model": model, "provider": attempt.provider.rawValue,
+                          "outputFile": logURL(agentID).path])
+                    log(agentID, "Started \(attempt.name) on \(place) (\(model)): \(request.description ?? "")")
+                },
+                step: { step(agentID, $0) },
+                item: { item(agentID, $0) })
+            var result = await backends(attempt.provider).run(job, events)
+            anyStarted = anyStarted || launch.started
+            last = result
+            let isLast = index == attempts.count - 1
+            // The attempt's process is over; a stop now has no process to end, only the chain.
+            if !isLast { AgentRegistry.setProcess(agentID, claude: 0) }
+            let failedToStart = !AgentRegistry.wasStopped(agentID) && result.failedToStart
+            // Whatever ended it before it started, nothing it made stays behind: a worktree would block the next attempt's name.
+            if (failedToStart || !launch.started), resume == nil, !isLast || !launch.started {
+                noteWorktree(&result, isolation: request.isolation, cwd: request.cwd)
+                if let path = result.worktreePath, AgentWorktree.isUnchanged(path), AgentWorktree.remove(path) {
+                    result.worktreePath = nil
+                    result.worktreeBranch = nil
+                }
+            }
+            if failedToStart {
+                let reason = String(result.text.split(separator: "\n").first ?? "").prefix(160)
+                failures.append("\(attempt.provider.displayName) \(attempt.model): \(reason)")
+                if !isLast {
+                    skipped.append((attempt.provider, attempt.model))
+                    let next = attempts[index + 1]
+                    SubagentLog.write("\(agentID) \(attempt.model) can't start (\(reason)); trying \(next.model) on \(next.provider.displayName)")
+                    emit(["type": "moved", "account": result.account ?? attempt.provider.displayName,
+                          "reason": "\(attempt.model) can't start: \(reason)", "provider": next.provider.rawValue, "model": next.model])
+                    continue
+                }
+                if attempts.count > 1 {
+                    result.text = "No attempt of \(definition.name) could start:\n" + failures.map { "- " + $0 }.joined(separator: "\n")
+                }
+            }
+            guard launch.started else { return fail(agentID, result) }
+            // The models skipped on the way: never the attempt that ran, nor the last one that failed.
+            result.skipped = skipped.map(name)
+            await conclude(attempt, result, request, agentID: agentID, resume: resume, job: job)
+            return
+        }
+    }
+
+    /// What follows an attempt that ran: the report, the worktree, the entry a follow-up continues, the result line.
+    private static func conclude(_ definition: AgentDefinition, _ finished: SubagentRunner.Result, _ request: Request, agentID: String,
+                                 resume: AgentRegistry.Entry?, job: AgentJob) async {
+        var result = finished
         requireReport(&result, from: definition)
         // The backends make their worktrees differently (detached, or on a branch of their own); where the run
         // ended up tells which, whichever made it.
@@ -375,6 +440,7 @@ enum AgentRun {
                 result.directory = request.cwd
             }
         }
+        // The entry keeps the attempt that ran, so a follow-up continues on that model and not the chain.
         var entry = resume ?? AgentRegistry.Entry(account: result.account ?? definition.provider.displayName, directory: request.cwd,
                                                    sessionID: "", model: definition.model, subagentType: definition.name,
                                                    effort: job.effort, at: Date(), definition: definition, accountID: result.accountID,
@@ -388,7 +454,7 @@ enum AgentRun {
             updated.sessionID = session
             AgentRegistry.remember(agentID, entry: updated, at: result.directory)
         }
-        finish(agentID, result, account: result.account ?? definition.provider.displayName, agent: true)
+        finish(agentID, result, account: result.account ?? definition.provider.displayName, agent: true, provider: definition.provider)
     }
 
     /// A run that reports nothing is a failure whatever the provider, never a silent success.
@@ -557,17 +623,19 @@ enum AgentRun {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--agent-stop"), i + 1 < args.count else { exit(2) }
         let id = args[i + 1]
-        guard let pid = AgentRegistry.process(id) else {
+        // The runner may be between two attempts of a chain, with no Claude Code or provider process to end.
+        guard AgentRegistry.runnerAlive(id) else {
             emit(["type": "error", "text": "Agent \(id) isn't running."])
             exit(1)
         }
         AgentRegistry.markStopped(id)
-        SubagentRunner.terminate(pid)
+        if let pid = AgentRegistry.process(id) { SubagentRunner.terminate(pid) }
         emit(["type": "stopped"])
         exit(0)
     }
 
-    private static func finish(_ agentID: String, _ result: SubagentRunner.Result, account: String?, agent: Bool = false) {
+    private static func finish(_ agentID: String, _ result: SubagentRunner.Result, account: String?, agent: Bool = false,
+                               provider: AgentProvider? = nil) {
         AgentRegistry.setProcess(agentID, claude: nil)
         if AgentRegistry.takeStopped(agentID) {
             log(agentID, "Stopped.")
@@ -589,6 +657,8 @@ enum AgentRun {
         if let path = result.worktreePath { object["worktreePath"] = path }
         if let branch = result.worktreeBranch { object["worktreeBranch"] = branch }
         if agent, !result.declined.isEmpty { object["declined"] = result.declined }
+        if let provider { object["provider"] = provider.rawValue }
+        if !result.skipped.isEmpty { object["unavailable"] = result.skipped }
         emit(object)
     }
 
@@ -682,17 +752,20 @@ enum AgentRegistry {
         }
     }
 
+    /// Tests keep the ledger in a file of their own.
+    nonisolated(unsafe) static var fileOverride: URL?
+
     private static func withStore<T>(_ body: (inout Store) -> T) -> T {
         LastDropPaths.ensure(LastDropPaths.support)
-        let lockFD = open(LastDropPaths.agentsLock.path, O_CREAT | O_RDWR, 0o600)
+        let lockFD = open((AgentRegistry.fileOverride.map { $0.path + ".lock" } ?? LastDropPaths.agentsLock.path), O_CREAT | O_RDWR, 0o600)
         if lockFD >= 0 { flock(lockFD, LOCK_EX) }
         defer { if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD) } }
-        var (store, writable) = readStore(at: LastDropPaths.agents)
+        var (store, writable) = readStore(at: fileOverride ?? LastDropPaths.agents)
         let value = body(&store)
         if store.agents.count > 500 {
             store.agents = Dictionary(uniqueKeysWithValues: store.agents.sorted { $0.value.at > $1.value.at }.prefix(400).map { ($0.key, $0.value) })
         }
-        if writable { try? JSONEncoder.lastdrop.encode(store).write(to: LastDropPaths.agents, options: .atomic) }
+        if writable { try? JSONEncoder.lastdrop.encode(store).write(to: fileOverride ?? LastDropPaths.agents, options: .atomic) }
         return value
     }
 
@@ -732,6 +805,11 @@ enum AgentRegistry {
         }
     }
 
+    /// Whether the runner of `id` is alive, whether or not a process of its own is running right now.
+    static func runnerAlive(_ id: String) -> Bool {
+        withStore { store in store.processes?[id].map { kill($0.runner, 0) == 0 } ?? false }
+    }
+
     /// Only processes handed to this runner, including ones claimed from the warm pool.
     static func ownedProcesses() -> [Int32] {
         withStore { store in
@@ -761,7 +839,7 @@ enum AgentRegistry {
 
     /// Agents whose runner is alive, newest first: read without the lock and without writing, for the panel.
     static func runningNow() -> [(id: String, entry: Entry)] {
-        guard let store = (try? Data(contentsOf: LastDropPaths.agents)).flatMap({ try? JSONDecoder.lastdrop.decode(Store.self, from: $0) })
+        guard let store = (try? Data(contentsOf: fileOverride ?? LastDropPaths.agents)).flatMap({ try? JSONDecoder.lastdrop.decode(Store.self, from: $0) })
         else { return [] }
         return (store.processes ?? [:]).compactMap { id, p in
             guard p.claude > 0, kill(p.runner, 0) == 0, let entry = store.agents[id] else { return nil }
