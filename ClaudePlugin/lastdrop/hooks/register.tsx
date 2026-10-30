@@ -85,6 +85,8 @@ function listText(): string {
 const ADDED = "The Agent tool's model parameter also accepts these models the user added:\n"
 const CHANGED = "The models the user added to the Agent tool's model parameter changed. It now accepts:\n"
 const REMOVED = "The models the user added to the Agent tool's model parameter were removed."
+/** Ends the frozen listing, so the command's instructions cost nothing until they're read. */
+const POINTER = '\nOnly if the user asks to change these, run '
 
 /** Sessions whose first-prompt grace was used, for when the store refuses to keep it. */
 const graced = new Set<string>()
@@ -207,7 +209,7 @@ async function listNote($: EngineInterface): Promise<string | undefined> {
   const list = listText()
   const frozen = await $.store.get(`listing:${id}`)
   const announced = await $.store.get(`announced:${id}`)
-  const known = typeof announced === 'string' ? announced : typeof frozen === 'string' ? frozen : undefined
+  const known = typeof announced === 'string' ? announced : typeof frozen === 'string' ? frozen.split(POINTER)[0] : undefined
   if (known === undefined) {
     // The first prompt of a session, or the first after a compaction, comes before the listing is built.
     if (!graced.has(id) && (await $.store.get(`grace:${id}`)) !== true) {
@@ -651,9 +653,10 @@ export const register: Register = on => {
     const id = await $.session.id()
     let list = await $.store.get(`listing:${id}`)
     if (typeof list !== 'string') {
-      list = listText()
+      const current = listText()
+      list = current === '' ? '' : `${current}${POINTER}${await runner($)} --agents --help`
       // A store that refuses leaves this request on the current list; the next one tries again.
-      if (await put($, `listing:${id}`, list) && (await $.store.get(`announced:${id}`)) === undefined) await put($, `announced:${id}`, list)
+      if (await put($, `listing:${id}`, list) && (await $.store.get(`announced:${id}`)) === undefined) await put($, `announced:${id}`, current)
     }
     return list === '' ? answer : { ...answer, text: `${answer.text}\n\n${ADDED}${list}` }
   }).catch(($, e, next) => next(e))

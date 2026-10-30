@@ -311,8 +311,9 @@ struct AgentsPanel: View {
                         }
                         Spacer()
                         Toggle("", isOn: Binding(get: { agent.enabled }, set: { on in
-                            var next = AgentCatalog.load()
-                            if let i = next.agents.firstIndex(where: { $0.id == agent.id }) { next.agents[i].enabled = on; try? next.save() }
+                            try? AgentCatalog.update { next in
+                                if let i = next.agents.firstIndex(where: { $0.id == agent.id }) { next.agents[i].enabled = on }
+                            }
                         }))
                         .toggleStyle(.switch)
                         .controlSize(.mini)
@@ -353,9 +354,7 @@ struct SaveClaudeToggle: View {
             InfoTip(catalog.enabled.isEmpty ? "Add an agent first." : Self.about)
             Spacer(minLength: 4)
             Toggle("", isOn: Binding(get: { catalog.saveClaude }, set: { on in
-                var next = AgentCatalog.load()
-                next.saveClaude = on
-                try? next.save()
+                try? AgentCatalog.update { $0.saveClaude = on }
             }))
             .toggleStyle(.switch)
             .controlSize(.mini)
@@ -390,10 +389,8 @@ struct SavingInstructionEditor: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Save") {
-                    var next = AgentCatalog.load()
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    next.saveClaudeText = trimmed.isEmpty || trimmed == AgentCatalog.defaultSavingInstruction ? nil : trimmed
-                    try? next.save()
+                    try? AgentCatalog.update { $0.saveClaudeText = trimmed.isEmpty || trimmed == AgentCatalog.defaultSavingInstruction ? nil : trimmed }
                     saved()
                     dismiss()
                 }

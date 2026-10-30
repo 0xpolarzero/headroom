@@ -198,6 +198,8 @@ struct AgentsSections: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .agentCatalogChanged)) { _ in catalog = AgentCatalog.load() }
+        // `lastdrop --agents` is another process.
+        .onReceive(DistributedNotificationCenter.default().publisher(for: .agentCatalogChanged)) { _ in catalog = AgentCatalog.load() }
         .sheet(item: $editing) { agent in
             AgentEditor(agent: agent, catalog: catalog) { saved in
                 change { next in
@@ -241,10 +243,8 @@ struct AgentsSections: View {
 
     /// Saves the list, which the plugin reads on the next prompt.
     private func change(_ edit: (inout AgentCatalog) -> Void) {
-        var next = AgentCatalog.load()
-        edit(&next)
         do {
-            try next.save()
+            try AgentCatalog.update(edit)
             catalog = AgentCatalog.load()
             error = nil
         } catch {
@@ -326,11 +326,9 @@ struct SuggestedAgentsSection: View {
                 problems[agent.name] = "\(agent.provider.displayName) no longer offers \(agent.model)."
                 return
             }
-            var next = AgentCatalog.load()
             var added = agent
             added.id = UUID()
-            next.agents.append(added)
-            try next.save()
+            try AgentCatalog.update { $0.agents.append(added) }
             catalog = AgentCatalog.load()
             NotificationCenter.default.post(name: .agentCatalogChanged, object: nil)
         } catch {

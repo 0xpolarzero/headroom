@@ -46,6 +46,24 @@ lastdrop writes the list as a revisioned catalog in Application Support. Credent
 `lastdrop --agent-catalog` prints the enabled agents (reserved names left out) and `agentModels: true`, which
 tells the plugin the app speaks this design.
 
+## Changing the list from an agent
+
+`lastdrop --agents` changes the list without Settings: `list`, `models <provider>`, `set` (JSON on stdin, added or
+replaced by name), `remove <name>` and `saving on|off`, with `--help` for the details. It prints JSON, or a reason on
+stderr with exit code 1. `set` makes Settings' checks and also refuses a model or effort the provider's live list
+doesn't have. A provider whose list fails leaves a warning, and its ids are taken as they are, as Settings lets you
+type them. Sign-ins and API keys stay in Settings.
+
+Every writer goes through `AgentCatalog.update`, which reads the file and saves it under a lock, so the app and the
+command can't lose each other's edits. The command also sends a distributed notification, so an open Settings page
+reloads.
+
+Claude finds the command through one line that ends the frozen listing: "Only if the user asks to change these, run
+<path> --agents --help". It costs about 25 tokens once per session, and the instructions are read only when needed.
+Nothing enforces the "only if": the normal Bash permission prompt is what stops an unrequested change. It sits in the
+frozen text, so it can't change a replayed message, and a listing frozen before it existed keeps its bytes. Notes
+leave it out, so a session that started with no added agents doesn't get it until its listing is rebuilt.
+
 ## How it reaches Claude Code
 
 **The listing.** A `prompt.attachment` hook rewrites the `agent_listing_delta` row for the main loop only,
