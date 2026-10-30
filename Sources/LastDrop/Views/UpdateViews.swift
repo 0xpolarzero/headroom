@@ -62,14 +62,14 @@ struct UpdateBanner: View {
     }
 }
 
-/// Settings' Updates page.
+/// Updates, on Settings' General page.
 struct UpdatesSection: View {
     @Bindable var model: AppModel
 
     private var updater: Updater { model.updater }
 
     var body: some View {
-        PageSection {
+        PageSection("Updates") {
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 Row(icon: "arrow.down.circle", title: "lastdrop \(updater.current)", detail: status(context.date), detailColor: statusColor) {
                     if updater.isRelease { button }

@@ -94,14 +94,17 @@ struct MainWindowView: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case accounts, agents, updates
+    case accounts, agents, general
     var id: String { rawValue }
+
+    /// The pages at the top of the sidebar; General sits at its bottom.
+    static let main: [SettingsPage] = [.accounts, .agents]
 
     var title: String {
         switch self {
         case .accounts: "Accounts"
         case .agents: "Agents"
-        case .updates: "Updates"
+        case .general: "General"
         }
     }
 
@@ -110,7 +113,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .accounts: "Your plans, what each shows in the menu bar, and when it notifies you."
         case .agents: "In Claude Code: subagents on your other Claude accounts, and agents on your other plans."
-        case .updates: "New releases of lastdrop, from GitHub."
+        case .general: "Opening lastdrop at login, and its new releases from GitHub."
         }
     }
 
@@ -118,7 +121,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .accounts: "person.2"
         case .agents: "sparkle"
-        case .updates: "arrow.down.circle"
+        case .general: "gearshape"
         }
     }
 }
@@ -157,8 +160,9 @@ struct SettingsView: View {
                     ClaudeAccountsSection(model: model)
                 }
             }
-        case .updates:
-            Page(title: "Updates", info: SettingsPage.updates.about) {
+        case .general:
+            Page(title: "General", info: SettingsPage.general.about) {
+                PageSection { LoginRow(model: model) }
                 UpdatesSection(model: model)
             }
         }
@@ -166,24 +170,7 @@ struct SettingsView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(SettingsPage.allCases) { page in
-                Button { model.settingsPage = page } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: page.icon)
-                            .font(.system(size: 13))
-                            .foregroundStyle(page == model.settingsPage ? Color.accentColor : .secondary)
-                            .frame(width: 18)
-                        Text(page.title)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 8)
-                    .frame(height: 28)
-                    .background(page == model.settingsPage ? Color.primary.opacity(0.08) : .clear,
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
+            ForEach(SettingsPage.main) { sidebarButton($0) }
             Spacer()
             if model.needsRepair {
                 VStack(alignment: .leading, spacing: 6) {
@@ -198,22 +185,30 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            Menu {
-                Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                    .disabled(!AppModel.isBundled)
-            } label: {
-                Image(systemName: "ellipsis.circle").font(.system(size: 14)).foregroundStyle(.secondary)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More")
-            .padding(.leading, 8)
-            .padding(.top, 4)
+            sidebarButton(.general)
         }
         .padding(.horizontal, 8)
         // Below the window's buttons, which sit on the sidebar.
         .padding(.top, Design.titleBar - Design.sidebarInset)
         .padding(.bottom, 10)
+    }
+
+    private func sidebarButton(_ page: SettingsPage) -> some View {
+        Button { model.settingsPage = page } label: {
+            HStack(spacing: 8) {
+                Image(systemName: page.icon)
+                    .font(.system(size: 13))
+                    .foregroundStyle(page == model.settingsPage ? Color.accentColor : .secondary)
+                    .frame(width: 18)
+                Text(page.title)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(page == model.settingsPage ? Color.primary.opacity(0.08) : .clear,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

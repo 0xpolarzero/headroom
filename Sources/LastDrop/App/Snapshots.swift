@@ -31,7 +31,7 @@ enum Snapshots {
             await capture(SavingInstructionEditor(catalog: AgentCatalog.load()) {}, nil, to: folder, "save-instruction")
             model.panelTab = .limits
             await capture(PanelView(model: model), nil, to: folder, "panel-limits")
-            model.settingsPage = .updates
+            model.settingsPage = .general
             for (name, phase) in [("available", Updater.Phase.available), ("downloading", .downloading), ("ready", .ready),
                                   ("failed", .failed("The download isn't signed by lastdrop's certificate"))] {
                 model.updater.preview(phase, fraction: 0.42)
