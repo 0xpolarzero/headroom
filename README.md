@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/b61da207-0950-40f4-8a7d-44a3acc11894
 
 ## What it does
 
-- **Any subscription as a subagent.** Make an agent on any connected plan: a name, when to use it, a model
+- **Any model as a subagent.** Make an agent on any connected plan: a name, when to use it, a model
   and an effort.
 - **Built in for Claude.** Claude calls it through the Agent tool's model: `Agent({ subagent_type: "general-purpose", model: "<name>" })`.
 - **Load-balanced.** Add several accounts per plan, Claude included. Each subagent runs on the account with
