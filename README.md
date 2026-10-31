@@ -5,8 +5,9 @@
 <h1 align="center">lastdrop</h1>
 
 <p align="center">
-  Use any AI subscription as built-in subagents in Claude Code,<br>
-  load-balanced across your accounts. A macOS menu bar app.
+  Use any model as a built-in subagent in Claude Code, with a subscription or API key.<br>
+  Claude calls them like its native subagents, and lastdrop spreads usage across your accounts.<br>
+  A macOS menu bar app.
 </p>
 
 <p align="center">
