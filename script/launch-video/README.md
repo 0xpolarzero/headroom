@@ -1,6 +1,6 @@
 # Launch video
 
-The source of the launch film: 34.6 s at 1920×1080, 60 fps, cut to a 144 BPM score. It opens on what Claude sees, then runs the agents across your plans.
+The source of the launch film: 37.5 s at 1920×1080, 60 fps, cut to a 144 BPM score. It opens on what Claude sees, then runs the agents across your plans.
 
 ```sh
 python3 build.py launch.src.html launch.html                                  # inline the logos
