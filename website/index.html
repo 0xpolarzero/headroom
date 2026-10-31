@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script src="theme.js"></script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f8fb" />
+    <meta name="description" content="Use any model as a built-in subagent in Claude Code, with a subscription or API key, and spread usage across your accounts." />
+    <meta property="og:title" content="lastdrop — Every plan, down to the last drop" />
+    <meta property="og:description" content="Use any model as a built-in subagent in Claude Code, with a subscription or API key, and spread usage across your accounts." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://lastdrop.amontlabs.com/media/social-preview.png" />
+    <meta property="og:url" content="https://lastdrop.amontlabs.com/" />
+    <link rel="canonical" href="https://lastdrop.amontlabs.com/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <title>lastdrop — Every plan, down to the last drop</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <style>
+      html { background: #f5f8fb; }
+      html[data-theme="dark"] { background: #06101a; }
+      body { margin: 0; }
+    </style>
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="main.js" defer></script>
+  </head>
+  <body>
+    <svg class="symbols" width="0" height="0" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="drop-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#8fd0ff" />
+          <stop offset="1" stop-color="#2b6fe6" />
+        </linearGradient>
+        <mask id="drop-cut">
+          <rect width="100" height="100" fill="#fff" />
+          <path d="M22 59 C32 52 42 64 52 58 C62 52 70 62 80 56" fill="none" stroke="#000" stroke-width="5.5" stroke-linecap="round" />
+        </mask>
+        <symbol id="drop" viewBox="20 12 60 76">
+          <path d="M50 16 C50 16 26 44 26 61 A24 24 0 0 0 74 61 C74 44 50 16 50 16 Z" fill="url(#drop-fill)" mask="url(#drop-cut)" />
+        </symbol>
+        <symbol id="download-icon" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 15v5h16v-5" /></symbol>
+        <symbol id="github-icon" viewBox="0 0 24 24">
+          <path d="M9 19c-4 1-4-2-6-2m14 5v-4a3.5 3.5 0 0 0-1-3c3-.3 6-1.5 6-6a4.5 4.5 0 0 0-1.2-3.2A4 4 0 0 0 20.7 2S19.5 1.7 17 3a12 12 0 0 0-6 0C8.5 1.7 7.3 2 7.3 2a4 4 0 0 0-.1 3.8A4.5 4.5 0 0 0 6 9c0 4.5 3 5.7 6 6a3.5 3.5 0 0 0-1 3v4" transform="translate(-2)" />
+        </symbol>
+      </defs>
+    </svg>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <!-- The space between the page's double rails is a glass tube: scrolling drains it. -->
+    <div class="tube" aria-hidden="true">
+      <div class="tube-water"></div>
+      <span class="tube-label">100% left</span>
+    </div>
+
+    <div class="page-shell">
+      <header class="site-header joint">
+        <a class="brand" href="#" aria-label="lastdrop home"><svg aria-hidden="true"><use href="#drop" /></svg><span>lastdrop</span></a>
+        <nav aria-label="Main navigation">
+          <a href="#spread">How it works</a>
+          <a class="source-nav" href="https://github.com/amontlabs/lastdrop">GitHub <span aria-hidden="true">↗</span></a>
+        </nav>
+        <div class="header-actions">
+          <div class="theme-switch" data-theme-picker>
+            <button class="theme-trigger" type="button" data-theme-trigger aria-label="Color theme" title="Color theme: System" aria-haspopup="menu" aria-expanded="false" aria-controls="theme-menu">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none" /></svg>
+            </button>
+            <div class="theme-menu" id="theme-menu" role="menu" aria-label="Color theme" hidden>
+              <button type="button" role="menuitemradio" aria-checked="true" data-theme-option="system" tabindex="-1"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8m-4-4v4" /></svg><span>System</span><span class="theme-check" aria-hidden="true">✓</span></button>
+              <button type="button" role="menuitemradio" aria-checked="false" data-theme-option="light" tabindex="-1"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg><span>Light</span><span class="theme-check" aria-hidden="true">✓</span></button>
+              <button type="button" role="menuitemradio" aria-checked="false" data-theme-option="dark" tabindex="-1"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" /></svg><span>Dark</span><span class="theme-check" aria-hidden="true">✓</span></button>
+            </div>
+          </div>
+          <a class="button primary small" href="#download">Download<svg class="icon" aria-hidden="true"><use href="#download-icon" /></svg></a>
+        </div>
+      </header>
+
+      <main id="main">
+        <section class="hero joint" aria-labelledby="hero-title">
+          <canvas id="ripples" aria-hidden="true"></canvas>
+          <h1 id="hero-title">Every plan, down to the last drop.</h1>
+          <p class="hero-description">
+            Use any model as a built-in subagent in Claude Code,<br class="desktop-break" />
+            with a subscription or API key.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#download"><svg class="icon" aria-hidden="true"><use href="#download-icon" /></svg>Download for macOS</a>
+            <a class="button" href="https://github.com/amontlabs/lastdrop"><svg class="icon" aria-hidden="true"><use href="#github-icon" /></svg>View source</a>
+          </div>
+          <p class="platform-note">macOS 15 or later · Open source</p>
+        </section>
+
+        <section class="film joint" aria-label="The launch film">
+          <video controls playsinline preload="none" poster="media/lastdrop-poster.jpg" src="media/lastdrop-launch.mp4"></video>
+        </section>
+
+        <div class="principles joint">
+          <div>
+            <h2>Built in</h2>
+            <p>Your agents sit in the Agent tool's own list. Claude calls them like its native subagents.</p>
+          </div>
+          <div>
+            <h2>Yours</h2>
+            <p>A subscription or an API key: Claude, Codex, Antigravity, Z.ai or OpenRouter.</p>
+          </div>
+          <div>
+            <h2>Balanced</h2>
+            <p>Add several accounts per plan. Each subagent runs on the one with the most left.</p>
+          </div>
+        </div>
+
+        <section id="spread" class="spread joint" aria-labelledby="spread-title">
+          <div class="section-heading">
+            <h2 id="spread-title">Run some agents.</h2>
+            <p>lastdrop spreads usage across your accounts. When a model can't start, the agent falls back on the next one in its list.</p>
+          </div>
+          <div class="pool" id="pool"></div>
+          <div class="runs" id="runs"></div>
+          <div class="log-row">
+            <ol class="log" id="log" aria-live="polite"><li class="log-empty">Pick an agent.</li></ol>
+            <button class="text-button" id="refill" type="button">Reset limits</button>
+          </div>
+          <p class="sample-note">Sample accounts · Nothing runs here</p>
+        </section>
+
+        <section id="built-in" class="reads joint" aria-labelledby="reads-title">
+          <div class="section-heading">
+            <h2 id="reads-title">Nothing new to learn.</h2>
+            <p>lastdrop adds the blue lines to what Claude reads. Its tools stay the same.</p>
+          </div>
+          <div class="sheet">
+            <p class="sheet-title">Available agent types for the Agent tool</p>
+            <p>- <b>general-purpose</b>: For complex, multi-step tasks.</p>
+            <p>- <b>Explore</b>: Read-only search across a codebase.</p>
+            <div class="sheet-added">
+              <p>The Agent tool's model parameter also accepts these models the user added:</p>
+              <p>- <b>reviewer</b>: Reviews code and plans. <i>(Codex · gpt-6.1-sol · high, then Z.ai · glm-5.3)</i></p>
+              <p>- <b>advisor</b>: Opinions and trade-offs. <i>(Antigravity · gemini-4-argon · high)</i></p>
+              <p>- <b>builder</b>: Implementation and tests. <i>(Claude · sonnet-5.5, then Z.ai · glm-5.3)</i></p>
+            </div>
+            <p class="sheet-call">Agent({ subagent_type: "general-purpose", model: <em>"reviewer"</em> })</p>
+          </div>
+        </section>
+
+        <section id="glance" class="glance joint" aria-labelledby="glance-title">
+          <div class="glance-copy">
+            <h2 id="glance-title">Every <span id="glance-word">limit</span>,<br />one glance away.</h2>
+            <p id="glance-text" aria-live="polite">Usage left on each account, and when it resets.</p>
+            <p class="sample-note">The real panel · Click its tabs</p>
+          </div>
+          <div class="glance-stage">
+            <div class="panel" id="panel">
+              <img id="panel-image" src="media/panel-limits.png" width="640" height="1104" alt="The lastdrop panel, Limits tab" />
+              <button class="hot" data-view="limits" style="left: 20%; top: 10px; width: 20%; height: 24px" aria-label="Limits tab"></button>
+              <button class="hot" data-view="agents" style="left: 40.5%; top: 10px; width: 19.5%; height: 24px" aria-label="Agents tab"></button>
+              <button class="hot" data-view="stats" style="left: 60.3%; top: 10px; width: 19.7%; height: 24px" aria-label="Stats tab"></button>
+              <button class="hot pulse" id="hot-project" data-view="project" aria-label="Open the atlas project" hidden></button>
+              <button class="hot" id="hot-back" data-view="stats" aria-label="Back to Stats" hidden></button>
+            </div>
+          </div>
+        </section>
+
+        <section id="download" class="download" aria-labelledby="download-title">
+          <svg class="last-drop" id="last-drop" aria-hidden="true"><use href="#drop" /></svg>
+          <h2 id="download-title">Use the last drop.</h2>
+          <a class="button primary" id="final-download" href="https://github.com/amontlabs/lastdrop/releases/latest/download/lastdrop.zip"><svg class="icon" aria-hidden="true"><use href="#download-icon" /></svg>Download lastdrop.zip</a>
+          <ol class="steps">
+            <li>Move <code>lastdrop.app</code> to Applications.</li>
+            <li>
+              <span>It isn't notarized yet, so clear the download flag:</span>
+              <button class="command" id="copy" type="button" aria-label="Copy the command"><code>xattr -dr com.apple.quarantine /Applications/lastdrop.app</code><span id="copy-state">Copy</span></button>
+            </li>
+            <li>Open it and connect your accounts.</li>
+          </ol>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <span>MIT · <a href="https://amontlabs.com">Amont Labs</a></span>
+        <span><a href="https://github.com/amontlabs/lastdrop">GitHub</a> · <a href="https://github.com/sponsors/amontlabs">Sponsor</a></span>
+      </footer>
+    </div>
+  </body>
+</html>
