@@ -253,14 +253,18 @@ struct AgentsSections: View {
     }
 }
 
-/// When to stop sending subagents to a Claude account; only with more than one.
-struct ClaudeAccountsSection: View {
+/// When to stop sending agents to an account; only with a provider that has more than one to choose from.
+struct AccountLimitsSection: View {
     @Bindable var model: AppModel
 
+    private var hasChoice: Bool {
+        AgentProvider.allCases.contains { ($0 == .claude || AgentPool.pools($0)) && model.accounts($0.usageID).count > 1 }
+    }
+
     var body: some View {
-        if model.agentsEnabled && model.accounts(.claude).count > 1 {
-            PageSection("Claude accounts",
-                        info: "Subagents go to the account with the most left, and skip one with less left than this. A session never sends subagents to its own account.") {
+        if model.agentsEnabled && hasChoice {
+            PageSection("Account limits",
+                        info: "Agents go to the provider's account with the most left, and skip one with less left than this. If every Codex, Z.ai or OpenRouter account is past this, the first one runs anyway. A Claude session never sends subagents to its own account.") {
                 Row(icon: "clock", title: "Use until the session has") { threshold("Session", \.sessionThreshold) { model.setThresholds(session: $0) } }
                 RowDivider()
                 Row(icon: "calendar", title: "Use until the week has") { threshold("Week", \.weeklyThreshold) { model.setThresholds(weekly: $0) } }

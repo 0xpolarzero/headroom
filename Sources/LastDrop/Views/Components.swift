@@ -72,22 +72,30 @@ struct Badge<Icon: View>: View {
     }
 }
 
-/// Where an agent runs, as the same three tags everywhere: provider, model, effort.
+/// Where an agent runs, as the same three tags everywhere: provider, model, effort. Each fallback gets a line
+/// of its own under them, in the order they're tried.
 struct AgentBadges: View {
     let agent: AgentDefinition
     /// For the panel: the provider as its logo alone, and shorter words.
     var compact = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Badge(text: compact ? "" : agent.provider == .claude ? "Claude" : agent.provider.displayName) {
-                ProviderLogo(id: agent.provider.usageID, size: 10)
-            }
-            Badge(text: agent.model.isEmpty ? "No model" : agent.model) {
-                Image(systemName: "cpu").imageScale(.small)
-            }
-            Badge(text: agent.effort.map { $0.capitalized } ?? (compact ? "Auto" : "Claude decides")) {
-                Image(systemName: "brain").imageScale(.small)
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(agent.chain.enumerated()), id: \.offset) { index, attempt in
+                HStack(spacing: 4) {
+                    if index > 0 {
+                        Image(systemName: "arrow.turn.down.right").imageScale(.small).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    Badge(text: compact ? "" : attempt.provider.displayName) {
+                        ProviderLogo(id: attempt.provider.usageID, size: 10)
+                    }
+                    Badge(text: attempt.model.isEmpty ? "No model" : attempt.model) {
+                        Image(systemName: "cpu").imageScale(.small)
+                    }
+                    Badge(text: attempt.effort.map { $0.capitalized } ?? (compact ? "Auto" : "Claude decides")) {
+                        Image(systemName: "brain").imageScale(.small)
+                    }
+                }
             }
         }
     }

@@ -157,7 +157,7 @@ struct SettingsView: View {
                 AgentsSwitchSection(model: model)
                 if model.agentsEnabled {
                     AgentsSections(model: model)
-                    ClaudeAccountsSection(model: model)
+                    AccountLimitsSection(model: model)
                 }
             }
         case .general:

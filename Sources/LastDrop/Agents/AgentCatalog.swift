@@ -13,7 +13,7 @@ enum AgentProvider: String, Codable, CaseIterable, Sendable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .claude: "Claude accounts"
+        case .claude: "Claude"
         case .codex: "Codex"
         case .zai: "Z.ai"
         case .openrouter: "OpenRouter"
@@ -82,7 +82,7 @@ struct AgentDefinition: Codable, Hashable, Sendable, Identifiable {
     }
 
     private static func summary(_ provider: AgentProvider, _ model: String, _ effort: String?) -> String {
-        ([provider == .claude ? "Claude" : provider.displayName, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
+        ([provider.displayName, model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
     }
 
     /// The models in the order they're tried, as Settings edits them.
