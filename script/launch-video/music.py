@@ -1,4 +1,4 @@
-"""Score and sound design for the lastdrop launch film: 144 BPM, 20.75 bars, E phrygian.
+"""Score and sound design for the lastdrop launch film: 144 BPM, 21.5 bars, E phrygian.
 
 Everything is synthesized here: band-limited oscillators, a resonant state-variable filter,
 a ping-pong delay and a convolution reverb. Cue times match launch.src.html (b(n) = n bars)."""
@@ -8,7 +8,7 @@ import wave, sys
 
 SR = 48000
 OPEN_BARS = 9                                   # the opening; the reel's cues count from its end
-DUR = (OPEN_BARS + 11.75) * 4 * 60 / 144
+DUR = (OPEN_BARS + 13.5) * 4 * 60 / 144
 N = int(SR * DUR)
 BPM = 144
 BEAT = 60 / BPM
@@ -296,7 +296,7 @@ def post_sweep(y, f_hi, f_lo, tau):
 # ---------------------------------------------------------------- arrangement (cues match launch.src.html)
 O = b(OPEN_BARS)
 HIT = O + b(.5); GROW = HIT + .9; ROWS = [HIT + b(1), HIT + b(1.4), HIT + b(1.8)]; S5 = HIT + b(3.5); FLIP = S5 + b(1); SWAP = FLIP + .35
-S6 = S5 + b(2.5); CLICK = S6 + b(1.25); S7 = CLICK + b(1); LAND = S7 + b(.5)
+S6 = S5 + b(2.5); CLICK = S6 + b(1); CLICK2 = CLICK + b(1); CLICK3 = CLICK2 + b(1); S7 = CLICK3 + b(1); LAND = S7 + b(.5)
 E1, E2 = 28, 40
 drums = np.zeros(N); bassb = np.zeros(N); sfx = np.zeros(N); sfx_wet = np.zeros(N)
 pluckb = np.zeros((2, N)); mellowb = np.zeros((2, N)); padb = np.zeros((2, N))
@@ -367,11 +367,11 @@ for bar in range(1, OPEN_BARS + 1):
             i = at(t0); n = at(0.22); sc[i:i + n] = np.minimum(sc[i:i + n], 1 - 0.35 * np.exp(-np.arange(n) / SR * 13))
 
 # ---- sound design: each cue is a moment in the picture
-CARDS = [b(.1 + i * .35) for i in range(3)]; NAME_LEN = [8, 7, 7]; FB = [b(1.25), b(1.6)]; FOLD = b(2.75); BOX = b(3.25); FLY = [b(3.5), b(3.75), b(4)]; SCROLL = b(5.75); AM = [b(6.25), b(6.4), b(6.55)]; CALLS = [b(7.25), b(7.4)]
+CARDS = [b(.1 + i * .6) for i in range(3)]; NAME_LEN = [8, 7, 7]; FB = [b(.4), b(1.6)]; FOLD = b(2.75); BOX = b(3.25); FLY = [b(3.5), b(3.75), b(4)]; SCROLL = b(5.75); AM = [b(6.25), b(6.4), b(6.55)]; CALLS = [b(7.25), b(7.4)]
 for c, l, m in zip(CARDS, NAME_LEN, (76, 79, 83)):                                           # each agent is typed in
     for k in range(l): place(sfx, tick(1.1 + 0.03 * k, 0.3), c + .1 + k * .05)
     place(sfx_wet, tink(m, 0.5, 0.12), c + .3)
-for f, m in zip(FB, (83, 86)): place(sfx, tick(1.0, 0.35), f); place(sfx_wet, tink(m, 0.5, 0.16), f)    # a fallback joins the list
+for f, m in zip(FB, (79, 86)): place(sfx, tick(1.0, 0.35), f); place(sfx_wet, tink(m, 0.5, 0.16), f)    # a fallback joins the list
 place(sfx, whoosh(0.6, 3000, 500, 0.16), FOLD)                                               # the cards fold into tags
 place(sfx, whoosh(0.6, 500, 2600, 0.12), BOX)                                                # the blue block opens
 for f, m in zip(FLY, (76, 79, 83)):                                                          # each tag lands on its line
@@ -401,8 +401,9 @@ place(sfx, riser(BAR, 0.55), S6 - BAR)
 place(sfx, boom(1.4), S6, 0.5)
 place(sfx, whoosh(0.7, 5000, 400, 0.24), S6)                                                 # everything folds into the menu bar
 place(sfx, tick(0.7, 0.7), S6 + .5); place(sfx, whoosh(0.45, 900, 3500, 0.15), S6 + .5)      # the panel opens
-place(sfx, tick(0.7, 0.8), CLICK - 0.02)                                                     # click on Agents
-for k in range(5): place(sfx, tick(1.25 - k * 0.05, 0.28), CLICK + (1 - (1 - k / 5) ** 1.7) * 0.32)
+for c in (CLICK, CLICK2, CLICK3):                                                              # click on Agents, Stats, then a project
+    place(sfx, tick(0.7, 0.8), c - 0.02)
+    for k in range(5): place(sfx, tick(1.25 - k * 0.05, 0.28), c + (1 - (1 - k / 5) ** 1.7) * 0.32)
 place(sfx, whoosh(BAR / 2 + 0.2, 300, 3500, 0.22, 0.7), S7)                                  # the drop leaves the menu bar
 place(sfx, plip(560, 1900, 0.12, 1.0), LAND); place(sfx_wet, plip(560, 1900, 0.12, 1.0), LAND)
 place(sfx, boom(3.0), LAND, 0.8)

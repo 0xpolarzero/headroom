@@ -95,7 +95,7 @@
   #cursor { position: absolute; left: 0; top: 0; transform-origin: 3px 2px; }
   #h6 { left: 200px; top: 440px; font-size: 64px; font-weight: 600; letter-spacing: -0.035em; line-height: 1.05; white-space: nowrap; }
   #h6 em { font-style: normal; color: var(--shallow); }
-  #wslot { position: relative; display: inline-block; height: 68px; overflow: hidden; vertical-align: top; }
+  #wslot { position: relative; display: inline-block; height: 74px; margin-bottom: -6px; overflow: hidden; vertical-align: top; }
   #wslot span { position: absolute; left: 0; top: 0; }
 
   #mark { left: 0; top: 0; width: 220px; height: 220px; transform-origin: 0 0; }
@@ -154,10 +154,10 @@
           <svg width="20" height="18" viewBox="0 0 20 18"><rect x="1" y="2" width="18" height="6" rx="3" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="15.5" cy="5" r="1.8" fill="#fff"/><rect x="1" y="10" width="18" height="6" rx="3" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="4.5" cy="13" r="1.8" fill="#fff"/></svg></div>
         <div>Wed 9:41</div>
       </div>
-      <div id="panel"><img id="pL" src="panel-limits.png" alt=""><img id="pA" src="panel-agents.png" alt=""><div id="ptogs"><div class="pname" style="top: 197px">reviewer</div><div class="pname" style="top: 272px">advisor</div><div class="pname" style="top: 348px">scout</div><div class="pname" style="top: 423px">builder</div><div class="pbadge" style="left: 36px; top: 457px; width: 20px; height: 20px">__CLAUDEB__</div><div class="pbadge" style="left: 106px; top: 455px; width: 126px; height: 24px; justify-content: flex-start">sonnet-5.5</div><div class="pname" style="top: 499px">operator</div><div class="ptog" style="top: 83px"><div></div></div><div class="ptog" style="top: 211px"><div></div></div><div class="ptog" style="top: 287px"><div></div></div><div class="ptog" style="top: 362px"><div></div></div><div class="ptog" style="top: 438px"><div></div></div><div class="ptog" style="top: 514px"><div></div></div></div></div>
+      <div id="panel"><img id="pL" src="panel-limits.png" alt=""><img id="pA" src="panel-agents.png" alt=""><img id="pS" src="panel-stats.png" alt=""><img id="pP" src="panel-project.png" alt=""><div id="ptogs"><div class="pname" style="top: 197px">reviewer</div><div class="pname" style="top: 272px">advisor</div><div class="pname" style="top: 348px">scout</div><div class="pname" style="top: 423px">builder</div><div class="pbadge" style="left: 36px; top: 457px; width: 20px; height: 20px">__CLAUDEB__</div><div class="pbadge" style="left: 106px; top: 455px; width: 126px; height: 24px; justify-content: flex-start">sonnet-5.5</div><div class="pname" style="top: 499px">operator</div><div class="ptog" style="top: 83px"><div></div></div><div class="ptog" style="top: 211px"><div></div></div><div class="ptog" style="top: 287px"><div></div></div><div class="ptog" style="top: 362px"><div></div></div><div class="ptog" style="top: 438px"><div></div></div><div class="ptog" style="top: 514px"><div></div></div></div></div>
       <svg id="cursor" width="30" height="42" viewBox="0 0 28 40"><path d="M3 2 L3 31 L10 24 L15 36 L20 34 L15 22 L25 22 Z" fill="#111" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
     </div>
-    <div id="h6" class="abs">Every <span id="wslot"><span id="wL">limit</span><span id="wA">agent</span></span>,<br><em>one glance away.</em></div>
+    <div id="h6" class="abs">Every <span id="wslot"><span id="wL">limit</span><span id="wA">agent</span><span id="wS">stat</span><span id="wP">project</span></span>,<br><em>one glance away.</em></div>
 
     <svg id="mark" class="abs" viewBox="0 0 100 100">
       <defs>
@@ -234,7 +234,7 @@ const BEAT = 60 / 144, BAR = BEAT * 4, b = n => n * BAR;   // every cue sits on 
 /* ---------- Timeline (bars) ---------- */
 const OPEN = b(9);                    // the opening runs first; everything below counts from its end
 const HIT = b(.5);                    // the page closes, and the drop lands on the groove's first beat
-const ROWS = [HIT + b(1), HIT + b(1.4), HIT + b(1.8)], TIN = HIT + b(.75), S5 = HIT + b(3.5), FLIP = S5 + b(1), SWAP = FLIP + .35, S6 = S5 + b(2.5), CLICK = S6 + b(1.25), S7 = CLICK + b(1), LAND = S7 + b(.5);
+const ROWS = [HIT + b(1), HIT + b(1.4), HIT + b(1.8)], TIN = HIT + b(.75), S5 = HIT + b(3.5), FLIP = S5 + b(1), SWAP = FLIP + .35, S6 = S5 + b(2.5), CLICK = S6 + b(1), CLICK2 = CLICK + b(1), CLICK3 = CLICK2 + b(1), S7 = CLICK3 + b(1), LAND = S7 + b(.5);
 window.DURATION = OPEN + LAND + b(2.5);
 
 /* ---------- 1. The drop ---------- */
@@ -312,7 +312,7 @@ const AGENTS = [
 ];
 const DOC = { x: 140, y: 110, viewX: 40, viewY: 76 }, ADDED_Y = 316, ADDED_H = 228, LINE0 = 64, LINE_H = 46;
 const CARD = { w: 500, h: 256, y: 300, gap: 40, pad: 32, size: 56, top: 30 }, PILL = { h: 60, y: 30, pad: 20, size: 28, top: 16, gap: 28 };
-const SCROLL = 620, FB = [b(1.25), 0, b(1.6)], C = b(2.75), DOCIN = b(3), BOX = b(3.25), FLY = [b(3.5), b(3.75), b(4)], SC = b(5.75), AM = [b(6.25), b(6.4), b(6.55)], CALLS = [b(7.25), b(7.4)], OUT = b(8.57);
+const SCROLL = 620, FB = [b(.4), 0, b(1.6)], C = b(2.75), DOCIN = b(3), BOX = b(3.25), FLY = [b(3.5), b(3.75), b(4)], SC = b(5.75), AM = [b(6.25), b(6.4), b(6.55)], CALLS = [b(7.25), b(7.4)], OUT = b(8.57);
 const CW28 = CW / 2;
 $('cards').innerHTML = AGENTS.map((a, i) => `<div id="ac${i}" class="acard"><div id="acn${i}" class="acn"></div><div id="acd${i}" class="acd">${a.role}</div>
   <div id="acc${i}" class="acc">${a.models.map(([k, f, m, e], j) => `<div id="acr${i}${j}" class="mr" style="top: ${j * 44}px"><i>${j + 1}</i>${logoSVG(k, 20, f)}${m}<span>${e}</span></div>`).join('')}</div></div>`).join('');
@@ -329,7 +329,7 @@ function opening(t) {
   /* ===== Three agents are made, one by one; each folds into a tag above the page. ===== */
   const fold = io(seg(t, C, C + .6));
   AGENTS.forEach((a, i) => {
-    const at = b(.1 + i * .35), q = out(seg(t, at, at + .5)), card = $('ac' + i), f = io(seg(t, FLY[i], FLY[i] + .45));
+    const at = b(.1 + i * .6), q = out(seg(t, at, at + .5)), card = $('ac' + i), f = io(seg(t, FLY[i], FLY[i] + .45));
     const lineY = DOC.y + DOC.viewY + ADDED_Y + LINE0 + i * LINE_H + (LINE_H - PILL.size) / 2 - PILL.top;
     const lineX = DOC.x + DOC.viewX + 22 + 2 * CW28 - PILL.pad;
     const px = lerp(pillX(i), lineX, f), py = lerp(PILL.y, lineY, f) - Math.sin(f * Math.PI) * 16;
@@ -457,7 +457,7 @@ function reel(t) {
   vis($('actChipA'), 1 - seg(t, SWAP, SWAP + .2)); { const q = out(seg(t, SWAP + .15, SWAP + .5)); place($('actChipB'), seg(t, SWAP + .15, SWAP + .35), 0, (1 - q) * 10); }
   life($('cap6'), S5 + .4, S6 + .2);
 
-  /* ===== 5. The menu bar: first the limits, then a click on Agents. ===== */
+  /* ===== 5. The menu bar: first the limits, then a click on Agents, then on Stats. ===== */
   const mb = $('mbwrap'), mbIn = io(seg(t, S6, S6 + .6)), mbOut = io(seg(t, S7, S7 + .5));
   vis(mb, t > S6 ? 1 - seg(t, S7 + .2, S7 + .5) : 0);
   $('menubar').style.transform = `translateY(${(1 - mbIn) * -46 - mbOut * 46}px)`;
@@ -465,14 +465,15 @@ function reel(t) {
   const pn = $('panel'), po = out(seg(t, S6 + .5, S6 + 1.0)), pl = Math.min(1920 - 576 - 40, gx - 288);
   pn.style.left = pl + 'px'; pn.style.top = '56px';
   place(pn, seg(t, S6 + .5, S6 + .7) * (1 - mbOut), 0, (1 - po) * -14 - mbOut * 30, lerp(.97, 1, po));
-  const tx = seg(t, CLICK, CLICK + .12); vis($('pL'), 1 - tx); vis($('pA'), tx); vis($('ptogs'), tx);   // the switch is on: we turned it on
-  pn.style.height = lerp(994, 643, out(seg(t, CLICK, CLICK + .4))) + 'px';
-  const cur = $('cursor'), cm = io(seg(t, CLICK - 1.0, CLICK - .1)), co = seg(t, CLICK - 1.0, CLICK - .8) * (1 - seg(t, CLICK + .6, CLICK + .9));
-  const press = t > CLICK - .06 && t < CLICK + .08 ? .86 : 1;
-  vis(cur, co); cur.style.transform = `translate(${lerp(pl + 160, pl + 346 - 3, cm)}px, ${lerp(700, 56 + 40 - 2, cm)}px) scale(${press})`;
-  const wr = io(seg(t, CLICK, CLICK + .35));
-  $('wL').style.transform = `translateY(${-wr * 68}px)`; $('wA').style.transform = `translateY(${(1 - wr) * 68}px)`;
-  $('wslot').style.width = lerp($('wL').offsetWidth, $('wA').offsetWidth, wr) + 'px';
+  const tx = seg(t, CLICK, CLICK + .12), ts = seg(t, CLICK2, CLICK2 + .12), tp = seg(t, CLICK3, CLICK3 + .12);
+  vis($('pL'), 1 - tx); vis($('pA'), tx * (1 - ts)); vis($('ptogs'), tx * (1 - ts)); vis($('pS'), ts * (1 - tp)); vis($('pP'), tp);   // the switch is on: we turned it on
+  pn.style.height = lerp(lerp(lerp(994, 643, out(seg(t, CLICK, CLICK + .4))), 983, out(seg(t, CLICK2, CLICK2 + .4))), 898, out(seg(t, CLICK3, CLICK3 + .4))) + 'px';
+  const TABY = 56 + 40 - 2, cur = $('cursor'), cm = io(seg(t, CLICK - .9, CLICK - .1)), cn = io(seg(t, CLICK2 - .8, CLICK2 - .1)), cp = io(seg(t, CLICK3 - .8, CLICK3 - .1)), co = seg(t, CLICK - .9, CLICK - .7) * (1 - seg(t, CLICK3 + .4, CLICK3 + .7));
+  const press = (t > CLICK - .06 && t < CLICK + .08) || (t > CLICK2 - .06 && t < CLICK2 + .08) || (t > CLICK3 - .06 && t < CLICK3 + .08) ? .86 : 1;
+  vis(cur, co); cur.style.transform = `translate(${lerp(lerp(lerp(pl + 160, pl + 289, cm), pl + 403, cn), pl + 270, cp)}px, ${lerp(lerp(700, TABY, cm), 610, cp)}px) scale(${press})`;
+  const wr = io(seg(t, CLICK, CLICK + .35)), ws = io(seg(t, CLICK2, CLICK2 + .35)), wj = io(seg(t, CLICK3, CLICK3 + .35));
+  $('wL').style.transform = `translateY(${-wr * 84}px)`; $('wA').style.transform = `translateY(${(1 - wr - ws) * 84}px)`; $('wS').style.transform = `translateY(${(1 - ws - wj) * 84}px)`; $('wP').style.transform = `translateY(${(1 - wj) * 84}px)`;
+  $('wslot').style.width = lerp(lerp(lerp($('wL').offsetWidth, $('wA').offsetWidth, wr), $('wS').offsetWidth, ws), $('wP').offsetWidth, wj) + 'px';
   $('h6').style.left = (pl - 120 - H6W) + 'px'; life($('h6'), S6 + .4, S7 + .2);
 
   /* ===== 6. End: the drop leaves the menu bar and becomes the mark. ===== */

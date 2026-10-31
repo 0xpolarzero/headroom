@@ -117,7 +117,7 @@ final class StatsModel {
                 let wave = 1 + 0.7 * sin(Double(age) / 11 + Double(i))
                 let provider = i == 0 || i == 1 ? 0 : i == 2 ? 1 : 2
                 cube.rows.append(.init(hour: now - age, session: session, usd: Float(weight * wave * 14), tokens: Int64(weight * wave * 42e6),
-                                       model: UInt16(i), project: UInt16((Int(session) / 3 + i) % 4), account: UInt16(i), provider: UInt8(provider), agent: Int(session) % 3 != 0))
+                                       model: UInt16(i), project: UInt16((Int(session) / 3 + i) % 4), account: UInt16(i), provider: UInt8(provider), agent: age % 9 != 0))
             }
         }
         cube.sessionCount = Int(session) + 1
